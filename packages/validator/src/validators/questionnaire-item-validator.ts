@@ -11,6 +11,19 @@ interface QuestionnaireItemValidationState {
     hasInitial: boolean;
 }
 
+const QUESTIONNAIRE_ANSWER_SOURCE_TYPES = new Set([
+    'choice',
+    'open-choice',
+    'coding',
+    'decimal',
+    'integer',
+    'date',
+    'dateTime',
+    'time',
+    'string',
+    'quantity',
+]);
+
 /**
  * Validate Questionnaire items recursively.
  *
@@ -149,14 +162,18 @@ function validateAnswerSources(state: QuestionnaireItemValidationState): Validat
         }));
     }
 
-    if (hasAnswerValueSet && type !== 'choice' && type !== 'open-choice') {
+    if (hasAnswerValueSet && !isAnswerSourceType(type)) {
         issues.push(createAnswerSourceTypeIssue(path, 'answerValueSet'));
     }
-    if (hasAnswerOption && type !== 'choice' && type !== 'open-choice') {
+    if (hasAnswerOption && !isAnswerSourceType(type)) {
         issues.push(createAnswerSourceTypeIssue(path, 'answerOption'));
     }
 
     return issues;
+}
+
+function isAnswerSourceType(type: string | undefined): boolean {
+    return typeof type === 'string' && QUESTIONNAIRE_ANSWER_SOURCE_TYPES.has(type);
 }
 
 function createAnswerSourceTypeIssue(path: string, field: 'answerOption' | 'answerValueSet'): ValidationIssue {
@@ -165,8 +182,8 @@ function createAnswerSourceTypeIssue(path: string, field: 'answerOption' | 'answ
         path,
         resourceType: 'Questionnaire',
         customMessage:
-            "Constraint failed: que-5: 'Only \u0027choice\u0027 and " +
-            `\u0027open-choice\u0027 items can have ${field}'`,
+            "Constraint failed: que-5: 'Only answer-capable Questionnaire item " +
+            `types can have ${field}'`,
         severityOverride: 'error',
     });
 }

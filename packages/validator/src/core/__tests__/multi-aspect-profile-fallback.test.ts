@@ -173,4 +173,22 @@ describe('multi-aspect-validate-callback — profile fallback', () => {
       'structural-cardinality-min',
     ]);
   });
+
+  it('stamps multi-aspect issues with the requested FHIR version', async () => {
+    const callback = buildMultiAspectValidateCallback(
+      makeDeps(),
+      ['structural'],
+      { validationStrictness: 'standard', aspects: {} },
+    );
+
+    const result = await callback(
+      { resourceType: 'Observation' },
+      'http://example.org/DoesNotExist',
+      'R5',
+    );
+
+    const issues = result.aspects.flatMap(aspect => aspect.issues);
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.every(issue => issue.schemaVersion === 'R5')).toBe(true);
+  });
 });

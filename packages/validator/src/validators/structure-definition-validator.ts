@@ -13,9 +13,8 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import {
   WG_PUBLISHER, WG_CONTACT_URL,
-  R4_ELEMENT_DEFINITION_ELEMENTS, STATUS_CONSISTENCY,
+  R4_ELEMENT_DEFINITION_ELEMENTS, R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS, STATUS_CONSISTENCY,
   CHOICE_TYPE_BASES, VALID_CHOICE_TYPE_SUFFIXES,
-  CANONICAL_RESOURCE_TYPES,
 } from './sd-wg-mappings';
 
 // ============================================================================
@@ -29,7 +28,7 @@ export class StructureDefinitionValidator {
 
     const issues: ValidationIssue[] = [];
 
-    if (CANONICAL_RESOURCE_TYPES.has(rt)) {
+    if (rt === 'StructureDefinition') {
       issues.push(...this.validateWgConsistency(resource));
     }
 
@@ -65,7 +64,7 @@ export class StructureDefinitionValidator {
     const wg = wgExt.valueCode;
     const expectedPublisher = WG_PUBLISHER[wg];
 
-    if (expectedPublisher && resource.publisher && resource.publisher !== expectedPublisher) {
+    if (expectedPublisher && resource.publisher && !publisherMatchesWg(resource.publisher, expectedPublisher)) {
       issues.push(createValidationIssue({
         code: 'business-rule-wg-publisher',
         path: rt,
@@ -80,7 +79,7 @@ export class StructureDefinitionValidator {
     const expectedUrl = WG_CONTACT_URL[wg];
     if (expectedUrl) {
       const allContactUrls = extractContactUrls(resource.contact);
-      if (!allContactUrls.includes(expectedUrl)) {
+      if (!allContactUrls.some(url => contactUrlMatchesWg(url, expectedUrl))) {
         issues.push(createValidationIssue({
           code: 'business-rule-wg-contact',
           path: rt,
@@ -146,6 +145,7 @@ export class StructureDefinitionValidator {
       } else if (
         sd.baseDefinition
         && sd.baseDefinition !== 'http://hl7.org/fhir/StructureDefinition/Extension'
+        && looksLikeStructureDefinitionCanonical(sd.baseDefinition)
         && sd.url !== sd.baseDefinition
       ) {
         // Derived extension overrides fixedUri from parent
@@ -173,7 +173,10 @@ export class StructureDefinitionValidator {
       if (ctx?.type !== 'element' || !ctx.expression) continue;
       if (ctx.expression.startsWith('ElementDefinition.')) {
         const sub = ctx.expression.replace('ElementDefinition.', '');
-        if (!R4_ELEMENT_DEFINITION_ELEMENTS.has(sub)) {
+        if (
+          !R4_ELEMENT_DEFINITION_ELEMENTS.has(sub) &&
+          !R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS.has(sub)
+        ) {
           issues.push(createValidationIssue({
             code: 'sd-context-invalid-element',
             path: `StructureDefinition.context[${i}]`,
@@ -282,6 +285,7 @@ export class StructureDefinitionValidator {
     const issues: ValidationIssue[] = [];
     const baseType = sd.type;
     if (!baseType) return issues;
+    const knownChoicePaths = collectKnownChoicePaths(sd, baseType);
 
     for (const elem of sd.differential?.element || []) {
       if (!elem?.path) continue;
@@ -300,6 +304,8 @@ export class StructureDefinitionValidator {
         const sub = elem.path.slice(baseType.length + 1);
         if (!sub.includes('.')) {
           for (const base of CHOICE_TYPE_BASES) {
+            const choicePath = `${baseType}.${base}[x]`;
+            if (!knownChoicePaths.has(choicePath)) continue;
             if (sub.startsWith(base) && sub !== base && sub !== `${base}[x]`) {
               const suffix = sub.slice(base.length);
               if (suffix.length > 0 && !VALID_CHOICE_TYPE_SUFFIXES.has(suffix)) {
@@ -397,6 +403,25 @@ export class StructureDefinitionValidator {
   }
 }
 
+function collectKnownChoicePaths(sd: any, baseType: string): Set<string> {
+  const paths = new Set<string>();
+
+  for (const element of [
+    ...(Array.isArray(sd?.snapshot?.element) ? sd.snapshot.element : []),
+    ...(Array.isArray(sd?.differential?.element) ? sd.differential.element : []),
+  ]) {
+    if (typeof element?.path === 'string' && element.path.includes('[x]')) {
+      paths.add(element.path);
+    }
+  }
+
+  if (baseType === 'Extension') {
+    paths.add('Extension.value[x]');
+  }
+
+  return paths;
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -410,6 +435,39 @@ function extractContactUrls(contacts: any[] | undefined): string[] {
     }
   }
   return urls;
+}
+
+function looksLikeStructureDefinitionCanonical(value: string): boolean {
+  return /\/StructureDefinition\/[^/]+$/.test(value);
+}
+
+function publisherMatchesWg(actual: string, expected: string): boolean {
+  return normalizeWgPublisher(actual) === normalizeWgPublisher(expected);
+}
+
+function normalizeWgPublisher(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\bhealth\s+level\s+seven\b/g, 'hl7')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function contactUrlMatchesWg(actual: string, expected: string): boolean {
+  const normalizedActual = normalizeWgContactUrl(actual);
+  const normalizedExpected = normalizeWgContactUrl(expected);
+  return normalizedActual === normalizedExpected ||
+    normalizedActual.startsWith(`${normalizedExpected}/`);
+}
+
+function normalizeWgContactUrl(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/\/index\.(cfm|html?)$/, '')
+    .replace(/\/$/, '');
 }
 
 export const structureDefinitionValidator = new StructureDefinitionValidator();

@@ -1,14 +1,41 @@
 import type { ElementDefinition } from '../core/structure-definition-types';
+import type { ValidationTarget } from '../business-rules/element-validation-targets';
+import { getEvaluationContext } from './constraint-path-utils';
+
+interface SliceMatchContext {
+  resource: any;
+  target: Pick<ValidationTarget, 'fullPath'>;
+}
 
 export function targetMatchesSliceDefinition(
   value: any,
   element: ElementDefinition,
   elements: ElementDefinition[],
+  context?: SliceMatchContext,
 ): boolean {
-  if (!element.sliceName) {
+  const sliceAncestors = getSliceAncestors(element, elements);
+  if (sliceAncestors.length === 0) {
     return true;
   }
 
+  for (const slice of sliceAncestors) {
+    const sliceValue = slice === element
+      ? value
+      : getSliceAncestorValue(slice, element, context);
+
+    if (sliceValue === undefined || !matchesSliceElement(sliceValue, slice, elements)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function matchesSliceElement(
+  value: any,
+  element: ElementDefinition,
+  elements: ElementDefinition[],
+): boolean {
   const patternEntries = Object.entries(element)
     .filter(([key]) => key.startsWith('pattern') || key.startsWith('fixed'));
 
@@ -24,6 +51,47 @@ export function targetMatchesSliceDefinition(
   return childPatternEntries.every(({ relativePath, expected }) =>
     matchesPattern(getValueAtRelativePath(value, relativePath), expected)
   );
+}
+
+function getSliceAncestors(
+  element: ElementDefinition,
+  elements: ElementDefinition[],
+): ElementDefinition[] {
+  const elementId = element.id;
+  if (!elementId) {
+    return element.sliceName ? [element] : [];
+  }
+
+  return elements
+    .filter(candidate =>
+      Boolean(candidate.sliceName) &&
+      typeof candidate.id === 'string' &&
+      (elementId === candidate.id || elementId.startsWith(`${candidate.id}.`))
+    )
+    .sort((a, b) => (a.id?.length ?? 0) - (b.id?.length ?? 0));
+}
+
+function getSliceAncestorValue(
+  slice: ElementDefinition,
+  element: ElementDefinition,
+  context: SliceMatchContext | undefined,
+): any {
+  if (!context || !slice.path || !element.path) return undefined;
+  if (!pathStartsWith(element.path, slice.path)) return undefined;
+
+  const concretePath = concretePathForAncestor(context.target.fullPath, slice.path);
+  return concretePath ? getEvaluationContext(context.resource, concretePath) : undefined;
+}
+
+function concretePathForAncestor(targetFullPath: string, ancestorPath: string): string | null {
+  const targetSegments = targetFullPath.split('.');
+  const ancestorSegments = ancestorPath.split('.');
+  if (targetSegments.length < ancestorSegments.length) return null;
+  return targetSegments.slice(0, ancestorSegments.length).join('.');
+}
+
+function pathStartsWith(path: string, prefix: string): boolean {
+  return path === prefix || path.startsWith(`${prefix}.`);
 }
 
 function matchesPattern(actual: any, expected: any): boolean {
@@ -57,7 +125,9 @@ function getSliceChildPatternEntries(
     if (!candidate.id?.startsWith(prefix)) return [];
     const expected = getPatternOrFixedValue(candidate);
     if (expected === undefined) return [];
-    return [{ relativePath: candidate.id.substring(prefix.length), expected }];
+    const relativePath = candidate.id.substring(prefix.length);
+    if (relativePath.includes(':')) return [];
+    return [{ relativePath, expected }];
   });
 }
 

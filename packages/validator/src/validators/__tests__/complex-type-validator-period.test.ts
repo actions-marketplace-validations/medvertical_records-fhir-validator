@@ -26,6 +26,77 @@ describe('ComplexTypeValidator Period per-1', () => {
     expect(issues.some(issue => issue.code === 'business-invalid-period-end')).toBe(false);
   });
 
+  it('reuses effective datatype elements across repeated indexed parent paths', async () => {
+    const codeableConceptSd = {
+      resourceType: 'StructureDefinition',
+      url: 'http://hl7.org/fhir/StructureDefinition/CodeableConcept',
+      name: 'CodeableConcept',
+      status: 'active',
+      kind: 'complex-type',
+      abstract: false,
+      type: 'CodeableConcept',
+      snapshot: {
+        element: [
+          { path: 'CodeableConcept' },
+          { path: 'CodeableConcept.coding', min: 0, max: '*', type: [{ code: 'Coding' }] },
+          { path: 'CodeableConcept.text', min: 0, max: '1', type: [{ code: 'string' }] },
+        ],
+      },
+    };
+    const localLoader = {
+      loadProfile: vi.fn().mockImplementation(async (url: string) =>
+        url.endsWith('/CodeableConcept') ? codeableConceptSd : null
+      ),
+    };
+    let parentPathReads = 0;
+    const parentStructureDef = {
+      resourceType: 'StructureDefinition',
+      url: 'http://hl7.org/fhir/StructureDefinition/Claim',
+      name: 'Claim',
+      status: 'active',
+      kind: 'resource',
+      abstract: false,
+      type: 'Claim',
+      snapshot: {
+        element: Array.from({ length: 100 }, (_, index) => ({
+          get path() {
+            parentPathReads += 1;
+            return `Claim.item.productOrService.extension${index}`;
+          },
+          min: 0,
+          max: '1',
+          type: [{ code: 'Extension' }],
+        })),
+      },
+    };
+    const validator = new ComplexTypeValidator(localLoader as any);
+    const elementDef = {
+      id: 'Claim.item.productOrService',
+      path: 'Claim.item.productOrService',
+      type: [{ code: 'CodeableConcept' }],
+    };
+
+    await validator.validateComplexTypeSubElements(
+      { text: 'one' },
+      elementDef,
+      'Claim.item[0].productOrService',
+      'http://hl7.org/fhir/StructureDefinition/Claim',
+      parentStructureDef as any,
+    );
+    const readsAfterFirstPath = parentPathReads;
+
+    await validator.validateComplexTypeSubElements(
+      { text: 'two' },
+      elementDef,
+      'Claim.item[1].productOrService',
+      'http://hl7.org/fhir/StructureDefinition/Claim',
+      parentStructureDef as any,
+    );
+
+    expect(readsAfterFirstPath).toBeGreaterThan(0);
+    expect(parentPathReads).toBe(readsAfterFirstPath);
+  });
+
   it('still reports truly backwards dateTime periods', async () => {
     const validator = new ComplexTypeValidator(sdLoader);
 
@@ -44,5 +115,65 @@ describe('ComplexTypeValidator Period per-1', () => {
     );
 
     expect(issues.some(issue => issue.code === 'business-invalid-period-end')).toBe(true);
+  });
+
+  it('does not report mixed date/dateTime periods when ordering is clearly valid', async () => {
+    const validator = new ComplexTypeValidator(sdLoader);
+
+    const issues = await validator.validateComplexTypeSubElements(
+      {
+        start: '2024-06-14',
+        end: '2026-06-29T05:43:22.238Z',
+      },
+      {
+        id: 'Encounter.period',
+        path: 'Encounter.period',
+        type: [{ code: 'Period' }],
+      },
+      'Encounter.period',
+      'http://hl7.org/fhir/StructureDefinition/Encounter',
+    );
+
+    expect(issues.some(issue => issue.code === 'business-invalid-period-end')).toBe(false);
+  });
+
+  it('reports mixed date/dateTime periods when start is definitely after end', async () => {
+    const validator = new ComplexTypeValidator(sdLoader);
+
+    const issues = await validator.validateComplexTypeSubElements(
+      {
+        start: '2026-06-30',
+        end: '2026-06-29T05:43:22.238Z',
+      },
+      {
+        id: 'Encounter.period',
+        path: 'Encounter.period',
+        type: [{ code: 'Period' }],
+      },
+      'Encounter.period',
+      'http://hl7.org/fhir/StructureDefinition/Encounter',
+    );
+
+    expect(issues.some(issue => issue.code === 'business-invalid-period-end')).toBe(true);
+  });
+
+  it('does not report mixed date/dateTime periods when their precision ranges overlap', async () => {
+    const validator = new ComplexTypeValidator(sdLoader);
+
+    const issues = await validator.validateComplexTypeSubElements(
+      {
+        start: '2026-06-29T23:00:00Z',
+        end: '2026-06-29',
+      },
+      {
+        id: 'Encounter.period',
+        path: 'Encounter.period',
+        type: [{ code: 'Period' }],
+      },
+      'Encounter.period',
+      'http://hl7.org/fhir/StructureDefinition/Encounter',
+    );
+
+    expect(issues.some(issue => issue.code === 'business-invalid-period-end')).toBe(false);
   });
 });

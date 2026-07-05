@@ -5,9 +5,13 @@ import {
   type BundleDocumentContextChildResult,
 } from './bundle-document-context';
 import type { AspectResult, MultiAspectValidateResult, ValidateOneFn } from './multi-aspect-types';
+import { BatchValidationAbortedError } from './batch-validator';
+import { logger } from '../logger';
+import { shouldSuppressBundleEntryIssue } from './bundle-entry-issue-filter';
 
-const DEFAULT_BUNDLE_ENTRY_VALIDATION_CONCURRENCY = 8;
+const DEFAULT_BUNDLE_ENTRY_VALIDATION_CONCURRENCY = 16;
 const MAX_BUNDLE_ENTRY_VALIDATION_CONCURRENCY = 64;
+const LARGE_BUNDLE_ENTRY_LOG_THRESHOLD = 100;
 
 interface BundleChildValidationResult {
   index: number;
@@ -24,7 +28,10 @@ export async function appendBundleEntryValidationResults(
   parentAspects: AspectResult[],
   parentStructureDef: StructureDefinition | undefined,
   transformDocumentContextIssues: (issues: ValidationIssue[]) => ValidationIssue[],
+  shouldStop?: () => boolean,
+  onEntryValidated?: (resource: Record<string, unknown>, result: MultiAspectValidateResult) => void | Promise<void>,
 ): Promise<void> {
+  throwIfStopped(shouldStop);
   const entries = Array.isArray(bundle.entry) ? bundle.entry : [];
   if (entries.length === 0) return;
 
@@ -53,16 +60,39 @@ export async function appendBundleEntryValidationResults(
 
   const childResults: BundleChildValidationResult[] = [];
   const concurrency = resolveBundleEntryValidationConcurrency();
+  const shouldLogLargeBundle = validationTargets.length >= LARGE_BUNDLE_ENTRY_LOG_THRESHOLD;
+  const startTime = Date.now();
+
+  if (shouldLogLargeBundle) {
+    logger.info(
+      `[RecordsValidator] Large Bundle entry validation: ${validationTargets.length} embedded resources ` +
+      `(concurrency=${concurrency}, depth=${recursionDepth})`,
+    );
+  }
 
   for (let i = 0; i < validationTargets.length; i += concurrency) {
+    throwIfStopped(shouldStop);
     const chunk = validationTargets.slice(i, i + concurrency);
-    const chunkResults = await Promise.all(chunk.map(async target => ({
-      index: target.index,
-      entryResource: target.entryResource,
-      resourceType: target.resourceType,
-      result: await validateOne(target.entryResource, target.profileUrl, fhirVersion, recursionDepth + 1, bundle),
-    })));
+    const chunkResults = await Promise.all(chunk.map(async target => {
+      const result = await validateBundleEntryTarget(target, validateOne, fhirVersion, recursionDepth, bundle, shouldStop);
+      await onEntryValidated?.(target.entryResource, result);
+      throwIfStopped(shouldStop);
+      return {
+        index: target.index,
+        entryResource: target.entryResource,
+        resourceType: target.resourceType,
+        result,
+      };
+    }));
     childResults.push(...chunkResults);
+    throwIfStopped(shouldStop);
+  }
+
+  if (shouldLogLargeBundle) {
+    logger.info(
+      `[RecordsValidator] Large Bundle entry validation completed in ${Date.now() - startTime}ms ` +
+      `(${validationTargets.length} embedded resources)`,
+    );
   }
 
   childResults.sort((a, b) => a.index - b.index);
@@ -70,6 +100,7 @@ export async function appendBundleEntryValidationResults(
     mergeEntryAspects(parentAspects, child.result.aspects, child.index, child.entryResource, child.resourceType);
   }
 
+  throwIfStopped(shouldStop);
   const documentContextIssues = transformDocumentContextIssues(
     buildBundleDocumentContextIssues(
       bundle,
@@ -79,6 +110,29 @@ export async function appendBundleEntryValidationResults(
   );
   if (documentContextIssues.length > 0) {
     appendIssuesToAspect(parentAspects, 'profile', documentContextIssues);
+  }
+}
+
+async function validateBundleEntryTarget(
+  target: {
+    entryResource: Record<string, unknown>;
+    profileUrl: string;
+  },
+  validateOne: ValidateOneFn,
+  fhirVersion: 'R4' | 'R5' | 'R6',
+  recursionDepth: number,
+  bundle: Record<string, unknown>,
+  shouldStop?: () => boolean,
+): Promise<MultiAspectValidateResult> {
+  throwIfStopped(shouldStop);
+  const result = await validateOne(target.entryResource, target.profileUrl, fhirVersion, recursionDepth + 1, bundle);
+  throwIfStopped(shouldStop);
+  return result;
+}
+
+function throwIfStopped(shouldStop?: () => boolean): void {
+  if (shouldStop?.()) {
+    throw new BatchValidationAbortedError();
   }
 }
 
@@ -116,9 +170,11 @@ function mergeEntryAspects(
   const prefix = bundleEntryResourcePrefix(entryIndex, entryResource, resourceType);
 
   for (const childAspect of childAspects) {
-    const rewrittenIssues = dedupeEntryIssues(childAspect.issues).map(issue =>
-      rewriteEntryIssue(issue, prefix, entryIndex, entryResource, resourceType),
-    );
+    const rewrittenIssues = dedupeEntryIssues(childAspect.issues)
+      .filter(issue => !shouldSuppressBundleEntryIssue(issue))
+      .map(issue =>
+        rewriteEntryIssue(issue, prefix, entryIndex, entryResource, resourceType),
+      );
     if (rewrittenIssues.length === 0) continue;
 
     let parentAspect = parentAspects.find(aspect => aspect.aspect === childAspect.aspect);

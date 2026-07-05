@@ -2,7 +2,7 @@
  * Tests for MetadataValidator (Refactored)
  */
 
-import { describe, it, expect, beforeEach, vi as _vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { MetadataValidator } from './metadata-validator-refactored';
 describe('MetadataValidator', () => {
   let validator: MetadataValidator;
@@ -223,6 +223,99 @@ describe('MetadataValidator', () => {
 
       // Should not throw, but return error issues
       expect(Array.isArray(issues)).toBe(true);
+    });
+
+    it('should fall back to local checks when the Records metadata engine import fails', async () => {
+      vi.resetModules();
+      vi.doMock('../index.js', () => {
+        throw new Error('simulated Records metadata engine import failure');
+      });
+
+      try {
+        const { MetadataValidator: IsolatedMetadataValidator } = await import('./metadata-validator-refactored');
+        const isolatedValidator = new IsolatedMetadataValidator();
+        const resource = {
+          resourceType: 'Patient',
+          id: '123'
+        };
+
+        const issues = await isolatedValidator.validate(resource, 'Patient', 'R4', undefined, {
+          aspects: {
+            metadata: {
+              engine: 'records'
+            }
+          }
+        });
+
+        expect(issues.some(issue => issue.code === 'metadata-validation-error')).toBe(false);
+        expect(issues.some(issue => issue.code === 'missing-meta')).toBe(true);
+      } finally {
+        vi.doUnmock('../index.js');
+        vi.resetModules();
+      }
+    });
+
+    it('should fall back to local checks when the Records metadata engine validation fails', async () => {
+      vi.resetModules();
+      vi.doMock('../index.js', () => ({
+        recordsValidator: {
+          isAvailable: () => true,
+          validateMetadata: async () => {
+            throw new Error('simulated Records metadata validation failure');
+          }
+        }
+      }));
+
+      try {
+        const { MetadataValidator: IsolatedMetadataValidator } = await import('./metadata-validator-refactored');
+        const isolatedValidator = new IsolatedMetadataValidator();
+        const resource = {
+          resourceType: 'Patient',
+          id: '123'
+        };
+
+        const issues = await isolatedValidator.validate(resource, 'Patient', 'R4', undefined, {
+          aspects: {
+            metadata: {
+              engine: 'records'
+            }
+          }
+        });
+
+        expect(issues.some(issue => issue.code === 'metadata-validation-error')).toBe(false);
+        expect(issues.some(issue => issue.code === 'missing-meta')).toBe(true);
+      } finally {
+        vi.doUnmock('../index.js');
+        vi.resetModules();
+      }
+    });
+
+    it('should use local metadata checks by default instead of delegating to Records', async () => {
+      vi.resetModules();
+      const validateMetadata = vi.fn().mockResolvedValue([]);
+      vi.doMock('../index.js', () => ({
+        recordsValidator: {
+          isAvailable: () => true,
+          validateMetadata,
+        }
+      }));
+
+      try {
+        const { MetadataValidator: IsolatedMetadataValidator } = await import('./metadata-validator-refactored');
+        const isolatedValidator = new IsolatedMetadataValidator();
+        const resource = {
+          resourceType: 'Patient',
+          id: '123'
+        };
+
+        const issues = await isolatedValidator.validate(resource, 'Patient', 'R4');
+
+        expect(validateMetadata).not.toHaveBeenCalled();
+        expect(issues.some(issue => issue.code === 'missing-meta')).toBe(true);
+      } finally {
+        vi.doUnmock('../index.js');
+        vi.resetModules();
+      }
     });
 
     it('should include all required fields in ValidationIssue', async () => {

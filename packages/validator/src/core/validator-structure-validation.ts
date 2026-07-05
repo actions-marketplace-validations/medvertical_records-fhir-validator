@@ -11,6 +11,7 @@ import {
   createProfileResourceTypeMismatchIssue,
   getIncompatibleProfileResourceType,
 } from './profile-resource-type';
+import { withIssuesSchemaVersion } from './issue-schema-version';
 
 interface ValidateStructureDeps {
   sdLoader: StructureDefinitionLoader;
@@ -37,7 +38,7 @@ export async function validateResourceStructure(
 
   try {
     if (!resource.resourceType) {
-      return [{
+      return withIssuesSchemaVersion([{
         id: `records-missing-resourcetype-${Date.now()}`,
         aspect: 'structural',
         severity: 'error',
@@ -45,7 +46,7 @@ export async function validateResourceStructure(
         message: 'Resource is missing resourceType field',
         path: '',
         timestamp: new Date()
-      }];
+      }], fhirVersion);
     }
 
     const declaredProfiles = resource.meta?.profile || [];
@@ -63,14 +64,14 @@ export async function validateResourceStructure(
     const validationTime = Date.now() - startTime;
     logger.info(`[RecordsValidator] Validated structure in ${validationTime}ms (${issues.length} issues)`);
 
-    return issues;
+    return withIssuesSchemaVersion(issues, fhirVersion);
   } catch (error) {
     logger.error('[RecordsValidator] Structure validation error:', error);
-    return [createValidationErrorIssue(
+    return withIssuesSchemaVersion([createValidationErrorIssue(
       'structural',
       'validation-error',
       `Structure validation failed: ${error instanceof Error ? error.message : String(error)}`
-    )];
+    )], fhirVersion);
   }
 }
 
@@ -141,7 +142,9 @@ async function validatePostStructureRules(
     : undefined;
 
   const issues = [
-    ...deps.structuralExecutor.validateResourceIdAndArrays(resource, contextQ),
+    ...deps.structuralExecutor.validateResourceIdAndArrays(resource, contextQ, {
+      warnOnUnresolvedQuestionnaireReference: true,
+    }),
     ...(await deps.structuralExecutor.validateCompliesWith(resource, fhirVersion)),
   ];
 

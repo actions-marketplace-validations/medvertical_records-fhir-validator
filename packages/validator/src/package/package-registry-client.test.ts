@@ -22,12 +22,88 @@ describe('PackageRegistryClient package detection', () => {
     ).resolves.toBe('hl7.fhir.us.davinci-pdex');
   });
 
+  it('maps Da Vinci CRD canonicals to the CRD package id', async () => {
+    const client = new PackageRegistryClient();
+
+    await expect(
+      client.detectPackageForProfile('http://hl7.org/fhir/us/davinci-crd/R4/StructureDefinition/profile-devicerequest-r4'),
+    ).resolves.toBe('hl7.fhir.us.davinci-crd');
+  });
+
+  it('maps HL7 SDC canonicals to the SDC package id', async () => {
+    const client = new PackageRegistryClient();
+
+    await expect(
+      client.detectPackageForProfile('http://hl7.org/fhir/uv/sdc/StructureDefinition/sdc-questionnaireresponse'),
+    ).resolves.toBe('hl7.fhir.uv.sdc');
+  });
+
+  it('maps generic HL7 UV canonicals to their IG package id', async () => {
+    const client = new PackageRegistryClient();
+
+    await expect(
+      client.detectPackageForProfile('http://hl7.org/fhir/uv/vulcan-schedule/StructureDefinition/SOA-PlanDefinition'),
+    ).resolves.toBe('hl7.fhir.uv.vulcan-schedule');
+
+    await expect(
+      client.detectPackageForProfile('http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips'),
+    ).resolves.toBe('hl7.fhir.uv.ips');
+  });
+
+  it('resolves short canonical package versions to published SemVer package versions', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      name: 'hl7.fhir.uv.sdc',
+      'dist-tags': { latest: '4.0.0' },
+      versions: {
+        '2.7.0': {
+          name: 'hl7.fhir.uv.sdc',
+          version: '2.7.0',
+          fhirVersion: '4.0.1',
+          dist: { tarball: 'https://example.test/hl7.fhir.uv.sdc-2.7.0.tgz' },
+        },
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PackageRegistryClient();
+
+    await expect(
+      client.getPackageInfo('hl7.fhir.uv.sdc', '2.7'),
+    ).resolves.toMatchObject({
+      packageId: 'hl7.fhir.uv.sdc',
+      version: '2.7.0',
+      tarballUrl: 'https://example.test/hl7.fhir.uv.sdc-2.7.0.tgz',
+    });
+  });
+
   it('maps Nictiz NL R4 canonicals to the nl-core package id', async () => {
     const client = new PackageRegistryClient();
 
     await expect(
       client.detectPackageForProfile('http://nictiz.nl/fhir/StructureDefinition/zib-BodyTemperature'),
     ).resolves.toBe('nictiz.fhir.nl.r4.nl-core');
+  });
+
+  it('maps KBV EAU canonicals to the EAU package before the KBV basis fallback', async () => {
+    const client = new PackageRegistryClient();
+
+    await expect(
+      client.detectPackageForProfile('https://fhir.kbv.de/StructureDefinition/KBV_PR_EAU_Bundle|1.1.0'),
+    ).resolves.toBe('kbv.ita.eau');
+
+    await expect(
+      client.detectPackageForProfile('https://fhir.kbv.de/StructureDefinition/KBV_EX_EAU_7_weeks'),
+    ).resolves.toBe('kbv.ita.eau');
+  });
+
+  it('maps KBV FOR canonicals to the FOR package before the KBV basis fallback', async () => {
+    const client = new PackageRegistryClient();
+
+    await expect(
+      client.detectPackageForProfile('https://fhir.kbv.de/StructureDefinition/KBV_PR_FOR_Practitioner|1.1.0'),
+    ).resolves.toBe('kbv.ita.for');
   });
 
   it('maps Australian eRequesting canonicals before the AU base fallback', async () => {

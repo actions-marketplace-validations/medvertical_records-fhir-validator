@@ -62,9 +62,14 @@ export class BundleValidator {
             // 1. Validate Bundle structure
             const structureIssues = this.bundleResolver.validateBundleStructure(resource);
             for (const issue of structureIssues) {
+                const path = issue.path ?? (
+                    issue.entryIndex !== undefined
+                        ? `Bundle.entry[${issue.entryIndex}]`
+                        : 'Bundle'
+                );
                 issues.push(createValidationIssue({
                     code: issue.code,
-                    path: 'Bundle',
+                    path,
                     resourceType: 'Bundle',
                     customMessage: issue.message,
                     severityOverride: issue.severity,

@@ -39,6 +39,7 @@ import {
   filterDefinitionContextForFhirVersion,
   filterDefinitionsForFhirVersion,
 } from './extension-version-filter';
+import { selectDefinitionsForResourceContext } from './extension-context-selection';
 
 export type { ExtensionDefinition, ExtensionValidationContext } from './extension-types';
 
@@ -125,7 +126,14 @@ export class ExtensionValidator {
 
       // Pass 2: profile-driven cardinality + value/slice checks for slices
       // that are declared in the profile.
-      for (const [elementPath, definitionsByUrl] of definitionContext.byPath.entries()) {
+      for (const [elementPath, candidateDefinitionsByUrl] of definitionContext.byPath.entries()) {
+        const definitionsByUrl = selectDefinitionsForResourceContext(
+          candidateDefinitionsByUrl,
+          definitionContext.elements,
+          resource,
+        );
+        if (definitionsByUrl.size === 0) continue;
+
         const parentExtGroups = getExtensionGroupsByParent(resource, elementPath, context.getValueAtPath);
 
         for (const extensions of parentExtGroups) {
@@ -141,7 +149,7 @@ export class ExtensionValidator {
               : 'extension';
 
             const definition = normalizedUrl
-              ? definitionsByUrl.get(normalizedUrl) ?? definitionContext.byUrl.get(normalizedUrl)
+              ? definitionsByUrl.get(normalizedUrl)
               : undefined;
 
             const extIssues = await this.validateExtensionInstance(

@@ -26,7 +26,7 @@ export interface CustomRuleValidationContext {
 
 export class CustomRuleExecutor {
     private ruleCache = new Map<string, { expiresAt: number; promise: Promise<EngineCustomRule[]> }>();
-    private static readonly RULE_CACHE_TTL_MS = 30_000;
+    private static readonly RULE_CACHE_TTL_MS = 5 * 60_000;
     private static readonly RULE_LOAD_TIMEOUT_MS = 250;
 
     private async loadRules(resourceType: string, organizationId?: number): Promise<EngineCustomRule[]> {

@@ -10,6 +10,7 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
+import { getPrimitiveSidecar } from '../core/fhir-primitive-sidecar';
 
 // ============================================================================
 // Universal Constraints Validator
@@ -56,12 +57,16 @@ export class UniversalConstraintsValidator {
             return issues;
         }
 
-        // Check for empty objects (no value and no children)
-        // Exclude primitive extensions (_field) and certain exceptions
+        // Check for empty objects (no value and no children).
+        // Primitive sidecars (_field) count as children only when they carry
+        // meaningful FHIR content such as id or extensions.
         const keys = Object.keys(obj).filter(k => !k.startsWith('_'));
+        const primitiveSidecarKeys = Object.keys(obj).filter(k =>
+            k.startsWith('_') && k.length > 1 && getPrimitiveSidecar(obj, k.slice(1)) !== undefined
+        );
 
         // Empty object check
-        if (keys.length === 0 && !path.endsWith(']')) {
+        if (keys.length === 0 && primitiveSidecarKeys.length === 0 && !path.endsWith(']')) {
             // Allow empty at root level or in certain contexts
             if (path !== resourceType && !path.includes('.extension')) {
                 issues.push(createValidationIssue({
@@ -78,6 +83,13 @@ export class UniversalConstraintsValidator {
         for (const key of keys) {
             if (typeof obj[key] === 'object' && obj[key] !== null) {
                 issues.push(...this.validateEle1(obj[key], resourceType, `${path}.${key}`));
+            }
+        }
+        for (const key of primitiveSidecarKeys) {
+            const childPath = `${path}.${key.slice(1)}`;
+            const sidecar = getPrimitiveSidecar(obj, key.slice(1));
+            if (sidecar && typeof sidecar === 'object') {
+                issues.push(...this.validateEle1(sidecar, resourceType, childPath));
             }
         }
 
@@ -107,12 +119,13 @@ export class UniversalConstraintsValidator {
             const ref = obj.reference;
 
             if (typeof ref === 'string' && ref.length > 0) {
-                // ref-1: reference must start with # (contained) or contain / (resource reference)
+                // ref-1: reference must be a fragment, URL/relative URL, or URN.
                 const isFragment = ref.startsWith('#');
                 const isLiteralUrl = ref.includes('/');
+                const isConditionalReference = /^[A-Z][a-zA-Z]+\?.+$/.test(ref);
                 const isUrn = ref.startsWith('urn:');
 
-                if (!isFragment && !isLiteralUrl && !isUrn) {
+                if (!isFragment && !isLiteralUrl && !isConditionalReference && !isUrn) {
                     issues.push(createValidationIssue({
                         code: 'ref-1-violation',
                         path: `${path}.reference`,

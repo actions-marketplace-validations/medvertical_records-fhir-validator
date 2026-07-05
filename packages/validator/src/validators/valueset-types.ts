@@ -72,6 +72,23 @@ export interface TerminologyResolutionConfig {
         validateCodes: boolean;
         cacheResults: boolean;
         cacheTTLSeconds: number;
+        /**
+         * Per-request timeout for remote terminology operations. Local
+         * terminology/package checks are unaffected.
+         */
+        requestTimeoutMs?: number;
+        /**
+         * Treat successful remote responses slower than this threshold as
+         * availability failures for circuit-breaker purposes. Set to 0 to
+         * disable slow-response circuiting.
+         */
+        slowResponseThresholdMs?: number;
+        /**
+         * Maximum direct remote CodeSystem validations per configured
+         * validator instance. Exhaustion fails open and leaves local
+         * CodeSystem/package validation unaffected.
+         */
+        maxRemoteCodeSystemValidations?: number;
     };
     twoPhaseExpansion?: {
         enabled: boolean;

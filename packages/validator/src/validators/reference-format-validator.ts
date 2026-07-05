@@ -13,64 +13,7 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
-
-// ============================================================================
-// Known FHIR Resource Types
-// ============================================================================
-
-const FHIR_RESOURCE_TYPES = new Set([
-    // Administrative
-    'Patient', 'Practitioner', 'PractitionerRole', 'Organization', 'Location',
-    'HealthcareService', 'Endpoint', 'RelatedPerson', 'Person', 'Group',
-
-    // Clinical
-    'Condition', 'Observation', 'Procedure', 'DiagnosticReport', 'Specimen',
-    'ImagingStudy', 'AllergyIntolerance', 'CarePlan', 'CareTeam', 'Goal',
-    'NutritionOrder', 'RiskAssessment', 'DetectedIssue', 'ClinicalImpression',
-    'FamilyMemberHistory', 'Immunization', 'ImmunizationRecommendation',
-
-    // Medications
-    'Medication', 'MedicationRequest', 'MedicationAdministration',
-    'MedicationDispense', 'MedicationStatement', 'MedicationKnowledge',
-
-    // Encounters
-    'Encounter', 'Appointment', 'AppointmentResponse', 'Schedule', 'Slot',
-    'EpisodeOfCare', 'Flag', 'Account', 'ChargeItem', 'ChargeItemDefinition',
-
-    // Documents
-    'DocumentReference', 'DocumentManifest', 'Composition', 'Binary',
-    'QuestionnaireResponse', 'Questionnaire', 'Communication',
-    'CommunicationRequest', 'Task', 'ServiceRequest',
-
-    // Financial
-    'Claim', 'ClaimResponse', 'Coverage', 'CoverageEligibilityRequest',
-    'CoverageEligibilityResponse', 'EnrollmentRequest', 'EnrollmentResponse',
-    'ExplanationOfBenefit', 'Invoice', 'PaymentNotice', 'PaymentReconciliation',
-
-    // Bundles
-    'Bundle', 'List', 'Basic', 'Linkage', 'MessageHeader', 'OperationOutcome',
-    'Parameters', 'Subscription', 'SubscriptionStatus', 'SubscriptionTopic',
-
-    // Conformance
-    'CapabilityStatement', 'StructureDefinition', 'ImplementationGuide',
-    'SearchParameter', 'OperationDefinition', 'CompartmentDefinition',
-    'GraphDefinition', 'CodeSystem', 'ValueSet', 'ConceptMap', 'NamingSystem',
-    'TerminologyCapabilities', 'StructureMap', 'ExampleScenario',
-
-    // Security
-    'AuditEvent', 'Provenance', 'Consent', 'BiologicallyDerivedProduct',
-
-    // Devices
-    'Device', 'DeviceDefinition', 'DeviceMetric', 'DeviceRequest', 'DeviceUseStatement',
-
-    // Research
-    'ResearchStudy', 'ResearchSubject', 'Evidence', 'EvidenceVariable',
-
-    // Other
-    'Media', 'BodyStructure', 'MolecularSequence', 'Substance', 'SubstanceSpecification',
-    'Contract', 'InsurancePlan', 'MedicinalProduct', 'OrganizationAffiliation',
-    'VerificationResult', 'SupplyRequest', 'SupplyDelivery', 'VisionPrescription',
-]);
+import { KNOWN_FHIR_RESOURCE_TYPES } from '../reference/reference-resource-types';
 
 // ============================================================================
 // Reference Format Patterns
@@ -147,7 +90,8 @@ export class ReferenceFormatValidator {
             // non-conformant (FHIR expects ResourceType/id) but commonly
             // used in IG example resources. Downgrade to warning.
             const isBareId = /^[A-Za-z0-9\-.]+$/.test(ref);
-            const severity = isBareId ? 'warning' : 'error';
+            const isNonCanonicalUuidUrn = ref.toLowerCase().startsWith('urn:uuid:') && REFERENCE_PATTERNS.urnGeneral.test(ref);
+            const severity = isBareId || isNonCanonicalUuidUrn ? 'warning' : 'error';
             logger.debug(`[ReferenceFormatValidator] Invalid reference format: ${ref}`);
             issues.push(createValidationIssue({
                 code: 'reference-invalid-format',
@@ -167,7 +111,7 @@ export class ReferenceFormatValidator {
             const match = ref.match(REFERENCE_PATTERNS.relative);
             if (match && match[1]) {
                 const refResourceType = match[1];
-                if (!FHIR_RESOURCE_TYPES.has(refResourceType)) {
+                if (!KNOWN_FHIR_RESOURCE_TYPES.has(refResourceType)) {
                     logger.debug(`[ReferenceFormatValidator] Unknown resource type in reference: ${refResourceType}`);
                     issues.push(createValidationIssue({
                         code: 'reference-type-unknown',
@@ -223,7 +167,7 @@ export class ReferenceFormatValidator {
 
         if (typeof obj === 'object') {
             // Check if this is a Reference object
-            if (obj.reference !== undefined) {
+            if (obj.reference !== undefined && !isFhirExpression(obj)) {
                 const refIssues = this.validateReferenceString(
                     obj.reference,
                     path,
@@ -242,6 +186,15 @@ export class ReferenceFormatValidator {
             }
         }
     }
+}
+
+function isFhirExpression(obj: Record<string, unknown>): boolean {
+    if (typeof obj.reference !== 'string') return false;
+
+    return typeof obj.language === 'string'
+        || typeof obj.expression === 'string'
+        || typeof obj.name === 'string'
+        || typeof obj.description === 'string';
 }
 
 // Export singleton instance

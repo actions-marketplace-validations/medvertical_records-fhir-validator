@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   createEhds2026ValidationSettings,
   createMii2026ValidationSettings,
+  FHIR_CORE_EXTENSION_PACKAGE_SET,
+  FHIR_CORE_EXTENSION_PACKAGE_VERSIONS,
+  FHIR_CORE_TERMINOLOGY_PACKAGE_SET,
+  FHIR_CORE_TERMINOLOGY_PACKAGE_VERSIONS,
   HL7_EU_EHDS_2026_PACKAGE_SET,
   HL7_EU_EHDS_2026_PACKAGE_VERSIONS,
   HL7_EU_EPS_XTEHR_REFERENCE_PACKAGE,
@@ -10,6 +14,28 @@ import {
 } from '../index';
 
 describe('MII 2026 validation preset', () => {
+  it('pins core terminology packages for deterministic local binding checks', () => {
+    expect(FHIR_CORE_TERMINOLOGY_PACKAGE_SET)
+      .toHaveLength(Object.keys(FHIR_CORE_TERMINOLOGY_PACKAGE_VERSIONS).length);
+    expect(FHIR_CORE_TERMINOLOGY_PACKAGE_SET).toContainEqual({
+      id: 'hl7.terminology.r5',
+      version: '7.1.0'
+    });
+  });
+
+  it('pins core extension packages for deterministic local extension checks', () => {
+    expect(FHIR_CORE_EXTENSION_PACKAGE_SET)
+      .toHaveLength(Object.keys(FHIR_CORE_EXTENSION_PACKAGE_VERSIONS).length);
+    expect(FHIR_CORE_EXTENSION_PACKAGE_SET).toContainEqual({
+      id: 'hl7.fhir.uv.extensions.r4',
+      version: '5.3.0'
+    });
+    expect(FHIR_CORE_EXTENSION_PACKAGE_SET).toContainEqual({
+      id: 'hl7.fhir.uv.extensions.r5',
+      version: '5.3.0'
+    });
+  });
+
   it('keeps the package pin set in sync with the version map', () => {
     expect(MII_2026_PACKAGE_SET).toHaveLength(Object.keys(MII_2026_PACKAGE_VERSIONS).length);
     expect(MII_2026_PACKAGE_SET).toContainEqual({

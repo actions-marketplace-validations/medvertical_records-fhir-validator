@@ -51,4 +51,36 @@ describe('BundleReferenceResolver — contained reference handling', () => {
     expect(unresolved.length).toBeGreaterThan(0);
     expect(unresolved[0].message).toContain('Patient/missing');
   });
+
+  it('does not flag relative references in collection bundles as missing from the bundle', () => {
+    const bundle = {
+      resourceType: 'Bundle',
+      type: 'collection',
+      entry: [
+        {
+          fullUrl: 'https://example.com/base/DiagnosticReport/16',
+          resource: {
+            resourceType: 'DiagnosticReport',
+            id: '16',
+            status: 'final',
+            code: { text: 'x' },
+            subject: { reference: 'Patient/9' },
+          },
+        },
+        {
+          fullUrl: 'https://example.com/base/Observation/o1-16',
+          resource: {
+            resourceType: 'Observation',
+            id: 'o1-16',
+            status: 'final',
+            code: { text: 'x' },
+            subject: { reference: 'Patient/9' },
+          },
+        },
+      ],
+    };
+    const { issues } = resolver.validateBundleReferencesOptimized(bundle);
+    const unresolved = issues.filter(i => i.code === 'unresolved-bundle-reference');
+    expect(unresolved).toHaveLength(0);
+  });
 });

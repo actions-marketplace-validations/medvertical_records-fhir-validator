@@ -726,6 +726,7 @@ describe('TerminologyExecutor', () => {
         '394712000',
         'http://snomed.info/sct',
         'Urine microscopy (procedure)',
+        'R4',
       );
       expect(issues).toHaveLength(1);
       expect(issues[0]).toEqual(expect.objectContaining({
@@ -832,6 +833,7 @@ describe('TerminologyExecutor', () => {
         '183452005',
         'http://snomed.info/sct',
         'Encounter Inpatient',
+        'R4',
       );
       expect(issues).toHaveLength(1);
       expect(issues[0]).toEqual(expect.objectContaining({
@@ -894,14 +896,14 @@ describe('TerminologyExecutor', () => {
         1,
         mockContext.resource.identifier[0].type,
         binding,
-        'Patient.identifier.type',
+        'Patient.identifier[0].type',
         { profileUrl: mockStructureDef.url, fhirVersion: 'R4' },
       );
       expect(validatorInstance.validateBinding).toHaveBeenNthCalledWith(
         2,
         mockContext.resource.identifier[1].type,
         binding,
-        'Patient.identifier.type',
+        'Patient.identifier[1].type',
         { profileUrl: mockStructureDef.url, fhirVersion: 'R4' },
       );
     });
@@ -1185,7 +1187,7 @@ describe('TerminologyExecutor', () => {
       expect(issues[0]).toEqual(expect.objectContaining({
         severity: 'warning',
         code: 'terminology-display-mismatch',
-        path: 'Observation.value[x].coding[0].display',
+        path: 'Observation.valueCodeableConcept.coding[0].display',
       }));
     });
 
@@ -1403,14 +1405,14 @@ describe('TerminologyExecutor', () => {
         1,
         codeableConceptArray[0],
         expect.any(Object),
-        'Observation.component.code',
+        'Observation.component[0].code',
         expect.any(Object),
       );
       expect(validateBindingSpy).toHaveBeenNthCalledWith(
         2,
         codeableConceptArray[1],
         expect.any(Object),
-        'Observation.component.code',
+        'Observation.component[1].code',
         expect.any(Object),
       );
       validateBindingSpy.mockRestore();
@@ -2146,8 +2148,13 @@ describe('TerminologyExecutor', () => {
       const issues = await executor.validate(mockContext);
 
       expect(issues).toContainEqual(expect.objectContaining({
-        code: 'not-found',
+        code: 'terminology-codesystem-unresolvable',
         path: 'Observation.code.coding[0].system',
+        details: expect.objectContaining({
+          code: 'GroßesBlutbild',
+          system: 'http://example.org/fhir/CodeSystem/LabTests',
+          fieldPath: 'Observation.code.coding[0].system',
+        }),
       }));
       expect(issues).not.toContainEqual(expect.objectContaining({
         path: 'Observation.code.coding.coding[0].system',
@@ -2179,7 +2186,74 @@ describe('TerminologyExecutor', () => {
       expect(issues).toContainEqual(expect.objectContaining({
         severity: 'warning',
         code: 'terminology-coding-missing-system',
-        path: 'Observation.value[x].coding[0]',
+        path: 'Observation.valueCodeableConcept.coding[0]',
+        details: expect.objectContaining({
+          code: 'ORIGINAL',
+          fieldPath: 'Observation.valueCodeableConcept.coding[0]',
+        }),
+      }));
+    });
+
+    it('reports Questionnaire-local answer option codings without system as information', async () => {
+      mockStructureDef.type = 'Questionnaire';
+      mockStructureDef.snapshot!.element = [];
+      mockContext.resource = {
+        resourceType: 'Questionnaire',
+        status: 'active',
+        item: [{
+          linkId: 'choice',
+          type: 'choice',
+          answerOption: [{
+            valueCoding: {
+              code: 'yes',
+              display: 'Yes',
+            },
+          }],
+        }],
+      };
+
+      const issues = await executor.validate(mockContext);
+
+      expect(issues).toContainEqual(expect.objectContaining({
+        severity: 'information',
+        code: 'terminology-coding-missing-system',
+        path: 'Questionnaire.item[0].answerOption[0].valueCoding',
+        details: expect.objectContaining({
+          code: 'yes',
+          fieldPath: 'Questionnaire.item[0].answerOption[0].valueCoding',
+        }),
+      }));
+    });
+
+    it('reports Questionnaire enableWhen answerCoding without system as information', async () => {
+      mockStructureDef.type = 'Questionnaire';
+      mockStructureDef.snapshot!.element = [];
+      mockContext.resource = {
+        resourceType: 'Questionnaire',
+        status: 'active',
+        item: [{
+          linkId: 'follow-up',
+          type: 'boolean',
+          enableWhen: [{
+            question: 'choice',
+            operator: '=',
+            answerCoding: {
+              code: 'yes',
+            },
+          }],
+        }],
+      };
+
+      const issues = await executor.validate(mockContext);
+
+      expect(issues).toContainEqual(expect.objectContaining({
+        severity: 'information',
+        code: 'terminology-coding-missing-system',
+        path: 'Questionnaire.item[0].enableWhen[0].answerCoding',
+        details: expect.objectContaining({
+          code: 'yes',
+          fieldPath: 'Questionnaire.item[0].enableWhen[0].answerCoding',
+        }),
       }));
     });
 
@@ -2208,7 +2282,7 @@ describe('TerminologyExecutor', () => {
       expect(issues).toContainEqual(expect.objectContaining({
         severity: 'error',
         code: 'terminology-code-invalid',
-        path: 'Observation.value[x].coding[0].code',
+        path: 'Observation.valueCodeableConcept.coding[0].code',
       }));
     });
 
@@ -2344,6 +2418,10 @@ describe('TerminologyExecutor', () => {
         severity: 'warning',
         code: 'terminology-coding-missing-system',
         path: 'ImagingStudy.series[0].extension[0].extension[0].valueCodeableConcept.coding[1]',
+        details: expect.objectContaining({
+          code: 'ORIGINAL',
+          fieldPath: 'ImagingStudy.series[0].extension[0].extension[0].valueCodeableConcept.coding[1]',
+        }),
       }));
     });
 
@@ -2400,11 +2478,11 @@ describe('TerminologyExecutor', () => {
       const issues = await executor.validate(mockContext);
 
       expect(issues).not.toContainEqual(expect.objectContaining({
-        code: 'not-found',
+        code: 'terminology-codesystem-unresolvable',
         path: 'Observation.code.coding[0].system',
       }));
       expect(issues).not.toContainEqual(expect.objectContaining({
-        code: 'not-found',
+        code: 'terminology-codesystem-unresolvable',
         path: 'Observation.code.coding[1].system',
       }));
     });
@@ -2435,7 +2513,7 @@ describe('TerminologyExecutor', () => {
       const issues = await executor.validate(mockContext);
 
       expect(issues).not.toContainEqual(expect.objectContaining({
-        code: 'not-found',
+        code: 'terminology-codesystem-unresolvable',
         path: 'Procedure.code.coding[0].system',
       }));
     });
@@ -2525,7 +2603,7 @@ describe('TerminologyExecutor', () => {
 
       const issues = await executor.validate(mockContext);
 
-      expect(issues.filter(issue => issue.code === 'not-found')).toHaveLength(0);
+      expect(issues.filter(issue => issue.code === 'terminology-codesystem-unresolvable')).toHaveLength(0);
     });
   });
 });

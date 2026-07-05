@@ -57,6 +57,30 @@ describe('buildTerminologyResolutionConfig', () => {
     })]);
   });
 
+  it('preserves default server delegation when settings omit explicit delegation flags', () => {
+    const settings = {
+      terminologyServers: [{
+        id: 'tx',
+        url: 'https://tx.example/fhir',
+        enabled: true,
+        circuitOpen: false,
+        fhirVersions: ['R4'],
+      }],
+      terminologyResolution: {
+        strategy: 'local-first',
+      },
+    } as ValidationSettings;
+
+    const config = buildTerminologyResolutionConfig(settings);
+
+    expect(config.serverDelegation).toEqual({
+      expandValueSets: true,
+      validateCodes: true,
+      cacheResults: true,
+      cacheTTLSeconds: 3600,
+    });
+  });
+
   it('selects the first enabled closed terminology server as primary', () => {
     const settings = {
       terminologyServers: [
@@ -124,7 +148,11 @@ describe('buildTerminologyResolutionConfig', () => {
 
     expect(config.serverUrl).toBe('https://healthy.example/fhir');
     expect(config.strategy).toBe('server-first');
-    expect(config.serverDelegation).toEqual({
+    expect(config.serverDelegation).toMatchObject({
+      expandValueSets: true,
+      validateCodes: true,
+      cacheResults: true,
+      cacheTTLSeconds: 3600,
       enabled: true,
       maxRequestsPerRun: 25,
     });

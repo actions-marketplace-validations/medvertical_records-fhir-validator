@@ -155,6 +155,9 @@ export const TerminologyResolutionSchema = z.object({
         validateCodes: z.boolean(),
         cacheResults: z.boolean(),
         cacheTTLSeconds: z.number(),
+        requestTimeoutMs: z.number().optional(),
+        slowResponseThresholdMs: z.number().optional(),
+        maxRemoteCodeSystemValidations: z.number().optional(),
     }).optional(),
     twoPhaseExpansion: z.object({
         enabled: z.boolean(),

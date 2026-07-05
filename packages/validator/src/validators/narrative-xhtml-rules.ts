@@ -10,7 +10,7 @@ const ALLOWED_ELEMENTS = new Set([
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'ul', 'ol', 'li', 'dl', 'dt', 'dd',
     'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col',
-    'b', 'i', 'u', 'em', 'strong', 'small', 'big', 'sub', 'sup', 'tt', 'code', 'pre',
+    'b', 'i', 'u', 's', 'strike', 'em', 'strong', 'small', 'big', 'sub', 'sup', 'tt', 'code', 'pre',
     'blockquote', 'q', 'dfn', 'abbr', 'acronym', 'cite', 'samp', 'kbd', 'var', 'ins', 'del',
     'a', 'img',
     'hr',
@@ -280,11 +280,9 @@ function findInvalidAttributes(div: string): Array<{ element: string; attribute:
     while ((match = tagRegex.exec(div)) !== null) {
         const tagName = match[2].toLowerCase();
         const attrString = match[3];
-        const attrRegex = /([a-zA-Z][a-zA-Z0-9-_:]*)\s*=/g;
-        let attrMatch;
 
-        while ((attrMatch = attrRegex.exec(attrString)) !== null) {
-            const attrName = attrMatch[1].toLowerCase();
+        for (const attrNameRaw of parseTagAttributeNames(attrString)) {
+            const attrName = attrNameRaw.toLowerCase();
             if (attrName.startsWith('xmlns')) continue;
 
             const globalAllowed = ALLOWED_ATTRIBUTES['*'];
@@ -297,4 +295,69 @@ function findInvalidAttributes(div: string): Array<{ element: string; attribute:
     }
 
     return invalid;
+}
+
+function parseTagAttributeNames(attrString: string): string[] {
+    const attributes: string[] = [];
+    let index = 0;
+
+    while (index < attrString.length) {
+        index = skipWhitespace(attrString, index);
+        if (index >= attrString.length || attrString[index] === '/' || attrString[index] === '>') break;
+
+        const nameStart = index;
+        while (
+            index < attrString.length &&
+            !isWhitespace(attrString[index]) &&
+            attrString[index] !== '=' &&
+            attrString[index] !== '/' &&
+            attrString[index] !== '>'
+        ) {
+            index += 1;
+        }
+
+        if (index === nameStart) {
+            index += 1;
+            continue;
+        }
+
+        attributes.push(attrString.slice(nameStart, index));
+        index = skipWhitespace(attrString, index);
+
+        if (attrString[index] !== '=') continue;
+        index += 1;
+        index = skipWhitespace(attrString, index);
+
+        const quote = attrString[index];
+        if (quote === '"' || quote === "'") {
+            index += 1;
+            while (index < attrString.length && attrString[index] !== quote) {
+                index += 1;
+            }
+            if (index < attrString.length) index += 1;
+            continue;
+        }
+
+        while (
+            index < attrString.length &&
+            !isWhitespace(attrString[index]) &&
+            attrString[index] !== '/' &&
+            attrString[index] !== '>'
+        ) {
+            index += 1;
+        }
+    }
+
+    return attributes;
+}
+
+function skipWhitespace(value: string, index: number): number {
+    while (index < value.length && isWhitespace(value[index])) {
+        index += 1;
+    }
+    return index;
+}
+
+function isWhitespace(value: string | undefined): boolean {
+    return value === ' ' || value === '\n' || value === '\r' || value === '\t' || value === '\f';
 }

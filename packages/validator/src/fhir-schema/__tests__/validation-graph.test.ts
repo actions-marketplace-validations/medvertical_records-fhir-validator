@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
+import {
+  FHIR_SCHEMA_RUNTIME_POLICY,
+  isFhirSchemaDefaultRuntimeEnabled,
+} from '../index';
 import { convertToFHIRSchema } from '../sd-to-fhir-schema';
 import { compileFHIRSchemaToValidationGraph } from '../validation-graph-compiler';
 import { validateResourceWithGraph } from '../validation-graph-executor';
 
 describe('FHIR Schema validation graph', () => {
+  it('keeps the graph path explicitly evidence-only', () => {
+    expect(isFhirSchemaDefaultRuntimeEnabled()).toBe(false);
+    expect(FHIR_SCHEMA_RUNTIME_POLICY.mode).toBe('evidence-only');
+    expect(FHIR_SCHEMA_RUNTIME_POLICY.promotionRequires).toContain('java-operationoutcome-confirmation');
+    expect(FHIR_SCHEMA_RUNTIME_POLICY.promotionRequires).toContain('no-open-dual-path-gate-failures');
+  });
+
   it('compiles schema elements, choices, fixed values, patterns, and slices into graph nodes', () => {
     const schema = convertToFHIRSchema({
       url: 'http://example.org/StructureDefinition/ObservationProfile',
@@ -92,6 +103,210 @@ describe('FHIR Schema validation graph', () => {
       'structural-choice-multiple',
       'profile-pattern-mismatch',
     ]));
+  });
+
+  it('accepts known canonical aliases for graph fixed-value checks', () => {
+    const schema = convertToFHIRSchema({
+      url: 'http://example.org/StructureDefinition/ProcedureStellungZurOp',
+      name: 'ProcedureStellungZurOp',
+      type: 'Procedure',
+      kind: 'resource',
+      snapshot: {
+        element: [
+          { path: 'Procedure', min: 0, max: '*' },
+          {
+            id: 'Procedure.extension',
+            path: 'Procedure.extension',
+            min: 0,
+            max: '*',
+            type: [{ code: 'Extension' }],
+            slicing: { discriminator: [{ type: 'value', path: 'url' }], rules: 'open' },
+          },
+          {
+            id: 'Procedure.extension:StellungZurOp',
+            path: 'Procedure.extension',
+            sliceName: 'StellungZurOp',
+            min: 0,
+            max: '*',
+            type: [{ code: 'Extension' }],
+          },
+          {
+            id: 'Procedure.extension:StellungZurOp.url',
+            path: 'Procedure.extension.url',
+            min: 1,
+            max: '1',
+            type: [{ code: 'uri' }],
+            fixedUri: 'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/StructureDefinition/mii-ex-onko-systemische-therapie-stellungzurop',
+          },
+          {
+            id: 'Procedure.extension:StellungZurOp.value[x]',
+            path: 'Procedure.extension.value[x]',
+            min: 0,
+            max: '1',
+            type: [{ code: 'CodeableConcept' }],
+          },
+          {
+            id: 'Procedure.extension:StellungZurOp.value[x].coding',
+            path: 'Procedure.extension.value[x].coding',
+            min: 0,
+            max: '*',
+            type: [{ code: 'Coding' }],
+          },
+          {
+            id: 'Procedure.extension:StellungZurOp.value[x].coding.system',
+            path: 'Procedure.extension.value[x].coding.system',
+            min: 1,
+            max: '1',
+            type: [{ code: 'uri' }],
+            fixedUri: 'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-therapie-stellungzurop',
+          },
+        ],
+      },
+    });
+    const graph = compileFHIRSchemaToValidationGraph(schema);
+    const resource = {
+      resourceType: 'Procedure',
+      extension: [{
+        url: 'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/StructureDefinition/mii-ex-onko-systemische-therapie-stellungzurop',
+        valueCodeableConcept: {
+          coding: [{
+            system: 'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-onko-therapie-stellungzurop',
+            code: 'A',
+          }],
+        },
+      }],
+    };
+
+    const issues = validateResourceWithGraph(resource, graph);
+    const wrongSystemIssues = validateResourceWithGraph({
+      ...resource,
+      extension: [{
+        ...resource.extension[0],
+        valueCodeableConcept: {
+          coding: [{
+            system: 'https://example.org/CodeSystem/other',
+            code: 'A',
+          }],
+        },
+      }],
+    }, graph);
+
+    expect(issues.find(issue => issue.code === 'profile-fixed-value-mismatch')).toBeUndefined();
+    expect(wrongSystemIssues).toContainEqual(expect.objectContaining({
+      code: 'profile-fixed-value-mismatch',
+      path: 'Procedure.extension:StellungZurOp.value.coding.system',
+    }));
+  });
+
+  it('counts primitive sidecar extensions as present for required primitive elements', () => {
+    const schema = convertToFHIRSchema({
+      url: 'http://example.org/StructureDefinition/MaskedPatient',
+      name: 'MaskedPatient',
+      type: 'Patient',
+      kind: 'resource',
+      snapshot: {
+        element: [
+          { path: 'Patient', min: 0, max: '*' },
+          {
+            id: 'Patient.identifier',
+            path: 'Patient.identifier',
+            min: 0,
+            max: '*',
+            type: [{ code: 'Identifier' }],
+            slicing: { discriminator: [{ type: 'pattern', path: '$this' }], rules: 'open' },
+          },
+          {
+            id: 'Patient.identifier:masked',
+            path: 'Patient.identifier',
+            sliceName: 'masked',
+            min: 0,
+            max: '1',
+            type: [{ code: 'Identifier' }],
+            patternIdentifier: {
+              type: {
+                coding: [{
+                  system: 'http://fhir.de/CodeSystem/identifier-type-de-basis',
+                  code: 'KVZ10',
+                }],
+              },
+            },
+          },
+          {
+            id: 'Patient.identifier:masked.value',
+            path: 'Patient.identifier.value',
+            min: 1,
+            max: '1',
+            type: [{ code: 'string' }],
+          },
+        ],
+      },
+    });
+    const graph = compileFHIRSchemaToValidationGraph(schema);
+    const maskedIdentifier = {
+      type: {
+        coding: [{
+          system: 'http://fhir.de/CodeSystem/identifier-type-de-basis',
+          code: 'KVZ10',
+        }],
+      },
+      _value: {
+        extension: [{
+          url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+          valueCode: 'masked',
+        }],
+      },
+    };
+
+    const issues = validateResourceWithGraph({
+      resourceType: 'Patient',
+      identifier: [maskedIdentifier],
+    }, graph);
+    const idSidecarIssues = validateResourceWithGraph({
+      resourceType: 'Patient',
+      identifier: [{
+        type: maskedIdentifier.type,
+        _value: { id: 'masked-value' },
+      }],
+    }, graph);
+    const missingIssues = validateResourceWithGraph({
+      resourceType: 'Patient',
+      identifier: [{ type: maskedIdentifier.type }],
+    }, graph);
+    const emptySidecarIssues = validateResourceWithGraph({
+      resourceType: 'Patient',
+      identifier: [{
+        type: maskedIdentifier.type,
+        _value: {},
+      }],
+    }, graph);
+    const emptyExtensionSidecarIssues = validateResourceWithGraph({
+      resourceType: 'Patient',
+      identifier: [{
+        type: maskedIdentifier.type,
+        _value: { extension: [] },
+      }],
+    }, graph);
+
+    expect(issues).not.toContainEqual(expect.objectContaining({
+      code: 'structural-required-element-missing',
+      path: 'Patient.identifier:masked.value',
+    }));
+    expect(idSidecarIssues).not.toContainEqual(expect.objectContaining({
+      code: 'structural-required-element-missing',
+      path: 'Patient.identifier:masked.value',
+    }));
+    expect(missingIssues).toContainEqual(expect.objectContaining({
+      code: 'structural-required-element-missing',
+      path: 'Patient.identifier:masked.value',
+    }));
+    expect(emptySidecarIssues).toContainEqual(expect.objectContaining({
+      code: 'structural-required-element-missing',
+      path: 'Patient.identifier:masked.value',
+    }));
+    expect(emptyExtensionSidecarIssues).toContainEqual(expect.objectContaining({
+      code: 'structural-required-element-missing',
+      path: 'Patient.identifier:masked.value',
+    }));
   });
 
   it('matches object patterns inside arrays as subset semantics', () => {
@@ -230,7 +445,7 @@ describe('FHIR Schema validation graph', () => {
     ]));
   });
 
-  it('does not match whole-element $this slices from child-only patterns', () => {
+  it('does not report unmatchable whole-element $this slices from child-only patterns', () => {
     const schema = convertToFHIRSchema({
       url: 'http://example.org/StructureDefinition/ObservationChildOnlyThisSliceProfile',
       name: 'ObservationChildOnlyThisSliceProfile',
@@ -276,7 +491,7 @@ describe('FHIR Schema validation graph', () => {
       },
     }, graph);
 
-    expect(issues).toContainEqual(expect.objectContaining({
+    expect(issues).not.toContainEqual(expect.objectContaining({
       code: 'profile-slice-min-cardinality',
       path: 'Observation.code.coding',
     }));

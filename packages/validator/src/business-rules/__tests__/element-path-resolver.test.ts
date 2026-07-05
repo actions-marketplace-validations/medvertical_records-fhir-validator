@@ -365,6 +365,21 @@ describe('Element Path Resolver', () => {
         expect(targets[0].isArrayElement).toBe(false);
       });
 
+      it('should expose concrete choice-type paths for resolved values', () => {
+        const condition = {
+          resourceType: 'Condition',
+          abatementString: 'around April 9, 2013',
+        };
+
+        const targets = getValidationTargets(condition, 'Condition.abatement[x]');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].value).toBe('around April 9, 2013');
+        expect(targets[0].fullPath).toBe('Condition.abatementString');
+        expect(targets[0].contextPath).toBe('Condition');
+        expect(targets[0].isArrayElement).toBe(false);
+      });
+
       it('should expand array into multiple targets', () => {
         const patient = {
           resourceType: 'Patient',

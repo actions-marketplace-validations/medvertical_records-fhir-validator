@@ -35,6 +35,7 @@ export interface ElementDefinition {
   min?: number;
   max?: string;
   type?: ElementType[];
+  contentReference?: string;
   constraint?: Constraint[];
   binding?: Binding;
   mustSupport?: boolean;

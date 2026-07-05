@@ -43,11 +43,13 @@ const SPECIAL_BACKBONE_KEYS = new Set([
 const CHOICE_TYPE_SUFFIXES = [
   'String', 'Boolean', 'Integer', 'Decimal', 'DateTime', 'Date', 'Time',
   'Instant', 'Uri', 'Url', 'Canonical', 'Base64Binary', 'Code', 'Oid', 'Id',
-  'Markdown', 'UnsignedInt', 'PositiveInt', 'Uuid', 'Quantity', 'Range',
-  'Ratio', 'Period', 'Coding', 'CodeableConcept', 'Identifier', 'Reference',
+  'Markdown', 'UnsignedInt', 'PositiveInt', 'Integer64', 'Uuid', 'Quantity', 'Range',
+  'Ratio', 'RatioRange', 'Period', 'Coding', 'CodeableConcept', 'CodeableReference', 'Identifier', 'Reference',
   'Attachment', 'Address', 'Age', 'Annotation', 'ContactPoint', 'Count',
   'Distance', 'Duration', 'HumanName', 'Money', 'SampledData', 'Signature',
-  'Timing',
+  'Timing', 'ContactDetail', 'Contributor', 'DataRequirement', 'Expression',
+  'ParameterDefinition', 'RelatedArtifact', 'TriggerDefinition', 'UsageContext',
+  'Dosage', 'Meta', 'Availability', 'ExtendedContactDetail', 'VirtualServiceDetail',
 ];
 
 const PRIMITIVE_TYPES = new Set([
@@ -92,7 +94,7 @@ export function buildSnapshotIndex(sd: StructureDefinition | undefined): Snapsho
     if (el.path.endsWith('[x]')) {
       const base = el.path.slice(0, -3);
       knownPaths.add(base);
-      for (const suffix of CHOICE_TYPE_SUFFIXES) {
+      for (const suffix of choiceSuffixesForElement(el)) {
         knownPaths.add(base + suffix);
         byPath.set(base + suffix, { type: suffix });
       }
@@ -101,6 +103,19 @@ export function buildSnapshotIndex(sd: StructureDefinition | undefined): Snapsho
     }
   }
   return { knownPaths, byPath };
+}
+
+function choiceSuffixesForElement(element: any): string[] {
+  const types = Array.isArray(element?.type) ? element.type : [];
+  const suffixes = types
+    .map((type: any) => typeof type?.code === 'string' ? typeCodeToChoiceSuffix(type.code) : null)
+    .filter((suffix: string | null): suffix is string => Boolean(suffix));
+  return suffixes.length > 0 ? Array.from(new Set(suffixes)) : CHOICE_TYPE_SUFFIXES;
+}
+
+function typeCodeToChoiceSuffix(typeCode: string): string {
+  const normalized = typeCode.includes('/') ? typeCode.slice(typeCode.lastIndexOf('/') + 1) : typeCode;
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
 export function makeWalkerDeps(
@@ -178,6 +193,10 @@ async function walk(
     const childPath = `${pathPrefix}.${key}`;
 
     if (!index.knownPaths.has(childPath)) {
+      if (isRoot && deps && await isKnownBaseResourcePath(childPath, pathPrefix, deps)) {
+        continue;
+      }
+
       issues.push(createValidationIssue({
         code: 'structural-unknown-element',
         path: childPath,
@@ -193,7 +212,7 @@ async function walk(
     const childValue = (value as any)[key];
 
     if (!info?.type) continue;
-    if (PRIMITIVE_TYPES.has(info.type)) continue;
+    if (isPrimitiveTypeInfo(info.type)) continue;
     if (RESOURCE_LIKE_TYPES.has(info.type)) continue;
 
     if (BACKBONE_LIKE_TYPES.has(info.type)) {
@@ -211,6 +230,14 @@ async function walk(
       }
     }
   }
+}
+
+function isPrimitiveTypeInfo(type: string): boolean {
+  if (PRIMITIVE_TYPES.has(type)) return true;
+  if (!type) return false;
+
+  const choicePrimitive = type.charAt(0).toLowerCase() + type.slice(1);
+  return PRIMITIVE_TYPES.has(choicePrimitive);
 }
 
 async function loadTypeIndex(
@@ -235,5 +262,33 @@ async function loadTypeIndex(
   } catch {
     deps.typeIndexCache.set(typeCode, null);
     return null;
+  }
+}
+
+async function isKnownBaseResourcePath(
+  childPath: string,
+  resourceType: string,
+  deps: WalkerDeps,
+): Promise<boolean> {
+  const cacheKey = `resource:${resourceType}`;
+  if (deps.typeIndexCache.has(cacheKey)) {
+    return deps.typeIndexCache.get(cacheKey)?.knownPaths.has(childPath) === true;
+  }
+
+  try {
+    const sd = await deps.sdLoader.loadProfile(
+      `${FHIR_DATATYPE_BASE_URL}${resourceType}`,
+      deps.fhirVersion,
+    );
+    if (!sd?.snapshot?.element?.length) {
+      deps.typeIndexCache.set(cacheKey, null);
+      return false;
+    }
+    const idx = buildSnapshotIndex(sd);
+    deps.typeIndexCache.set(cacheKey, idx);
+    return idx.knownPaths.has(childPath);
+  } catch {
+    deps.typeIndexCache.set(cacheKey, null);
+    return false;
   }
 }

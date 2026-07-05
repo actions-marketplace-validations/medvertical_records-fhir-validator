@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ProfileExecutor, type ProfileValidationContext } from '../profile-executor';
 import type { StructureDefinition, ElementDefinition } from '../../structure-definition-types';
 import type { ValidationIssue } from '../../../types';
+import { getValueAtPath as resolveValidationPath } from '../../validation-utils';
 
 // Mock dependencies
 vi.mock('../../../../validators/extension-validator', () => ({
@@ -444,9 +445,258 @@ describe('ProfileExecutor', () => {
       );
     });
 
-    it('should scope nested child slicing to pattern-matched parent slice items', async () => {
-      const systolic = {
-        code: {
+    it('should scope nested extension value slicing by parent Extension type.profile', async () => {
+      const assertedDateExtension = {
+        url: 'http://hl7.org/fhir/StructureDefinition/condition-assertedDate',
+        valueDateTime: '2022-09-29',
+      };
+      const dueToExtension = {
+        url: 'http://hl7.org/fhir/StructureDefinition/condition-dueTo',
+        valueCodeableConcept: {
+          coding: [{ system: 'http://snomed.info/sct', code: '123456' }],
+        },
+      };
+
+      mockContext.resource = {
+        resourceType: 'Condition',
+        extension: [dueToExtension, assertedDateExtension],
+      };
+      mockContext.resourceType = 'Condition';
+      mockContext.structureDef.type = 'Condition';
+      mockStructureDef.type = 'Condition';
+      mockContext.getValueAtPath = resolveValidationPath;
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'Condition.extension',
+          path: 'Condition.extension',
+          min: 1,
+          max: '7',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Festgestellt_am',
+          path: 'Condition.extension',
+          sliceName: 'Festgestellt_am',
+          min: 1,
+          type: [{
+            code: 'Extension',
+            profile: ['http://hl7.org/fhir/StructureDefinition/condition-assertedDate'],
+          }],
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Festgestellt_am.value[x]',
+          path: 'Condition.extension.value[x]',
+          slicing: {
+            discriminator: [{ type: 'type', path: '$this' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Festgestellt_am.value[x]:valueDateTime',
+          path: 'Condition.extension.value[x]',
+          sliceName: 'valueDateTime',
+          min: 1,
+          type: [{ code: 'dateTime' }],
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Ursache',
+          path: 'Condition.extension',
+          sliceName: 'Ursache',
+          type: [{
+            code: 'Extension',
+            profile: ['http://hl7.org/fhir/StructureDefinition/condition-dueTo'],
+          }],
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Ursache.value[x]',
+          path: 'Condition.extension.value[x]',
+          slicing: {
+            discriminator: [{ type: 'type', path: '$this' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Ursache.value[x]:valueCodeableConcept',
+          path: 'Condition.extension.value[x]',
+          sliceName: 'valueCodeableConcept',
+          min: 1,
+          type: [{ code: 'CodeableConcept' }],
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+      expect(validateSlicingSpy).toHaveBeenCalledWith(
+        [dueToExtension, assertedDateExtension],
+        'Condition.extension',
+        expect.anything(),
+        undefined,
+        'Condition.extension',
+        'R4',
+      );
+      expect(validateSlicingSpy).toHaveBeenCalledWith(
+        ['2022-09-29'],
+        'Condition.extension.value[x]',
+        expect.anything(),
+        undefined,
+        'Condition.extension:Festgestellt_am.value[x]',
+        'R4',
+      );
+      expect(validateSlicingSpy).toHaveBeenCalledWith(
+        [dueToExtension.valueCodeableConcept],
+        'Condition.extension.value[x]',
+        expect.anything(),
+        undefined,
+        'Condition.extension:Ursache.value[x]',
+        'R4',
+      );
+    });
+
+    it('should resolve primitive sidecar extensions for nested primitive extension slicing', async () => {
+      const ownNameExtension = {
+        url: 'http://hl7.org/fhir/StructureDefinition/humanname-own-name',
+        valueString: 'Topp-Gluecklich',
+      };
+
+      mockContext.resource = {
+        resourceType: 'Practitioner',
+        name: [{
+          use: 'official',
+          family: 'Topp-Gluecklich',
+          _family: { extension: [ownNameExtension] },
+        }],
+      };
+      mockContext.resourceType = 'Practitioner';
+      mockContext.structureDef.type = 'Practitioner';
+      mockStructureDef.type = 'Practitioner';
+      mockContext.getValueAtPath = resolveValidationPath;
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'Practitioner.name',
+          path: 'Practitioner.name',
+          min: 1,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'use' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Practitioner.name:name',
+          path: 'Practitioner.name',
+          sliceName: 'name',
+          min: 1,
+          max: '*',
+        } as ElementDefinition,
+        {
+          id: 'Practitioner.name:name.use',
+          path: 'Practitioner.name.use',
+          fixedCode: 'official',
+        } as ElementDefinition,
+        {
+          id: 'Practitioner.name:name.family.extension',
+          path: 'Practitioner.name.family.extension',
+          min: 1,
+          max: '3',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+    expect(validateSlicingSpy).toHaveBeenCalledWith(
+      [ownNameExtension],
+      'Practitioner.name.family.extension',
+      expect.anything(),
+      undefined,
+      'Practitioner.name:name.family.extension',
+      'R4',
+    );
+  });
+
+  it('should resolve repeating primitive sidecar extensions for nested primitive extension slicing', async () => {
+    const prefixQualifierExtension = {
+      url: 'http://hl7.org/fhir/StructureDefinition/iso21090-EN-qualifier',
+      valueCode: 'AC',
+    };
+
+    mockContext.resource = {
+      resourceType: 'Practitioner',
+      name: [{
+        use: 'official',
+        prefix: ['Dr. med.'],
+        _prefix: [{ extension: [prefixQualifierExtension] }],
+      }],
+    };
+    mockContext.resourceType = 'Practitioner';
+    mockContext.structureDef.type = 'Practitioner';
+    mockStructureDef.type = 'Practitioner';
+    mockContext.getValueAtPath = resolveValidationPath;
+    mockStructureDef.snapshot!.element = [
+      {
+        id: 'Practitioner.name',
+        path: 'Practitioner.name',
+        min: 1,
+        max: '*',
+        slicing: {
+          discriminator: [{ type: 'value', path: 'use' }],
+          rules: 'open',
+        },
+      } as ElementDefinition,
+      {
+        id: 'Practitioner.name:name',
+        path: 'Practitioner.name',
+        sliceName: 'name',
+        min: 1,
+        max: '*',
+      } as ElementDefinition,
+      {
+        id: 'Practitioner.name:name.use',
+        path: 'Practitioner.name.use',
+        fixedCode: 'official',
+      } as ElementDefinition,
+      {
+        id: 'Practitioner.name:name.prefix.extension',
+        path: 'Practitioner.name.prefix.extension',
+        min: 1,
+        max: '1',
+        slicing: {
+          discriminator: [{ type: 'value', path: 'url' }],
+          rules: 'closed',
+        },
+      } as ElementDefinition,
+    ];
+
+    const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+    mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+    await executor.validate(mockContext);
+
+    expect(validateSlicingSpy).toHaveBeenCalledWith(
+      [prefixQualifierExtension],
+      'Practitioner.name.prefix.extension',
+      expect.anything(),
+      undefined,
+      'Practitioner.name:name.prefix.extension',
+      'R4',
+    );
+  });
+
+  it('should scope nested child slicing to pattern-matched parent slice items', async () => {
+    const systolic = {
+      code: {
           coding: [
             { system: 'http://loinc.org', code: '8480-6' },
             { system: 'http://snomed.info/sct', code: '271649006' },

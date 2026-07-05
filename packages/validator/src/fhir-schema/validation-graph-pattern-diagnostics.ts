@@ -1,14 +1,14 @@
 import {
-  matchesPattern as matchesFhirPattern,
-  valuesMatch,
-} from '../validators/slice-utils';
+  graphPatternMatches,
+  graphValuesMatch,
+} from './validation-graph-value-matching';
 
 export function matchPatternWithDiagnostic(
   value: unknown,
   pattern: unknown,
   basePath: string,
 ): { matches: boolean; message?: string; path?: string } {
-  if (matchesFhirPattern(value, pattern)) {
+  if (graphPatternMatches(value, pattern)) {
     return { matches: true };
   }
 
@@ -44,7 +44,7 @@ function diagnosePatternMismatch(value: unknown, pattern: unknown, basePath: str
     }
 
     return {
-      matches: valuesMatch(value, pattern),
+      matches: graphValuesMatch(value, pattern),
       message: `Element '${basePath}' does not match pattern`,
       path: basePath,
     };

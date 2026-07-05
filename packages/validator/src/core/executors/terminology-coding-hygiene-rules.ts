@@ -13,6 +13,29 @@ function isCodingHygienePath(path: string): boolean {
   );
 }
 
+export function isValidFhirCodePrimitive(code: string): boolean {
+  return /^[^\s]+(?: [^\s]+)*$/.test(code);
+}
+
+function hasRawWhitespace(value: string): boolean {
+  return /\s/.test(value);
+}
+
+export function missingCodingSystemSeverity(
+  resourceType: string,
+  path: string,
+): 'warning' | 'information' {
+  if (resourceType !== 'Questionnaire') return 'warning';
+
+  const isQuestionnaireLocalChoiceCoding =
+    /\.answerOption\[\d+\]\.valueCoding$/.test(path) ||
+    /\.enableWhen\[\d+\]\.answerCoding$/.test(path) ||
+    /\.extension\[\d+\](?:\.extension\[\d+\])?\.valueCoding$/.test(path) ||
+    /\.extension\[\d+\](?:\.extension\[\d+\])?\.valueCodeableConcept\.coding\[\d+\]$/.test(path);
+
+  return isQuestionnaireLocalChoiceCoding ? 'information' : 'warning';
+}
+
 export function validateCodingHygiene(resource: any, existingIssues: ValidationIssue[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const seen = new Set(existingIssues.map(issue => `${issue.code}|${issue.path}`));
@@ -48,11 +71,50 @@ export function validateCodingHygiene(resource: any, existingIssues: ValidationI
     if (!value || typeof value !== 'object') return;
 
     if (typeof value.code === 'string' && !value.system && isCodingHygienePath(path)) {
+      const details: Record<string, unknown> = {
+        code: value.code,
+        fieldPath: path,
+      };
+      if (typeof value.display === 'string') {
+        details.display = value.display;
+      }
+
       pushOnce({
-        severity: 'warning',
+        severity: missingCodingSystemSeverity(root, path),
         code: 'terminology-coding-missing-system',
         message: 'Coding has no system. A code with no system has no defined meaning, and it cannot be validated. A system should be provided',
         path,
+        details,
+      });
+    }
+
+    if (typeof value.code === 'string' && isCodingHygienePath(path) && !isValidFhirCodePrimitive(value.code)) {
+      pushOnce({
+        severity: 'error',
+        code: 'terminology-code-invalid',
+        message: `The code '${value.code}' at ${path}.code is not valid (whitespace rules)`,
+        path: `${path}.code`,
+        details: {
+          code: value.code,
+          reason: 'code-whitespace',
+          fieldPath: `${path}.code`,
+        },
+      });
+    }
+
+    if (typeof value.system === 'string' && isCodingHygienePath(path) && hasRawWhitespace(value.system)) {
+      pushOnce({
+        severity: 'error',
+        code: 'terminology-code-invalid',
+        message: `The system '${value.system}' at ${path}.system is not valid (whitespace rules)`,
+        path: `${path}.system`,
+        details: {
+          code: typeof value.code === 'string' ? value.code : '',
+          system: value.system,
+          reason: 'system-whitespace',
+          fieldPath: `${path}.system`,
+          fixHint: `Remove whitespace from Coding.system '${value.system}'.`,
+        },
       });
     }
 

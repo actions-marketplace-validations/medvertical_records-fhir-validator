@@ -45,6 +45,28 @@ describe('QuestionnaireValidator — QuestionnaireResponse', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('can warn when a QuestionnaireResponse questionnaire reference is not resolved by the engine', () => {
+    const qr = {
+      resourceType: 'QuestionnaireResponse',
+      id: 'qr-unresolved-questionnaire',
+      status: 'completed',
+      questionnaire: 'Questionnaire/5497895',
+      item: [{ linkId: 'q1', answer: [{ valueString: 'hello' }] }],
+    };
+
+    const issues = validator.validateQuestionnaireResponse(qr, undefined, {
+      warnOnUnresolvedQuestionnaireReference: true,
+    });
+
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'questionnaire-reference-not-resolved',
+        path: 'QuestionnaireResponse.questionnaire',
+        severity: 'warning',
+      }),
+    ]));
+  });
+
   it('applies maxDecimalPlaces to decimal and quantity answers', () => {
     const questionnaire = {
       resourceType: 'Questionnaire',
@@ -132,5 +154,52 @@ describe('QuestionnaireValidator — Questionnaire', () => {
 
     const issues = validator.validateQuestionnaire(q);
     expect(issues).toHaveLength(0);
+  });
+
+  it('allows answerOption on FHIR answer-capable Questionnaire item types', () => {
+    const q = {
+      resourceType: 'Questionnaire',
+      id: 'q-answer-options',
+      status: 'active',
+      item: [
+        {
+          linkId: 'coding-question',
+          type: 'coding',
+          answerOption: [
+            { valueCoding: { system: 'http://loinc.org', code: 'LA32971-6', display: 'Met' } },
+          ],
+        },
+        {
+          linkId: 'string-question',
+          type: 'string',
+          answerOption: [
+            { valueString: 'Free text option' },
+          ],
+        },
+      ],
+    };
+
+    const issues = validator.validateQuestionnaire(q);
+    expect(issues.filter(i => i.code === 'questionnaire-invariant-que-5')).toHaveLength(0);
+  });
+
+  it('rejects answerOption on non-answer Questionnaire item types', () => {
+    const q = {
+      resourceType: 'Questionnaire',
+      id: 'q-invalid-answer-options',
+      status: 'active',
+      item: [
+        {
+          linkId: 'display-with-options',
+          type: 'display',
+          answerOption: [
+            { valueString: 'Invalid' },
+          ],
+        },
+      ],
+    };
+
+    const issues = validator.validateQuestionnaire(q);
+    expect(issues.filter(i => i.code === 'questionnaire-invariant-que-5')).toHaveLength(1);
   });
 });

@@ -20,6 +20,9 @@ import {
 import { sdFHIRPathExpressionCache } from './sd-fhirpath-expression-cache';
 import { constraintPassed } from './sd-fhirpath-result-utils';
 import { validateProfileRules } from './sd-profile-rules-validator';
+import { evaluateSpecialisedRootConstraint } from './sd-fhirpath-specialised-root-constraints';
+
+export { evaluateSpecialisedRootConstraint } from './sd-fhirpath-specialised-root-constraints';
 
 export interface SDFHIRPathContext {
     resource: any;
@@ -278,6 +281,14 @@ export class SDFHIRPathExecutor {
         // Skip constraints owned by a dedicated Records validator
         // (see `invariant-registry.ts`).
         if (InvariantRegistry.isSpecialised(constraint.key)) {
+            return issues;
+        }
+
+        const specialisedResult = evaluateSpecialisedRootConstraint(constraint.key, resource);
+        if (specialisedResult !== null) {
+            if (!specialisedResult) {
+                issues.push(this.createViolation(constraint, elementPath, resourceType, profileUrl));
+            }
             return issues;
         }
 

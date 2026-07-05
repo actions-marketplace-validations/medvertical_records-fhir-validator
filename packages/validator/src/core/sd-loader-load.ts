@@ -16,7 +16,11 @@ import type { ProfileSourcesConfig } from '../types';
 import { loadFromLocalCache } from './sd-loader-filesystem';
 import { checkDatabaseCache } from './sd-loader-db-cache';
 import { attemptAutoDownload, isPublicProfile } from './sd-loader-auto-download';
-import { cacheKeyForProfile, urlMatchesRequestedFhirVersion } from './sd-loader-version-utils';
+import {
+  cacheKeyForProfile,
+  normalizeVersionedCoreStructureDefinitionUrl,
+  urlMatchesRequestedFhirVersion,
+} from './sd-loader-version-utils';
 import { sanitizeProfile } from './sd-loader-profile-sanitizer';
 
 export interface LoadProfileContext {
@@ -50,19 +54,21 @@ export async function loadProfile(
     // Canonical pinning: if the URL is unversioned and we have a pinned
     // resolution, redirect to the versioned form. This makes runtime
     // resolution deterministic regardless of which packages are loaded.
-    const resolvedUrl = ctx.resolvePinnedCanonical(url);
+    if (!urlMatchesRequestedFhirVersion(url, fhirVersion)) {
+      const incompatibleCacheKey = cacheKeyForProfile(url, fhirVersion);
+      logger.debug(`[SDLoader] Skipping FHIR-version-incompatible profile URL: ${url} (${fhirVersion})`);
+      ctx.profileNotFound.add(incompatibleCacheKey);
+      return null;
+    }
+
+    const lookupUrl = normalizeVersionedCoreStructureDefinitionUrl(url, fhirVersion);
+    const resolvedUrl = ctx.resolvePinnedCanonical(lookupUrl);
 
     // Use version-specific cache key to avoid R4/R5 confusion
     const cacheKey = cacheKeyForProfile(resolvedUrl, fhirVersion);
 
     if (ctx.profileNotFound.has(cacheKey)) {
       logger.debug(`[SDLoader] Skipping profile load for ${cacheKey} (known not found)`);
-      return null;
-    }
-
-    if (!urlMatchesRequestedFhirVersion(resolvedUrl, fhirVersion)) {
-      logger.debug(`[SDLoader] Skipping FHIR-version-incompatible profile URL: ${resolvedUrl} (${fhirVersion})`);
-      ctx.profileNotFound.add(cacheKey);
       return null;
     }
 
@@ -73,25 +79,28 @@ export async function loadProfile(
     }
 
     // Check database cache (from ProfileResolver downloads)
-    const dbCachedProfile = await checkDatabaseCache(url, ctx.dbCacheNotFound, fhirVersion);
+    const dbCachedProfile = await checkDatabaseCache(resolvedUrl, ctx.dbCacheNotFound, fhirVersion);
     if (dbCachedProfile) {
       // Cache it in memory with version-specific key
       const sanitized = sanitizeProfile(dbCachedProfile);
       ctx.cache.set(cacheKey, sanitized);
-      ctx.availableProfiles.add(url);
+      ctx.availableProfiles.add(resolvedUrl);
+      if (lookupUrl !== resolvedUrl) ctx.availableProfiles.add(lookupUrl);
       ctx.profileNotFound.delete(cacheKey);
       return sanitized;
     }
 
     // If profile was not found in DB cache, skip filesystem check
     // (DB is the source of truth for downloaded profiles)
-    if (ctx.dbCacheNotFound.has(url)) {
-      logger.debug(`[SDLoader] Skipping filesystem check for ${url} (in negative cache)`);
+    if (ctx.dbCacheNotFound.has(resolvedUrl)) {
+      logger.debug(`[SDLoader] Skipping filesystem check for ${resolvedUrl} (in negative cache)`);
     }
 
     // Skip scanning for private profiles UNLESS they're in availableProfiles
-    const isInBundledProfiles = ctx.availableProfiles.has(url) || ctx.availableProfiles.has(resolvedUrl);
-    const publicProfile = isPublicProfile(url);
+    const isInBundledProfiles = ctx.availableProfiles.has(url) ||
+      ctx.availableProfiles.has(lookupUrl) ||
+      ctx.availableProfiles.has(resolvedUrl);
+    const publicProfile = isPublicProfile(lookupUrl);
 
     if (!publicProfile && !isInBundledProfiles) {
       logger.debug(`[SDLoader] Skipping filesystem/auto-download for private/custom profile: ${url}`);
@@ -113,7 +122,7 @@ export async function loadProfile(
       return existingLoad;
     }
 
-    const loadPromise = loadProfileFromKnownSources(ctx, url, resolvedUrl, cacheKey, fhirVersion).finally(() => {
+    const loadPromise = loadProfileFromKnownSources(ctx, url, lookupUrl, resolvedUrl, cacheKey, fhirVersion).finally(() => {
       ctx.profileLoadPromises.delete(cacheKey);
     });
 
@@ -126,15 +135,27 @@ export async function loadProfile(
   }
 }
 
+function hasExplicitCanonicalVersion(url: string): boolean {
+  const separatorIndex = url.indexOf('|');
+  return separatorIndex > 0 && separatorIndex < url.length - 1;
+}
+
 async function loadProfileFromKnownSources(
   ctx: LoadProfileContext,
   url: string,
+  lookupUrl: string,
   resolvedUrl: string,
   cacheKey: string,
   fhirVersion: 'R4' | 'R5' | 'R6',
 ): Promise<StructureDefinition | null> {
-  if (ctx.availableProfiles.has(url) || ctx.availableProfiles.has(resolvedUrl)) {
-    logger.debug(`[SDLoader] Profile found in availableProfiles, loading from filesystem: ${url}`);
+  const shouldTryFilesystem =
+    ctx.availableProfiles.has(url) ||
+    ctx.availableProfiles.has(lookupUrl) ||
+    ctx.availableProfiles.has(resolvedUrl) ||
+    hasExplicitCanonicalVersion(resolvedUrl);
+
+  if (shouldTryFilesystem) {
+    logger.debug(`[SDLoader] Loading profile from filesystem: ${url}`);
     const sd = await loadFromLocalCache(resolvedUrl, ctx.packageSources, fhirVersion);
 
     if (sd) {
@@ -145,12 +166,14 @@ async function loadProfileFromKnownSources(
     }
 
     logger.warn(`[SDLoader] Profile in availableProfiles but failed to load: ${url}`);
-    ctx.profileNotFound.add(cacheKey);
-    return null;
+    if (!ctx.autoDownload) {
+      ctx.profileNotFound.add(cacheKey);
+      return null;
+    }
   }
 
   if (ctx.autoDownload) {
-    const downloadedProfile = await attemptAutoDownload(url, {
+    const downloadedProfile = await attemptAutoDownload(resolvedUrl, {
       registryClient: ctx.registryClient,
       packageDownloader: ctx.packageDownloader,
       allowedPackages: ctx.allowedPackages,

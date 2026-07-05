@@ -31,4 +31,19 @@ describe('structural executor value helpers', () => {
 
     expect(getDirectValue(patient, 'Patient.identifier.0.value')).toEqual(patient.identifier[0]._value);
   });
+
+  it('resolves array child segments without reading Array prototype members', () => {
+    const valueSet = {
+      resourceType: 'ValueSet',
+      compose: {
+        include: [{
+          system: 'http://loinc.org',
+          concept: [{ code: 'LA2-8' }],
+        }],
+      },
+    };
+
+    expect(getDirectValue(valueSet, 'ValueSet.compose.include.system')).toEqual(['http://loinc.org']);
+    expect(getDirectValue(valueSet, 'ValueSet.compose.include.filter')).toBeUndefined();
+  });
 });

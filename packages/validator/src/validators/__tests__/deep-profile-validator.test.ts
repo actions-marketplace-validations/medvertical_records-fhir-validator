@@ -90,4 +90,81 @@ describe('DeepProfileValidator', () => {
       }),
     }));
   });
+
+  it('reports actual and expected values for pattern mismatches', () => {
+    const profile: StructureDefinition = {
+      resourceType: 'StructureDefinition',
+      url: 'http://example.org/StructureDefinition/patient-profile',
+      name: 'PatientProfile',
+      status: 'active',
+      kind: 'resource',
+      abstract: false,
+      type: 'Patient',
+      snapshot: {
+        element: [
+          { id: 'Patient', path: 'Patient' },
+          {
+            id: 'Patient.meta.profile',
+            path: 'Patient.meta.profile',
+            patternCanonical: 'http://example.org/StructureDefinition/expected',
+          },
+        ],
+      },
+    };
+
+    const issues = deepProfileValidator.validate({
+      resource: {
+        resourceType: 'Patient',
+        meta: {
+          profile: ['http://example.org/StructureDefinition/actual'],
+        },
+      },
+      resourceType: 'Patient',
+      structureDef: profile,
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'profile-pattern-mismatch',
+      message: expect.stringContaining('expected http://example.org/StructureDefinition/expected'),
+      details: expect.objectContaining({
+        expectedPattern: 'http://example.org/StructureDefinition/expected',
+        actualValue: '["http://example.org/StructureDefinition/actual"]',
+      }),
+    }));
+  });
+
+  it('accepts fixed primitive values when a repeated element contains the fixed value', () => {
+    const profile: StructureDefinition = {
+      resourceType: 'StructureDefinition',
+      url: 'http://example.org/StructureDefinition/patient-profile',
+      name: 'PatientProfile',
+      status: 'active',
+      kind: 'resource',
+      abstract: false,
+      type: 'Patient',
+      snapshot: {
+        element: [
+          { id: 'Patient', path: 'Patient' },
+          {
+            id: 'Patient.meta.profile',
+            path: 'Patient.meta.profile',
+            fixedCanonical: 'http://example.org/StructureDefinition/patient-profile',
+          },
+        ],
+      },
+    };
+
+    const issues = deepProfileValidator.validate({
+      resource: {
+        resourceType: 'Patient',
+        meta: {
+          profile: ['http://example.org/StructureDefinition/patient-profile'],
+        },
+      },
+      resourceType: 'Patient',
+      structureDef: profile,
+    });
+
+    expect(issues.filter(issue => issue.code === 'profile-fixed-value-mismatch')).toHaveLength(0);
+  });
 });

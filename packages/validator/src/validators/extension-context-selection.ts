@@ -1,0 +1,45 @@
+import type { ElementDefinition } from '../core/structure-definition-types';
+import { getValidationTargets } from '../business-rules/element-validation-targets';
+import { targetMatchesSliceDefinition } from './constraint-slice-targets';
+import type { ExtensionDefinition } from './extension-types';
+
+export function selectDefinitionsForResourceContext(
+  candidatesByUrl: Map<string, ExtensionDefinition[]>,
+  elements: ElementDefinition[],
+  resource: any,
+): Map<string, ExtensionDefinition> {
+  const selected = new Map<string, ExtensionDefinition>();
+
+  for (const [url, candidates] of candidatesByUrl.entries()) {
+    const matching = candidates.filter(candidate =>
+      definitionMatchesResourceContext(candidate, elements, resource)
+    );
+    const chosen = matching[matching.length - 1];
+    if (chosen) selected.set(url, chosen);
+  }
+
+  return selected;
+}
+
+function definitionMatchesResourceContext(
+  definition: ExtensionDefinition,
+  elements: ElementDefinition[],
+  resource: any,
+): boolean {
+  if (!definition.elementId) return true;
+
+  const sliceAncestors = elements.filter(candidate =>
+    Boolean(candidate.sliceName) &&
+    typeof candidate.id === 'string' &&
+    candidate.id !== definition.elementId &&
+    definition.elementId!.startsWith(`${candidate.id}.`)
+  );
+  if (sliceAncestors.length === 0) return true;
+
+  return sliceAncestors.every(slice => {
+    const targets = getValidationTargets(resource, slice.path);
+    return targets.some(target =>
+      targetMatchesSliceDefinition(target.value, slice, elements, { resource, target })
+    );
+  });
+}

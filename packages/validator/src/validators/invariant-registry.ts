@@ -45,10 +45,19 @@ const SPECIALISED_INVARIANT_HANDLERS: Record<string, string> = {
   'bdl-11': 'bundle-validator.ts',
   'bdl-12': 'bundle-validator.ts',
 
+  // AllergyIntolerance: clinicalStatus / verificationStatus conditional
+  // invariants.
+  'ait-1': 'resource-specific-constraints-validator.ts',
+  'ait-2': 'resource-specific-constraints-validator.ts',
+
   // Condition: clinicalStatus / verificationStatus + stage semantics.
   'con-3': 'resource-specific-constraints-validator.ts',
   'con-4': 'resource-specific-constraints-validator.ts',
   'con-5': 'resource-specific-constraints-validator.ts',
+
+  // Composition: section content / emptyReason invariants.
+  'cmp-1': 'resource-specific-constraints-validator.ts',
+  'cmp-2': 'resource-specific-constraints-validator.ts',
 
   // DomainResource: contained resource restrictions + narrative
   // presence. dom-2..dom-5 are errors; dom-6 is a best-practice
@@ -93,13 +102,17 @@ const SPECIALISED_INVARIANT_HANDLERS: Record<string, string> = {
   // organization.
   'pat-1': 'resource-specific-constraints-validator.ts',
 
+  // Questionnaire: name must be usable as an identifier. The specialised
+  // Questionnaire validator emits the Java-compatible que-0 diagnostic.
+  'que-0': 'questionnaire-validator.ts',
+
   // Universal Reference constraint — reference string must be a
   // fragment, literal URL, or URN. Checked in
   // universal-constraints-validator.ts.
   'ref-1': 'universal-constraints-validator.ts',
 };
 
-// Note: canonical-resource naming invariants (`mea-0`, `csd-0`, `cnl-0`,
+// Note: most canonical-resource naming invariants (`mea-0`, `csd-0`, `cnl-0`,
 // `sev-0`, `apr-1`, …) are handled by
 // `canonical-resource-invariant-validator.ts`, but they are ALSO
 // severity=warning in the R4 base package and do not currently appear
@@ -107,7 +120,9 @@ const SPECIALISED_INVARIANT_HANDLERS: Record<string, string> = {
 // of this registry preserves existing behaviour — the generic
 // executor already treats most of them as a no-op because they are
 // warnings rather than errors. If a future refactor flips them to
-// error-severity evaluation, they should be registered here per-key.
+// error-severity evaluation, they should be registered here per-key. `que-0`
+// is registered above because Questionnaire has a dedicated validator and
+// live runs showed duplicate specialised + generic diagnostics.
 
 export const InvariantRegistry = {
   /**

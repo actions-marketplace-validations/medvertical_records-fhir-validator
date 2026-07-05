@@ -34,4 +34,45 @@ describe('StringSecurityValidator', () => {
 
     expect(issues).toHaveLength(0);
   });
+
+  it('does not flag formal StructureDefinition documentation that mentions XHTML tags', () => {
+    const validator = new StringSecurityValidator();
+
+    const issues = validator.validate({
+      resourceType: 'StructureDefinition',
+      snapshot: {
+        element: [{
+          id: 'Narrative.div',
+          path: 'Narrative.div',
+          comment: 'The XHTML content may include <a> elements, images, and internally contained styles.',
+          constraint: [{
+            key: 'txt-1',
+            human: 'The narrative SHALL contain basic formatting elements and <a> elements.',
+            expression: 'htmlChecks()',
+            xpath: 'not(descendant-or-self::h:script)',
+          }],
+          mapping: [{
+            identity: 'rim',
+            map: '<rendered-html-fragment>',
+          }],
+        }],
+      },
+    });
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it('still flags HTML-looking content in regular StructureDefinition strings', () => {
+    const validator = new StringSecurityValidator();
+
+    const issues = validator.validate({
+      resourceType: 'StructureDefinition',
+      title: 'unsafe <script>alert(1)</script>',
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'string-security-html',
+      path: 'StructureDefinition.title',
+    }));
+  });
 });

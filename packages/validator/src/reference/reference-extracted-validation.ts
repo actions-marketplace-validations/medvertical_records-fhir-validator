@@ -26,14 +26,40 @@ export function validateExtractedReferences(
 ): ValidationIssue[] {
   return extractedRefs.flatMap(({ path, reference }) => {
     const formatResult = validateReferenceFormat(reference);
-    if (!formatResult.isValid || !formatResult.resourceType || !formatResult.resourceId) {
-      return formatResult.issues;
+    if (!formatResult.isValid || !formatResult.resourceType) {
+      return annotateReferenceFormatIssues(formatResult.issues, path, reference, resourceType);
     }
 
     return [
-      ...formatResult.issues,
+      ...annotateReferenceFormatIssues(formatResult.issues, path, reference, resourceType),
       ...validateReferenceTypeConstraintIssue(reference, path, resourceType, constraintValidator),
     ];
+  });
+}
+
+function annotateReferenceFormatIssues(
+  issues: ValidationIssue[],
+  path: string,
+  reference: string,
+  resourceType: string,
+): ValidationIssue[] {
+  return issues.map(issue => {
+    const details = issue.details && typeof issue.details === 'object'
+      ? issue.details as Record<string, unknown>
+      : {};
+
+    return {
+      ...issue,
+      path: issue.path || `${path}.reference`,
+      resourceType: issue.resourceType && issue.resourceType !== 'Unknown'
+        ? issue.resourceType
+        : resourceType,
+      details: {
+        ...details,
+        reference,
+        fieldPath: path,
+      },
+    };
   });
 }
 

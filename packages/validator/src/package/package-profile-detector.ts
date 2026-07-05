@@ -37,6 +37,26 @@ export async function detectPackageForProfile(profileUrl: string): Promise<strin
     return 'hl7.fhir.us.davinci-pdex';
   }
 
+  // Da Vinci CRD: http://hl7.org/fhir/us/davinci-crd/StructureDefinition/...
+  if (profileUrl.includes('hl7.org/fhir/us/davinci-crd')) {
+    logger.info(`[PackageRegistry] ✓ Pattern match: Da Vinci CRD → hl7.fhir.us.davinci-crd`);
+    return 'hl7.fhir.us.davinci-crd';
+  }
+
+  // HL7 SDC: http://hl7.org/fhir/uv/sdc/StructureDefinition/...
+  if (profileUrl.includes('hl7.org/fhir/uv/sdc')) {
+    logger.info(`[PackageRegistry] ✓ Pattern match: HL7 SDC → hl7.fhir.uv.sdc`);
+    return 'hl7.fhir.uv.sdc';
+  }
+
+  // Generic HL7 UV IGs: http://hl7.org/fhir/uv/{ig}/StructureDefinition/...
+  const hl7UvMatch = profileUrl.toLowerCase().match(/^https?:\/\/hl7\.org\/fhir\/uv\/([^/]+)\//);
+  if (hl7UvMatch) {
+    const packageId = `hl7.fhir.uv.${hl7UvMatch[1]}`;
+    logger.info(`[PackageRegistry] ✓ Pattern match: HL7 UV → ${packageId}`);
+    return packageId;
+  }
+
   // UK Core: https://fhir.hl7.org.uk/StructureDefinition/...
   // Note: UK Core packages are on Simplifier.net
   if (profileUrl.includes('fhir.hl7.org.uk') || profileUrl.includes('fhir.uk')) {
@@ -126,6 +146,16 @@ export async function detectPackageForProfile(profileUrl: string): Promise<strin
     return isMii2026
       ? 'de.medizininformatikinitiative.kerndatensatz.base'
       : 'de.medizininformatikinitiative.kerndatensatz.person';
+  }
+
+  // KBV eAU: https://fhir.kbv.de/StructureDefinition/KBV_(PR|EX|CS|VS|NS)_EAU_...
+  if (profileUrl.includes('fhir.kbv.de') && profileUrl.includes('KBV_') && profileUrl.includes('_EAU_')) {
+    return 'kbv.ita.eau';
+  }
+
+  // KBV FOR: https://fhir.kbv.de/StructureDefinition/KBV_(PR|EX|CS|VS|NS)_FOR_...
+  if (profileUrl.includes('fhir.kbv.de') && profileUrl.includes('KBV_') && profileUrl.includes('_FOR_')) {
+    return 'kbv.ita.for';
   }
 
   // KBV: https://fhir.kbv.de/StructureDefinition/...

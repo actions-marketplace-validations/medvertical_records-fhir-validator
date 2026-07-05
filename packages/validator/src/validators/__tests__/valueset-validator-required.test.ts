@@ -85,6 +85,62 @@ describe('ValueSetValidator required primitive bindings', () => {
     expect(issues[0].details?.resourceType).toBe('Observation');
   });
 
+  it('uses versioned package expansion for R6 observation-status codes', async () => {
+    const validator = new ValueSetValidator();
+
+    const r6Issues = await validator.validateBinding(
+      'specimen-in-process',
+      {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/observation-status|6.0.0-ballot4',
+      },
+      'Observation.status',
+      { fhirVersion: 'R6' },
+    );
+    expect(r6Issues).toHaveLength(0);
+
+    const r4Issues = await validator.validateBinding(
+      'specimen-in-process',
+      {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/observation-status|4.0.1',
+      },
+      'Observation.status',
+      { fhirVersion: 'R4' },
+    );
+    expect(r4Issues).toHaveLength(1);
+    expect(r4Issues[0]).toEqual(expect.objectContaining({
+      code: 'terminology-binding-required-code',
+      path: 'Observation.status',
+    }));
+  });
+
+  it('keeps invalid binding errors but suggests known CodeSystem canonical fixes', async () => {
+    const validator = new ValueSetValidator();
+
+    const issues = await validator.validateBinding(
+      {
+        coding: [{
+          system: 'http://terminology.hl7.org/CodeSystem/condition-verstatus',
+          code: 'confirmed',
+        }],
+      },
+      {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/condition-ver-status|4.0.1',
+      },
+      'Condition.verificationStatus',
+      { fhirVersion: 'R4' },
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('terminology-binding-required');
+    expect(issues[0].details).toMatchObject({
+      suggestedSystem: 'http://terminology.hl7.org/CodeSystem/condition-ver-status',
+      fixHint: expect.stringContaining('condition-ver-status'),
+    });
+  });
+
   it('accepts valid Device.deviceName.type codes from local expansion', async () => {
     const validator = new ValueSetValidator();
 
@@ -98,6 +154,42 @@ describe('ValueSetValidator required primitive bindings', () => {
     );
 
     expect(issues).toHaveLength(0);
+  });
+
+  it('accepts valid R5 Device.name.type codes from versioned package expansion', async () => {
+    const validator = new ValueSetValidator();
+
+    const issues = await validator.validateBinding(
+      'registered-name',
+      {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/device-nametype|5.0.0',
+      },
+      'Device.name[0].type',
+      { fhirVersion: 'R5' },
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it('rejects R4-only Device name type codes against the R5 binding', async () => {
+    const validator = new ValueSetValidator();
+
+    const issues = await validator.validateBinding(
+      'model-name',
+      {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/device-nametype|5.0.0',
+      },
+      'Device.name[0].type',
+      { fhirVersion: 'R5' },
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toEqual(expect.objectContaining({
+      code: 'terminology-binding-required-code',
+      path: 'Device.name[0].type',
+    }));
   });
 
   it('errors when Coding.display differs from a required binding CodeSystem concept display', async () => {

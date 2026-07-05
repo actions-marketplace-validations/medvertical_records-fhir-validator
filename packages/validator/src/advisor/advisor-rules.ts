@@ -76,6 +76,11 @@ function matchesRule(issue: ValidationIssue, match: AdvisorRuleMatch): boolean {
     if (!issue.message?.includes(match.message)) return false;
   }
 
+  if (match.messageRegex) {
+    const patterns = Array.isArray(match.messageRegex) ? match.messageRegex : [match.messageRegex];
+    if (!patterns.some(pattern => matchesRegex(issue.message, pattern))) return false;
+  }
+
   if (match.aspect) {
     const aspects = Array.isArray(match.aspect) ? match.aspect : [match.aspect];
     if (!aspects.some(a => (issue as any).aspect === a)) return false;
@@ -95,6 +100,15 @@ function matchesRule(issue: ValidationIssue, match: AdvisorRuleMatch): boolean {
   }
 
   return true;
+}
+
+function matchesRegex(value: string | undefined, pattern: string): boolean {
+  if (!value) return false;
+  try {
+    return new RegExp(pattern).test(value);
+  } catch {
+    return false;
+  }
 }
 
 // ============================================================================
@@ -161,7 +175,7 @@ export function applyAdvisorRules(
   }
 
   if (appliedRules.length > 0) {
-    logger.info(
+    logger.debug(
       `[AdvisorRules] Applied ${appliedRules.length} rule(s): ` +
       `${suppressedCount} suppressed, ${overriddenCount} overridden`,
     );

@@ -197,7 +197,7 @@ export function emitMatchedSliceChildIssues(
     if (isMustSupport && mustSupportMissingIsSatisfiedBySiblingValue(element, relative)) continue;
 
     const childPath = `${elementPath}:${slice.sliceName}.${relative}`;
-    issues.push(createMissingSliceChildIssue(childPath, slice.sliceName, isRequired));
+    issues.push(createMissingSliceChildIssue(childPath, slice.sliceName, isRequired, profileSD.url));
   }
 
   return issues;
@@ -284,11 +284,13 @@ function createMissingSliceChildIssue(
   childPath: string,
   sliceName: string,
   isRequired: boolean,
+  profileUrl?: string,
 ): ValidationIssue {
   return createValidationIssue({
     code: isRequired ? 'required-element-missing' : 'profile-mustsupport-missing',
     path: childPath,
     resourceType: resourceTypeFromPath(childPath),
+    profile: profileUrl,
     messageParams: { element: childPath },
     details: { sliceName },
   });

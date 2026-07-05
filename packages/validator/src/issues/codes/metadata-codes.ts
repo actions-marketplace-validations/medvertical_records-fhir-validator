@@ -47,8 +47,8 @@ export const MetadataCodes = {
     },
     'metadata-version-id-same-as-id': {
         aspect: 'metadata',
-        severity: 'warning',
-        description: 'versionId should not match resource.id',
+        severity: 'info',
+        description: 'versionId matches resource.id',
     },
     'metadata-version-id-very-high': {
         aspect: 'metadata',
@@ -209,12 +209,12 @@ export const MetadataCodes = {
     },
     'metadata-security-missing-system': {
         aspect: 'metadata',
-        severity: 'error',
+        severity: 'warning',
         description: 'Security label missing system',
     },
     'metadata-security-missing-code': {
         aspect: 'metadata',
-        severity: 'error',
+        severity: 'warning',
         description: 'Security label missing code',
     },
     'metadata-security-invalid-system': {

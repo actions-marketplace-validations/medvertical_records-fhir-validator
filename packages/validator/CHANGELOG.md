@@ -12,6 +12,40 @@ ship together; package-only changes are noted under each release.
 
 No unreleased changes yet.
 
+## [0.4.2] — 2026-07-05
+
+Patch release for validator architecture boundaries, evidence policy, and
+maintainability after the 0.4.1 evidence release.
+
+### Added
+
+- Added stable `host` and `conformance` package surfaces for embedding and
+  evidence tooling, keeping repository consumers off deprecated implementation
+  subpaths.
+- Added `dedupeIssuesWithTrace()` so duplicate-suppression decisions expose the
+  named policy rule that removed an issue.
+- Added an explicit FHIR Schema runtime policy export that keeps the graph path
+  evidence-only until Java/reference and dual-path gates justify promotion.
+
+### Changed
+
+- Hardened public-export and mirror-import architecture guards so new internal
+  validator exports or repository imports fail fast.
+- Split terminology remote CodeSystem budget handling out of the API client and
+  kept the fail-open budget reason traceable.
+- Split remote CodeSystem budget aggregation tests into focused coverage.
+
+### Documentation
+
+- Documented validator fallback, fail-open, fail-closed, legacy compatibility,
+  and release-gate guardrails.
+
+### Verification
+
+- Verified with merged PR #252 CI, main CI, validator build, OSS boundary audit,
+  OSS package smoke, architecture guards, focused Vitest suites, and npm publish
+  dry-run.
+
 ## [0.4.1] — 2026-07-01
 
 Patch release for the standalone validator evidence lanes and MII reference

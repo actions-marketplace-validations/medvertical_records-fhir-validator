@@ -11,8 +11,9 @@
 import type { ValidationIssue } from '../../types';
 import type { ElementDefinition, StructureDefinition } from '../structure-definition-types';
 import { ValueSetValidator, type TerminologyResolutionConfig } from '../../validators/valueset-validator';
-import { shouldValidateRequired } from '../../business-rules';
+import { getValidationTargets, shouldValidateRequired } from '../../business-rules';
 import { logger } from '../../logger';
+import { expandContentReferenceElements } from '../content-reference-elements';
 import {
   UCUM_BEARING_TYPES,
   validateUcumAtPath,
@@ -93,7 +94,7 @@ export class TerminologyExecutor {
       const fhirVersion = context.fhirVersion ?? 'R4';
 
       if (structureDef.snapshot?.element) {
-        for (const elementDef of structureDef.snapshot.element) {
+        for (const elementDef of expandContentReferenceElements(structureDef.snapshot.element)) {
           issues.push(...await this.validateElementDefinition({
             resource,
             elementDef,
@@ -151,21 +152,30 @@ export class TerminologyExecutor {
     const isCodingType = elementTypes.includes('Coding');
 
     if (isCodeableConcept) {
-      const value = getValueAtPath(resource, path);
-      const codeableConcepts = Array.isArray(value) ? value : [value];
-      for (let index = 0; index < codeableConcepts.length; index++) {
-        const concept = codeableConcepts[index];
+      const targets = getValidationTargets(resource, path)
+        .filter(target => target.value !== null && target.value !== undefined);
+      for (const target of targets) {
+        const concept = target.value;
         if (!concept || typeof concept !== 'object' || !Array.isArray(concept.coding)) {
           continue;
         }
-        const codingPath = Array.isArray(value) ? `${path}[${index}].coding` : `${path}.coding`;
-        issues.push(...await validateExternalCodeSystems(concept.coding, codingPath, this.valuesetValidator));
+        issues.push(...await validateExternalCodeSystems(
+          concept.coding,
+          `${target.fullPath}.coding`,
+          this.valuesetValidator,
+          fhirVersion,
+        ));
       }
     } else if (isCodingType) {
-      const value = getValueAtPath(resource, path);
-      const codings = Array.isArray(value) ? value : [value];
-      if (Array.isArray(codings)) {
-        issues.push(...await validateExternalCodeSystems(codings, path, this.valuesetValidator));
+      const targets = getValidationTargets(resource, path)
+        .filter(target => target.value !== null && target.value !== undefined);
+      for (const target of targets) {
+        issues.push(...await validateExternalCodeSystems(
+          target.value,
+          target.fullPath,
+          this.valuesetValidator,
+          fhirVersion,
+        ));
       }
     }
 
@@ -238,6 +248,32 @@ export class TerminologyExecutor {
 
     const issues: ValidationIssue[] = [];
     const effectiveBinding = effectiveBindingForElement(elementDef);
+    if (!sliceSelection) {
+      const targets = getValidationTargets(resource, path)
+        .filter(target => target.value !== null && target.value !== undefined)
+        .filter(target => shouldValidateBindingForValue(elementDef, target.value));
+
+      if (targets.length > 0) {
+        for (const target of targets) {
+          for (const candidateValue of selectValuesForBinding(elementDef, target.value, structureDef)) {
+            if (shouldSuppressNonRequiredBindingForOwnFixedPattern(elementDef, candidateValue)) {
+              continue;
+            }
+            const bindingIssues = await this.valuesetValidator.validateBinding(
+              candidateValue,
+              effectiveBinding,
+              target.fullPath,
+              { profileUrl, fhirVersion },
+            );
+            if (!shouldSuppressValueSetSliceMembershipIssue(elementDef, structureDef, bindingIssues)) {
+              issues.push(...bindingIssues);
+            }
+          }
+        }
+        return issues;
+      }
+    }
+
     for (const candidateValue of selectValuesForBinding(elementDef, value, structureDef)) {
       if (shouldSuppressNonRequiredBindingForOwnFixedPattern(elementDef, candidateValue)) {
         continue;

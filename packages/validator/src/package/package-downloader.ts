@@ -53,7 +53,7 @@ export interface DownloadResult {
 export class PackageDownloader {
   private registryClient: PackageRegistryClient;
   private cachePath: string;
-  private downloadLocks: Set<string> = new Set();
+  private downloadLocks: Map<string, Promise<DownloadResult>> = new Map();
 
   constructor(
     cachePath?: string,
@@ -73,19 +73,31 @@ export class PackageDownloader {
   ): Promise<DownloadResult> {
     const lockKey = `${packageId}#${version || 'latest'}`;
 
-    // Prevent concurrent downloads of the same package
-    if (this.downloadLocks.has(lockKey)) {
-      logger.info(`[PackageDownloader] Download already in progress: ${lockKey}`);
-      return {
-        success: false,
-        packageId,
-        version: version || 'unknown',
-        error: 'Download already in progress'
-      };
+    // Share concurrent downloads of the same package. Returning an error here
+    // makes sibling profile lookups fail while the package is being installed.
+    const pendingDownload = this.downloadLocks.get(lockKey);
+    if (pendingDownload) {
+      logger.info(`[PackageDownloader] Waiting for download already in progress: ${lockKey}`);
+      return pendingDownload;
     }
 
-    this.downloadLocks.add(lockKey);
+    const download = this.downloadAndInstallLocked(packageId, version, options);
+    this.downloadLocks.set(lockKey, download);
 
+    try {
+      return await download;
+    } finally {
+      if (this.downloadLocks.get(lockKey) === download) {
+        this.downloadLocks.delete(lockKey);
+      }
+    }
+  }
+
+  private async downloadAndInstallLocked(
+    packageId: string,
+    version: string | undefined,
+    options: PackageDownloadOptions,
+  ): Promise<DownloadResult> {
     try {
       if (!options.force) {
         const installed = await this.findInstalledPackage(packageId, version);
@@ -213,9 +225,6 @@ export class PackageDownloader {
         version: version || 'unknown',
         error: err.message
       };
-
-    } finally {
-      this.downloadLocks.delete(lockKey);
     }
   }
 
@@ -336,9 +345,18 @@ export class PackageDownloader {
 
         const manifest = await this.readInstalledPackageManifest(packageDir);
         const [namePart, versionPart] = candidate.split('#');
+        const installedVersion = manifest?.version || versionPart || version || 'unknown';
+        if (!version && isPreReleasePackageVersion(installedVersion)) {
+          logger.info(
+            `[PackageDownloader] Skipping installed pre-release for unversioned request: ` +
+            `${manifest?.name || namePart}#${installedVersion}`
+          );
+          continue;
+        }
+
         return {
           packageId: manifest?.name || namePart,
-          version: manifest?.version || versionPart || version || 'unknown',
+          version: installedVersion,
           path: packageDir
         };
       }
@@ -428,6 +446,10 @@ export class PackageDownloader {
   getCachePath(): string {
     return this.cachePath;
   }
+}
+
+function isPreReleasePackageVersion(version: string | undefined): boolean {
+  return typeof version === 'string' && version.includes('-');
 }
 
 // ============================================================================

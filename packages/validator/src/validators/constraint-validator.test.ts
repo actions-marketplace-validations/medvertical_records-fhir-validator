@@ -68,6 +68,66 @@ describe('ConstraintValidator', () => {
     expect(issues.find(issue => issue.ruleId === 'con-3')).toBeUndefined();
   });
 
+  it('does not fail sdf-19 when ElementDefinition.type has only a primitive sidecar', async () => {
+    const validator = new ConstraintValidator();
+
+    const resource = {
+      resourceType: 'StructureDefinition',
+      url: 'http://hl7.org/fhir/StructureDefinition/base64Binary',
+      type: 'base64Binary',
+      differential: {
+        element: [{
+          id: 'base64Binary.value',
+          path: 'base64Binary.value',
+          type: [{
+            _code: {
+              extension: [{
+                url: 'http://hl7.org/fhir/StructureDefinition/structuredefinition-json-type',
+                valueString: 'string',
+              }],
+            },
+          }],
+        }],
+      },
+      snapshot: {
+        element: [
+          { id: 'base64Binary.id', path: 'base64Binary.id', type: [{ code: 'string' }] },
+          {
+            id: 'base64Binary.value',
+            path: 'base64Binary.value',
+            type: [{
+              _code: {
+                extension: [{
+                  url: 'http://hl7.org/fhir/StructureDefinition/structuredefinition-json-type',
+                  valueString: 'string',
+                }],
+              },
+            }],
+          },
+        ],
+      },
+    };
+
+    const issues = await validator.validate(
+      resource,
+      [{
+        path: 'StructureDefinition',
+        constraint: [{
+          key: 'sdf-19',
+          severity: 'error' as const,
+          human: 'FHIR Specification models only use FHIR defined types',
+          expression:
+            "url.startsWith('http://hl7.org/fhir/StructureDefinition') implies " +
+            "(differential.element.type.code.all(matches('^[a-zA-Z0-9]+$') or matches('^http:\\\\/\\\\/hl7\\\\.org\\\\/fhirpath\\\\/System\\\\.[A-Z][A-Za-z]+$')) " +
+            "and snapshot.element.type.code.all(matches('^[a-zA-Z0-9\\\\.]+$') or matches('^http:\\\\/\\\\/hl7\\\\.org\\\\/fhirpath\\\\/System\\\\.[A-Z][A-Za-z]+$')))",
+        }],
+      }] as any,
+      'http://hl7.org/fhir/StructureDefinition/StructureDefinition',
+    );
+
+    expect(issues.find(issue => issue.ruleId === 'sdf-19')).toBeUndefined();
+  });
+
   it('evaluates htmlChecks constraints through the narrative XHTML validator', async () => {
     const validator = new ConstraintValidator();
 

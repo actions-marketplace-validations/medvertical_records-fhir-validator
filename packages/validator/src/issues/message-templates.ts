@@ -62,7 +62,7 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-version-id-etag-format':
         "versionId appears to be in ETag format: {value}",
     'metadata-version-id-same-as-id':
-        "versionId should not be the same as resource.id",
+        "versionId matches resource.id; this is an informational metadata heuristic",
     'metadata-version-id-very-high':
         "versionId is unusually high: {value}",
     'metadata-version-id-validation-error':

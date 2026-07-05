@@ -91,11 +91,13 @@ function makeDeps(options: {
   structuralIssueForObservation?: boolean;
   structuralIssueForComposition?: boolean;
   terminologyIssueForObservation?: boolean;
+  structuralIssueFromProfileForObservation?: boolean;
 } = {}) {
   const {
     structuralIssueForObservation = true,
     structuralIssueForComposition = false,
     terminologyIssueForObservation = false,
+    structuralIssueFromProfileForObservation = false,
   } = options;
   return {
     sdLoader: {} as any,
@@ -111,7 +113,12 @@ function makeDeps(options: {
         return [];
       },
     } as any,
-    profileExecutor: { validate: async () => [] } as any,
+    profileExecutor: {
+      validate: async (ctx: { resourceType: string }) =>
+        structuralIssueFromProfileForObservation && ctx.resourceType === 'Observation'
+          ? [{ ...observationIssue }]
+          : [],
+    } as any,
     terminologyExecutor: {
       validate: async (ctx: { resource: { resourceType?: string } }) =>
         terminologyIssueForObservation && ctx.resource.resourceType === 'Observation'
@@ -181,6 +188,120 @@ describe('multi-aspect-validate-callback — Bundle entry resources', () => {
     );
   });
 
+  it('routes embedded issues by their own aspect after profile entry validation', async () => {
+    const callback = buildMultiAspectValidateCallback(
+      makeDeps({
+        structuralIssueForObservation: false,
+        structuralIssueFromProfileForObservation: true,
+      }),
+      ['profile'],
+      { validationStrictness: 'standard', aspects: {} },
+    );
+
+    const result = await callback(
+      {
+        resourceType: 'Bundle',
+        id: 'bundle-profile-structural-boundary',
+        type: 'collection',
+        entry: [
+          {
+            fullUrl: 'urn:uuid:obs-1',
+            resource: {
+              resourceType: 'Observation',
+              id: 'obs-1',
+              meta: {
+                profile: ['http://example.org/fhir/StructureDefinition/observation-profile'],
+              },
+            },
+          },
+        ],
+      },
+      'http://hl7.org/fhir/StructureDefinition/Bundle',
+      'R4',
+    );
+
+    const profile = result.aspects.find(aspect => aspect.aspect === 'profile');
+    const structural = result.aspects.find(aspect => aspect.aspect === 'structural');
+
+    expect(profile?.issues).toEqual([]);
+    expect(structural?.issues).toEqual([
+      expect.objectContaining({
+        aspect: 'structural',
+        code: 'structural-cardinality-min',
+        path: 'Bundle.entry[0].resource/*Observation/obs-1*/.status',
+      }),
+    ]);
+    expect(result.isValid).toBe(false);
+  });
+
+  it('suppresses server-managed metadata completeness hints for embedded Bundle entries', async () => {
+    const parentAspects: Array<{
+      aspect: string;
+      issues: ValidationIssue[];
+      validationTime: number;
+      isValid: boolean;
+    }> = [];
+
+    await appendBundleEntryValidationResults(
+      {
+        resourceType: 'Bundle',
+        type: 'document',
+        entry: [{
+          resource: {
+            resourceType: 'Patient',
+            id: 'p1',
+            meta: {
+              profile: ['http://example.org/fhir/StructureDefinition/patient-doc'],
+            },
+          },
+        }],
+      },
+      'R4',
+      0,
+      async () => ({
+        isValid: true,
+        aspects: [{
+          aspect: 'metadata',
+          validationTime: 1,
+          isValid: true,
+          issues: [
+            {
+              aspect: 'metadata',
+              severity: 'info',
+              code: 'required-metadata-missing-versionId',
+              message: 'Patient resource is missing recommended metadata field: meta.versionId',
+              path: 'meta.versionId',
+            },
+            {
+              aspect: 'metadata',
+              severity: 'info',
+              code: 'required-metadata-missing-lastUpdated',
+              message: 'Patient resource is missing recommended metadata field: meta.lastUpdated',
+              path: 'meta.lastUpdated',
+            },
+            {
+              aspect: 'metadata',
+              severity: 'warning',
+              code: 'metadata-version-id-same-as-id',
+              message: 'versionId matches resource.id; this is an informational metadata heuristic',
+              path: 'meta.versionId',
+            },
+          ],
+        }],
+      }),
+      parentAspects,
+      undefined,
+      issues => issues,
+    );
+
+    const metadata = parentAspects.find(aspect => aspect.aspect === 'metadata');
+    expect(metadata?.issues).toHaveLength(1);
+    expect(metadata?.issues[0]).toMatchObject({
+      code: 'metadata-version-id-same-as-id',
+      path: 'Bundle.entry[0].resource/*Patient/p1*/.meta.versionId',
+    });
+  });
+
   it('honors configured embedded Bundle entry validation concurrency', async () => {
     vi.stubEnv('VALIDATION_BUNDLE_ENTRY_CONCURRENCY', '2');
 
@@ -216,6 +337,62 @@ describe('multi-aspect-validate-callback — Bundle entry resources', () => {
     );
 
     expect(peakConcurrency).toBe(2);
+  });
+
+  it('aborts embedded Bundle entry validation before starting child resources when stopped', async () => {
+    const validateOne = vi.fn().mockResolvedValue({
+      isValid: true,
+      aspects: [],
+    });
+
+    await expect(appendBundleEntryValidationResults(
+      {
+        resourceType: 'Bundle',
+        entry: [{
+          resource: {
+            resourceType: 'Observation',
+            id: 'obs-stopped',
+          },
+        }],
+      },
+      'R4',
+      0,
+      validateOne,
+      [],
+      undefined,
+      issues => issues,
+      () => true,
+    )).rejects.toMatchObject({ name: 'BatchValidationAbortedError' });
+
+    expect(validateOne).not.toHaveBeenCalled();
+  });
+
+  it('propagates stop signals raised while an aspect is running', async () => {
+    let stopped = false;
+    const callback = buildMultiAspectValidateCallback(
+      {
+        ...makeDeps({ structuralIssueForObservation: false }),
+        structuralExecutor: {
+          validate: async () => {
+            stopped = true;
+            return [];
+          },
+        } as any,
+      },
+      ['structural'],
+      { validationStrictness: 'standard', aspects: {} },
+      undefined,
+      () => stopped,
+    );
+
+    await expect(callback(
+      {
+        resourceType: 'Patient',
+        id: 'patient-stop',
+      },
+      'http://hl7.org/fhir/StructureDefinition/Patient',
+      'R4',
+    )).rejects.toMatchObject({ name: 'BatchValidationAbortedError' });
   });
 
   it('does not turn display mismatches into Composition targetProfile match failures', async () => {

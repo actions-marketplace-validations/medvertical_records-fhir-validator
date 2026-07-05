@@ -73,6 +73,7 @@ export class SecurityValidator {
             code: 'metadata-security-missing-system',
             path: `${path}.system`,
             resourceType,
+            severityOverride: 'warning',
             messageParams: { index },
           }));
         }
@@ -82,6 +83,7 @@ export class SecurityValidator {
             code: 'metadata-security-missing-code',
             path: `${path}.code`,
             resourceType,
+            severityOverride: 'warning',
             messageParams: { index },
           }));
         }
@@ -142,15 +144,6 @@ export class SecurityValidator {
           }));
         }
 
-        // Warn if display missing
-        if (!label.display) {
-          issues.push(createValidationIssue({
-            code: 'metadata-security-missing-display',
-            path,
-            resourceType,
-            messageParams: { index },
-          }));
-        }
       });
 
     } catch (error) {

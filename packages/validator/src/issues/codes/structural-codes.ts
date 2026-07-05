@@ -27,6 +27,11 @@ export const StructuralCodes = {
         severity: 'error',
         description: 'Invalid JSON',
     },
+    'structural-invalid-format': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Primitive value format is invalid',
+    },
     'structural-cardinality-violation': {
         aspect: 'structural',
         severity: 'error',
@@ -61,6 +66,11 @@ export const StructuralCodes = {
         aspect: 'structural',
         severity: 'error',
         description: 'Unknown element in resource',
+    },
+    'questionnaire-reference-not-resolved': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'QuestionnaireResponse.questionnaire could not be resolved',
     },
 
     // Narrative (text.div) XHTML validation

@@ -126,8 +126,8 @@ export const CATALOG_MISC: Record<string, FixSuggestion> = {
         fix: 'Add enableBehavior ("all" or "any") when item has multiple enableWhen conditions.',
     },
     'questionnaire-invariant-que-5': {
-        why: 'Questionnaire invariant que-5: only "coding" and "quantity" items can have answerOption.',
-        fix: 'Set item.type to choice/open-choice or remove the answerOption.',
+        why: 'Questionnaire invariant que-5: only answer-capable Questionnaire item types can have answerOption or answerValueSet.',
+        fix: 'Set item.type to a compatible answer type such as choice/open-choice, coding, decimal, integer, date, dateTime, time, string, or quantity; otherwise remove the answer source.',
     },
     'questionnaire-invariant-que-6': {
         why: 'Questionnaire invariant que-6: required items must have items or initial.',

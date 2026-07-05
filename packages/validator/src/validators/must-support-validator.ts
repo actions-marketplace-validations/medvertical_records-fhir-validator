@@ -14,6 +14,31 @@ const CHOICE_BASES = [
     'rate', 'born', 'age',
 ];
 
+const CONFORMANCE_RESOURCE_TYPES = new Set([
+    'ActivityDefinition',
+    'CapabilityStatement',
+    'ChargeItemDefinition',
+    'CodeSystem',
+    'CompartmentDefinition',
+    'ConceptMap',
+    'EventDefinition',
+    'ExampleScenario',
+    'GraphDefinition',
+    'ImplementationGuide',
+    'Library',
+    'Measure',
+    'MessageDefinition',
+    'NamingSystem',
+    'OperationDefinition',
+    'PlanDefinition',
+    'Questionnaire',
+    'SearchParameter',
+    'StructureDefinition',
+    'StructureMap',
+    'TerminologyCapabilities',
+    'ValueSet',
+]);
+
 function hasChoiceValue(element: any, base: string): boolean {
     if (!element || typeof element !== 'object') return false;
     if (!isValueEmpty(element[base])) return true;
@@ -110,6 +135,9 @@ export class MustSupportValidator {
         const lastPart = pathParts[pathParts.length - 1];
         const secondToLast = pathParts[pathParts.length - 2];
         if (lastPart === 'extension' && secondToLast?.startsWith('_')) return true;
+
+        if (!mustSupportParentExists(resource, path)) return true;
+        if (isConformanceMustSupport(resource)) return true;
 
         // MustSupport is a system support obligation, not a blanket
         // per-instance cardinality rule. These optional elements created
@@ -284,4 +312,18 @@ export class MustSupportValidator {
 
         return issues;
     }
+}
+
+function isConformanceMustSupport(resource: any): boolean {
+    return CONFORMANCE_RESOURCE_TYPES.has(resource?.resourceType);
+}
+
+function mustSupportParentExists(resource: any, path: string): boolean {
+    const parentPath = path.split('.').slice(0, -1).join('.');
+    if (!parentPath || parentPath === resource?.resourceType) return true;
+
+    const targets = getValidationTargets(resource, parentPath);
+    if (targets.some(target => !isValueEmpty(target.value))) return true;
+
+    return !isValueEmpty(getDirectValue(resource, parentPath));
 }

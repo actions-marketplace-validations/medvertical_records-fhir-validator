@@ -1,11 +1,13 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
+import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
 
 export function checkExtensionExt1(extValue: any, basePath: string): ValidationIssue | null {
     if (!extValue || typeof extValue !== 'object') return null;
 
     const hasNestedExtension = Array.isArray(extValue.extension) && extValue.extension.length > 0;
-    const hasValueX = Object.keys(extValue).some(k => /^value[A-Z]/.test(k));
+    const hasValueX = Object.keys(extValue).some(k => /^value[A-Z]/.test(k)) ||
+        resolveFhirSegmentValue(extValue, 'value[x]') !== undefined;
 
     if (hasNestedExtension !== hasValueX) return null;
 
@@ -34,35 +36,77 @@ export function checkPeriodPer1(period: any, basePath: string): ValidationIssue 
     if (typeof start !== 'string' || typeof end !== 'string') return null;
     if (start.length === 0 || end.length === 0) return null;
 
-    const precisionMismatch = !start.includes('T') !== !end.includes('T');
-    const isBackwards = precisionMismatch || isFhirDateTimeBackwards(start, end);
+    const isBackwards = isFhirDateTimeBackwards(start, end);
     if (!isBackwards) return null;
-
-    const reason = precisionMismatch ? 'precision-mismatch' : 'backwards';
-    const message = precisionMismatch
-        ? `per-1 violation at ${basePath}: Period.start (${start}) and Period.end (${end}) ` +
-        `have different precision — comparison is indeterminate.`
-        : `per-1 violation at ${basePath}: Period.end (${end}) is before Period.start (${start}).`;
 
     return createValidationIssue({
         code: 'business-invalid-period-end',
         path: basePath,
         resourceType: period.resourceType || 'Period',
-        customMessage: message,
+        customMessage: `per-1 violation at ${basePath}: Period.end (${end}) is before Period.start (${start}).`,
         severityOverride: 'error',
-        details: { constraintKey: 'per-1', start, end, reason },
+        details: { constraintKey: 'per-1', start, end, reason: 'backwards' },
     });
 }
 
 function isFhirDateTimeBackwards(start: string, end: string): boolean {
-    const bothDateTime = start.includes('T') && end.includes('T');
-    if (!bothDateTime) return end < start;
-
-    const startMillis = Date.parse(start);
-    const endMillis = Date.parse(end);
-    if (Number.isFinite(startMillis) && Number.isFinite(endMillis)) {
-        return endMillis < startMillis;
+    const startRange = parseFhirDateTimeRange(start);
+    const endRange = parseFhirDateTimeRange(end);
+    if (startRange && endRange) {
+        return startRange.startMillis > endRange.endMillis;
     }
 
     return end < start;
+}
+
+type DateTimeRange = {
+    startMillis: number;
+    endMillis: number;
+};
+
+function parseFhirDateTimeRange(value: string): DateTimeRange | null {
+    const match = value.match(
+        /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})?)?)?)?$/,
+    );
+    if (!match) return null;
+
+    const [, yearRaw, monthRaw, dayRaw, hourRaw, minuteRaw, secondRaw, fractionRaw, offsetRaw] = match;
+    const year = Number(yearRaw);
+
+    if (!monthRaw) {
+        return utcRange(
+            Date.UTC(year, 0, 1, 0, 0, 0, 0),
+            Date.UTC(year + 1, 0, 1, 0, 0, 0, 0) - 1,
+        );
+    }
+
+    const month = Number(monthRaw);
+    if (!dayRaw) {
+        return utcRange(
+            Date.UTC(year, month - 1, 1, 0, 0, 0, 0),
+            Date.UTC(year, month, 1, 0, 0, 0, 0) - 1,
+        );
+    }
+
+    const day = Number(dayRaw);
+    if (!hourRaw) {
+        return utcRange(
+            Date.UTC(year, month - 1, day, 0, 0, 0, 0),
+            Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0) - 1,
+        );
+    }
+
+    if (!offsetRaw) return null;
+
+    const millis = Date.parse(value);
+    if (!Number.isFinite(millis)) return null;
+
+    const fractionPrecision = fractionRaw?.length ?? 0;
+    const uncertaintyMillis = fractionPrecision > 0 ? Math.max(0, 10 ** (3 - Math.min(3, fractionPrecision)) - 1) : 999;
+    return utcRange(millis, millis + uncertaintyMillis);
+}
+
+function utcRange(startMillis: number, endMillis: number): DateTimeRange | null {
+    if (!Number.isFinite(startMillis) || !Number.isFinite(endMillis)) return null;
+    return { startMillis, endMillis };
 }

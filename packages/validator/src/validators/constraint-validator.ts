@@ -11,7 +11,7 @@ import type { ElementDefinition, Constraint } from '../core/structure-definition
 import { getValidationTargets } from '../business-rules';
 import { logger } from '../logger';
 import { buildUserInvocationTable } from './fhirpath-custom-functions';
-import { getSDFHIRPathCacheStats } from './sd-fhirpath-executor';
+import { evaluateSpecialisedRootConstraint, getSDFHIRPathCacheStats } from './sd-fhirpath-executor';
 import { preprocessTypeLiterals, resolveElementType } from './fhirpath-type-preprocessor';
 import {
   clearConstraintExpressionCache,
@@ -209,7 +209,7 @@ export class ConstraintValidator {
           } else {
             // Validate constraint for each array element separately
             for (const target of validationTargets) {
-              if (!targetMatchesSliceDefinition(target.value, element, elements)) {
+              if (!targetMatchesSliceDefinition(target.value, element, elements, { resource, target })) {
                 continue;
               }
               const constraintIssues = await this.validateConstraint(
@@ -263,6 +263,16 @@ export class ConstraintValidator {
 
     if (constraint.key === 'dom-3') {
       return validateDom3Constraint(resource, elementPath, constraint, profileUrl);
+    }
+
+    if (elementPath === resource.resourceType) {
+      const specialisedResult = evaluateSpecialisedRootConstraint(constraint.key, resource);
+      if (specialisedResult !== null) {
+        if (!specialisedResult) {
+          issues.push(this.buildConstraintViolationIssue(resource, elementPath, constraint, profileUrl, state.strictnessMode));
+        }
+        return issues;
+      }
     }
 
     // Pre-substitute `%context.type().name` / `%resource.type().name` /

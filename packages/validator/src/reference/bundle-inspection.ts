@@ -24,13 +24,7 @@ export function validateBundleStructure(bundle: any): BundleIssue[] {
     });
   }
 
-  if (!bundle.entry) {
-    issues.push({
-      severity: 'warning',
-      code: 'bundle-missing-entries',
-      message: 'Bundle has no entries array',
-    });
-  } else if (!Array.isArray(bundle.entry)) {
+  if (bundle.entry !== undefined && !Array.isArray(bundle.entry)) {
     issues.push({
       severity: 'error',
       code: 'bundle-invalid-entries',
@@ -88,6 +82,8 @@ function addTransactionEntryIssues(bundle: any, issues: BundleIssue[]): void {
         severity: 'error',
         code: 'bundle-request-missing-method',
         message: `Entry[${index}] request missing required 'method'`,
+        path: `Bundle.entry[${index}].request.method`,
+        entryIndex: index,
       });
     }
 
@@ -96,6 +92,8 @@ function addTransactionEntryIssues(bundle: any, issues: BundleIssue[]): void {
         severity: 'error',
         code: 'bundle-request-missing-url',
         message: `Entry[${index}] request missing required 'url'`,
+        path: `Bundle.entry[${index}].request.url`,
+        entryIndex: index,
       });
     }
   });

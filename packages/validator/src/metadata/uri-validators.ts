@@ -19,6 +19,10 @@ export interface UriValidationResult {
  * Validate URI format and determine type
  */
 export function validateUriFormat(uri: string): UriValidationResult {
+  if (/\s/.test(uri)) {
+    return { isValid: false, type: 'unknown', reason: 'URI must not contain whitespace' };
+  }
+
   // Check for URL (http, https, ftp)
   // Check for URL (http, https, ftp)
   if (uri.startsWith('http:') || uri.startsWith('https:') || uri.startsWith('ftp:')) {
@@ -100,6 +104,10 @@ export function looksLikeReference(uri: string): boolean {
  * Helper method to validate URLs
  */
 export function isValidUrl(url: string): boolean {
+  if (/\s/.test(url)) {
+    return false;
+  }
+
   try {
     new URL(url);
     return true;
@@ -107,4 +115,3 @@ export function isValidUrl(url: string): boolean {
     return false;
   }
 }
-

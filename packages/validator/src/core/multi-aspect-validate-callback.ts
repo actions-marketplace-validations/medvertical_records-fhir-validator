@@ -22,7 +22,13 @@ import type {
   MetadataExecutor
 } from './executors';
 import type { BestPracticeValidator } from '../validators/best-practice-validator';
-import { createValidationErrorIssue, dedupeIssues, getValueAtPath, suppressRedundantBindingWarnings } from './validation-utils';
+import {
+  aggregateRemoteCodeSystemBudgetIssues,
+  createValidationErrorIssue,
+  dedupeIssues,
+  getValueAtPath,
+  suppressRedundantBindingWarnings,
+} from './validation-utils';
 import {
   createProfileFallbackIssue,
   createProfileResourceTypeMismatchIssue,
@@ -40,7 +46,11 @@ import { createBundleReferenceResolver } from './multi-aspect-bundle-reference-r
 import { appendBundleEntryValidationResults } from './multi-aspect-bundle-entry-validation';
 import { validateReferenceTargetProfileConformance } from './multi-aspect-target-profile-conformance';
 import { ReferenceTargetValidator } from '../validators/reference-target-validator';
+import type { ReferenceResolver } from '../validators/slicing-validator';
 import type { AspectResult, MultiAspectValidateResult, ValidateOneFn } from './multi-aspect-types';
+import { shouldValidateBundleEntryResources } from './single-resource-validation';
+import { BatchValidationAbortedError } from './batch-validator';
+import { withIssuesSchemaVersion } from './issue-schema-version';
 
 interface MultiAspectDeps {
   sdLoader: StructureDefinitionLoader;
@@ -63,6 +73,16 @@ const BUNDLE_ENTRY_MAX_DEPTH = 3;
 // Stateless enumerator for the opt-in target-profile-conformance pass.
 const targetProfileConformanceEnumerator = new ReferenceTargetValidator();
 
+function combineReferenceResolvers(
+  primary: ReferenceResolver | null,
+  fallback?: ReferenceResolver,
+): ReferenceResolver | null {
+  if (!primary) return fallback ?? null;
+  if (!fallback) return primary;
+
+  return reference => primary(reference) ?? fallback(reference);
+}
+
 /**
  * Builds the validateResource callback for multi-aspect batch validation.
  * Each invocation validates a single resource across all enabled aspects
@@ -73,6 +93,9 @@ export function buildMultiAspectValidateCallback(
   aspects: string[],
   settings: unknown,
   organizationId?: number,
+  shouldStop?: () => boolean,
+  onEmbeddedResourceValidated?: (resource: Record<string, unknown>, result: MultiAspectValidateResult) => void | Promise<void>,
+  externalReferenceResolver?: ReferenceResolver,
 ): (resource: unknown, profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6') => Promise<MultiAspectValidateResult> {
   // Resolve once per batch, not per resource — strictness, aspect
   // severity caps, and advisor rules don't change between resources.
@@ -83,7 +106,14 @@ export function buildMultiAspectValidateCallback(
   const advisorRules: AdvisorRule[] =
     typedSettings?.advisorRules ?? [];
   const forPublication = isForPublication(typedSettings);
+  const validateBundleEntries = shouldValidateBundleEntryResources(typedSettings);
+  const runCustomRules = typedSettings?.autoApplyCustomRules !== false;
   const profileLoadCache = new Map<string, Promise<ProfileLoadResult>>();
+  const throwIfStopped = () => {
+    if (shouldStop?.()) {
+      throw new BatchValidationAbortedError();
+    }
+  };
 
   const validateOne: ValidateOneFn = async (
     resource: unknown,
@@ -93,16 +123,25 @@ export function buildMultiAspectValidateCallback(
     enclosingBundle?: Record<string, unknown>,
     skipTargetProfileConformance?: boolean,
   ) => {
+    throwIfStopped();
     const res = resource as Record<string, unknown>;
     const collectedAspects: AspectResult[] = [];
 
     const runAspect = async (name: string, fn: () => Promise<ValidationIssue[]>) => {
+      throwIfStopped();
       const aspectStart = Date.now();
       try {
+        throwIfStopped();
         const rawIssues = await fn();
+        throwIfStopped();
         const afterStrictness = applyStrictnessSeverity(rawIssues, strictness, aspectSeverityFor(name));
         const { resultIssues: afterAdvisor } = applyAdvisorRules(afterStrictness, advisorRules);
-        const issues = applyPublicationEscalation(afterAdvisor, forPublication);
+        throwIfStopped();
+        const issues = withIssuesSchemaVersion(
+          applyPublicationEscalation(afterAdvisor, forPublication),
+          fhirVersion,
+        );
+        throwIfStopped();
         const time = Date.now() - aspectStart;
         collectedAspects.push({
           aspect: name,
@@ -111,11 +150,17 @@ export function buildMultiAspectValidateCallback(
           isValid: issues.every(i => i.severity !== 'error' && i.severity !== 'fatal')
         });
       } catch (e: unknown) {
+        if (e instanceof BatchValidationAbortedError) {
+          throw e;
+        }
         const msg = e instanceof Error ? e.message : String(e);
         const time = Date.now() - aspectStart;
         collectedAspects.push({
           aspect: name,
-          issues: [createValidationErrorIssue(name, 'internal-error', msg)],
+          issues: withIssuesSchemaVersion(
+            [createValidationErrorIssue(name, 'internal-error', msg)],
+            fhirVersion,
+          ),
           validationTime: time,
           isValid: false
         });
@@ -139,6 +184,7 @@ export function buildMultiAspectValidateCallback(
       profileLoadCache.set(profileLoadKey, profileLoadPromise);
     }
     const loadResult = await profileLoadPromise;
+    throwIfStopped();
     const structureDef = loadResult.structureDef;
 
     if (!structureDef) {
@@ -151,7 +197,12 @@ export function buildMultiAspectValidateCallback(
       );
       return {
         isValid: false,
-        aspects: [{ aspect: 'profile', issues: [issue], validationTime: 0, isValid: false }]
+        aspects: [{
+          aspect: 'profile',
+          issues: withIssuesSchemaVersion([issue], fhirVersion),
+          validationTime: 0,
+          isValid: false,
+        }]
       };
     }
 
@@ -165,9 +216,13 @@ export function buildMultiAspectValidateCallback(
         loadResult.incompatibleProfileType,
       )
       : loadResult.usedBaseFallback
-        ? createProfileFallbackIssue(profileUrl, res.resourceType as string)
+        ? createProfileFallbackIssue(profileUrl, res.resourceType as string, deps.sdLoader)
         : null;
 
+    const bundleReferenceResolver = createBundleReferenceResolver(
+      enclosingBundle ?? (resourceType === 'Bundle' ? res : undefined),
+      res,
+    );
     const ctx = {
       resource: res,
       resourceType,
@@ -177,7 +232,7 @@ export function buildMultiAspectValidateCallback(
       strictMode: deps.strictMode,
       settings,
       enclosingBundle,
-      referenceResolver: createBundleReferenceResolver(enclosingBundle ?? (resourceType === 'Bundle' ? res : undefined), res),
+      referenceResolver: combineReferenceResolvers(bundleReferenceResolver, externalReferenceResolver),
     };
 
     // 1. Structural (runs first — validates basic structure)
@@ -261,6 +316,7 @@ export function buildMultiAspectValidateCallback(
 
     if (preInvariantAspects.length > 0) {
       await Promise.all(preInvariantAspects);
+      throwIfStopped();
     }
 
     if (aspects.includes('reference')) {
@@ -308,7 +364,7 @@ export function buildMultiAspectValidateCallback(
       }));
     }
 
-    if (aspects.includes('custom_rule')) {
+    if (aspects.includes('custom_rule') && runCustomRules) {
       parallelAspects.push(runAspect('custom_rule', () =>
         deps.customRuleExecutor.validate({
           resource: ctx.resource,
@@ -327,9 +383,10 @@ export function buildMultiAspectValidateCallback(
 
     if (parallelAspects.length > 0) {
       await Promise.all(parallelAspects);
+      throwIfStopped();
     }
 
-    if (resourceType === 'Bundle' && recursionDepth < BUNDLE_ENTRY_MAX_DEPTH) {
+    if (validateBundleEntries && resourceType === 'Bundle' && recursionDepth < BUNDLE_ENTRY_MAX_DEPTH) {
       await appendBundleEntryValidationResults(
         res,
         fhirVersion,
@@ -344,7 +401,10 @@ export function buildMultiAspectValidateCallback(
           ).resultIssues,
           forPublication,
         ),
+        shouldStop,
+        onEmbeddedResourceValidated,
       );
+      throwIfStopped();
     }
 
     const processedAspects = normalizeIssuesByAspect(collectedAspects);
@@ -365,8 +425,38 @@ function normalizeIssuesByAspect(aspects: AspectResult[]): AspectResult[] {
   );
   const keepIssues = new Set(suppressedIssues);
 
-  return aspects.map(aspect => {
-    const issues = aspect.issues.filter(issue => keepIssues.has(issue));
+  const normalizedByAspect = new Map<string, AspectResult>();
+  const ensureAspect = (aspect: AspectResult): AspectResult => {
+    const existing = normalizedByAspect.get(aspect.aspect);
+    if (existing) return existing;
+    const next = { ...aspect, issues: [], isValid: true };
+    normalizedByAspect.set(aspect.aspect, next);
+    return next;
+  };
+
+  for (const aspect of aspects) {
+    ensureAspect(aspect);
+  }
+
+  for (const aspect of aspects) {
+    for (const issue of aspect.issues) {
+      if (!keepIssues.has(issue)) continue;
+      const targetAspectName = typeof issue.aspect === 'string' && issue.aspect.length > 0
+        ? issue.aspect
+        : aspect.aspect;
+      const targetAspect = normalizedByAspect.get(targetAspectName)
+        ?? ensureAspect({
+          aspect: targetAspectName,
+          issues: [],
+          validationTime: 0,
+          isValid: true,
+        });
+      targetAspect.issues.push(issue);
+    }
+  }
+
+  return Array.from(normalizedByAspect.values()).map(aspect => {
+    const issues = aggregateRemoteCodeSystemBudgetIssues(aspect.issues);
     return {
       ...aspect,
       issues,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BatchedReferenceChecker } from '../batched-reference-checker';
-import { validateReferenceFormat } from '../reference-format-validator';
+import { extractReferences, validateReferenceFormat } from '../reference-format-validator';
 import { parseReference } from '../reference-type-extractor';
 import { getReferenceTypeConstraintValidator } from '../reference-type-constraint-validator';
 
@@ -34,6 +34,43 @@ describe('Reference parsing', () => {
       resourceType: 'Patient',
       resourceId: '9449306753',
       baseUrl: 'https://api.service.nhs.uk/personal-demographics/FHIR/R4',
+    });
+
+    const result = getReferenceTypeConstraintValidator()
+      .validateReferenceType(reference, 'Encounter', 'subject');
+
+    expect(result).toMatchObject({
+      isValid: true,
+      actualType: 'Patient',
+    });
+  });
+
+  it('keeps opaque absolute URLs valid while skipping target type checks', () => {
+    const reference = 'https://hapi.fhir.org/baseR4Patient/ff55ca8e-c43d-11ee-9941-072968e13370';
+
+    expect(parseReference(reference)).toMatchObject({
+      isValid: true,
+      referenceType: 'absolute',
+      resourceType: null,
+    });
+
+    const result = getReferenceTypeConstraintValidator()
+      .validateReferenceType(reference, 'Encounter', 'subject');
+
+    expect(result).toMatchObject({
+      isValid: true,
+      code: 'absolute-reference-type-unknown',
+    });
+  });
+
+  it('parses conditional relative references for target type checks', () => {
+    const reference = 'Patient?identifier=9000951';
+
+    expect(parseReference(reference)).toMatchObject({
+      isValid: true,
+      referenceType: 'relative',
+      resourceType: 'Patient',
+      resourceId: null,
     });
 
     const result = getReferenceTypeConstraintValidator()
@@ -119,6 +156,30 @@ describe('Reference parsing', () => {
       resourceId: 'UKCore-Observation-Group-FullBloodCount-Example',
       issues: [],
     });
+  });
+
+  it('does not extract Expression.reference as a FHIR Reference.reference', () => {
+    const resource = {
+      resourceType: 'PlanDefinition',
+      action: [{
+        condition: [{
+          expression: {
+            language: 'text/cql',
+            reference: 'cql/QuestionnaireLogicLibrary|1.0',
+          },
+        }],
+      }],
+      subjectReference: {
+        reference: 'Patient/example',
+      },
+    };
+
+    expect(extractReferences(resource, 'PlanDefinition')).toEqual([
+      {
+        path: 'PlanDefinition.subjectReference',
+        reference: 'Patient/example',
+      },
+    ]);
   });
 
   it('does not probe absolute references on a different origin by default', async () => {

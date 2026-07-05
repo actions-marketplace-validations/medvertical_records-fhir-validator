@@ -10,12 +10,23 @@
  *   - supplement CodeSystem handling
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { ValueSetPackageLoader } from '../valueset-package-loader';
+import { ValueSetCache } from '../valueset-cache';
 import type { ValueSet, CodeSystem } from '../valueset-types';
+
+const originalPackageCachePath = process.env.FHIR_PACKAGE_CACHE_PATH;
+
+afterEach(() => {
+    if (originalPackageCachePath === undefined) {
+        delete process.env.FHIR_PACKAGE_CACHE_PATH;
+    } else {
+        process.env.FHIR_PACKAGE_CACHE_PATH = originalPackageCachePath;
+    }
+});
 
 function makeLoader(
     codeSystems: Record<string, CodeSystem>,
@@ -346,6 +357,14 @@ describe('ValueSetPackageLoader.extractCodesFromCodeSystem — supplements', () 
 });
 
 describe('ValueSetPackageLoader canonical package scan', () => {
+    it('expands literal home placeholders in FHIR_PACKAGE_CACHE_PATH', () => {
+        process.env.FHIR_PACKAGE_CACHE_PATH = '$HOME/.fhir/packages';
+
+        const loader = new ValueSetPackageLoader();
+
+        expect(loader.getPackageDirectories()[0]).toBe(path.join(os.homedir(), '.fhir', 'packages'));
+    });
+
     it('loads ValueSets and CodeSystems whose filenames do not match the canonical suffix', async () => {
         const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
         const packageDir = path.join(root, 'example.fhir#1.0.0', 'package');
@@ -382,6 +401,69 @@ describe('ValueSetPackageLoader canonical package scan', () => {
 
         expect(codes).toContain('urn:oid:1.2.3|valid');
         expect(codes).toContain('valid');
+    });
+
+    it('caches loaded CodeSystems under both FHIR-version and canonical keys', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
+        const packageDir = path.join(root, 'kbv.ita.eau#1.1.0', 'package');
+        await fs.mkdir(packageDir, { recursive: true });
+
+        const canonical = 'https://fhir.kbv.de/CodeSystem/KBV_CS_FOR_Section_Type';
+        const codeSystem: CodeSystem = {
+            resourceType: 'CodeSystem',
+            url: canonical,
+            status: 'active',
+            content: 'complete',
+            concept: [{ code: 'Patient' }],
+        };
+
+        await fs.writeFile(
+            path.join(packageDir, 'KBV_CS_FOR_Section_Type.json'),
+            JSON.stringify(codeSystem),
+        );
+
+        const cache = new ValueSetCache();
+        const loader = new ValueSetPackageLoader(cache);
+        (loader as any).packageDirectories = [root];
+
+        await expect(loader.loadCodeSystem(canonical, '4')).resolves.toMatchObject({
+            url: canonical,
+        });
+        expect(cache.getCodeSystem(`${canonical}|fhir4`)).toMatchObject({ url: canonical });
+        expect(cache.getCodeSystem(canonical)).toMatchObject({ url: canonical });
+        expect(cache.getCodeSystemFile(canonical)).toMatchObject({ url: canonical });
+    });
+
+    it('does not let a negative CodeSystem cache entry hide a later package match', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
+        const packageDir = path.join(root, 'kbv.ita.eau#1.1.0', 'package');
+        await fs.mkdir(packageDir, { recursive: true });
+
+        const canonical = 'https://fhir.kbv.de/CodeSystem/KBV_CS_EAU_AU_Type';
+        const codeSystem: CodeSystem = {
+            resourceType: 'CodeSystem',
+            url: canonical,
+            status: 'active',
+            content: 'complete',
+            concept: [{ code: 'ERST' }],
+        };
+
+        await fs.writeFile(
+            path.join(packageDir, 'KBV_CS_EAU_AU_Type.json'),
+            JSON.stringify(codeSystem),
+        );
+
+        const cache = new ValueSetCache();
+        cache.setCodeSystemFile(`${canonical}|fhir4`, null);
+
+        const loader = new ValueSetPackageLoader(cache);
+        (loader as any).packageDirectories = [root];
+
+        await expect(loader.loadCodeSystem(canonical, '4')).resolves.toMatchObject({
+            url: canonical,
+            concept: [{ code: 'ERST' }],
+        });
+        expect(cache.getCodeSystemFile(`${canonical}|fhir4`)).toMatchObject({ url: canonical });
     });
 
     it('prefers the newest package version when multiple packages share a canonical URL', async () => {

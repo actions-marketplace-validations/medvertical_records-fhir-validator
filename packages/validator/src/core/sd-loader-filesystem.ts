@@ -9,6 +9,20 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import type { StructureDefinition } from './structure-definition-types';
 import { logger } from '../logger';
+import { compareVersions } from './sd-loader-package-scanner';
+import { matchesRequestedFhirVersion, type FhirVersionFamily } from './sd-loader-version-utils';
+
+type IndexedProfile = {
+  sd: StructureDefinition;
+  sourceName: string;
+};
+
+type PackageProfileIndex = {
+  byUrl: Map<string, IndexedProfile[]>;
+  byVersionedUrl: Map<string, IndexedProfile>;
+};
+
+const packageProfileIndexCache = new Map<string, Promise<PackageProfileIndex>>();
 
 function isPreReleaseVersion(version: string | undefined): boolean {
   return typeof version === 'string' && version.includes('-');
@@ -22,6 +36,11 @@ function allowsUnversionedPreRelease(targetUrl: string): boolean {
   return targetUrl.includes('hl7.eu/fhir/eps');
 }
 
+function hl7UvPackagePrefix(url: string): string | null {
+  const match = url.toLowerCase().match(/^https?:\/\/hl7\.org\/fhir\/uv\/([^/]+)\//);
+  return match ? `hl7.fhir.uv.${match[1]}` : null;
+}
+
 /**
  * Check if a package is relevant for a given profile URL and version
  */
@@ -32,19 +51,22 @@ export function isRelevantPackage(
 ): boolean {
   const versionLower = fhirVersion.toLowerCase();
 
-  // Exclude cross-version extension packages for core FHIR types
+  // Exclude cross-version extension packages for core FHIR types.
   // These packages (xver, extensions.r5) contain R5 extensions that should not
-  // be used when loading core R4 StructureDefinitions
+  // be used when loading core R4 StructureDefinitions.
   if (packageName.includes('xver') || packageName.includes('extensions.r5')) {
-    // Only include for extension URLs, not core resources
-    if (!url.includes('/Extension/')) {
+    if (!packageName.startsWith(`hl7.fhir.uv.extensions.${versionLower}`)) {
       return false;
     }
   }
 
-  // Core FHIR profiles
+  // Core FHIR profiles and HL7-published extension StructureDefinitions share
+  // the same canonical namespace. Search both the core package and the
+  // matching-version HL7 extension package so URLs such as
+  // http://hl7.org/fhir/StructureDefinition/itemWeight resolve locally.
   if (url.includes('hl7.org/fhir/StructureDefinition/')) {
-    return packageName.startsWith(`hl7.fhir.${versionLower}.core`);
+    return packageName.startsWith(`hl7.fhir.${versionLower}.core`) ||
+      packageName.startsWith(`hl7.fhir.uv.extensions.${versionLower}`);
   }
 
   // US Core
@@ -52,10 +74,28 @@ export function isRelevantPackage(
     return packageName.startsWith('hl7.fhir.us.core');
   }
 
+  const uvPackagePrefix = hl7UvPackagePrefix(url);
+  if (uvPackagePrefix) {
+    return packageName.toLowerCase().startsWith(uvPackagePrefix);
+  }
+
   // German profiles (Basisprofil + Einwilligungsmanagement)
   if (url.includes('fhir.de') || url.includes('basisprofil')) {
     return packageName.startsWith('de.basisprofil') ||
       packageName.startsWith('de.einwilligungsmanagement');
+  }
+
+  // KBV packages are split by domain. Restricting these avoids broad cache
+  // scans during batch validation and keeps versioned package lookups inside
+  // the owning IG package.
+  if (url.includes('fhir.kbv.de')) {
+    if (url.includes('KBV_') && url.includes('_EAU_')) {
+      return packageName.startsWith('kbv.ita.eau');
+    }
+    if (url.includes('KBV_') && url.includes('_FOR_')) {
+      return packageName.startsWith('kbv.ita.for');
+    }
+    return packageName.startsWith('kbv.');
   }
 
   // HL7 Europe packages. Without these guards, EU profile lookups fall
@@ -111,7 +151,6 @@ export function isRelevantPackage(
  * Load StructureDefinition from local cache (multi-source)
  * Tries sources in priority order: bundled → cache
  */
-// eslint-disable-next-line max-lines-per-function
 export async function loadFromLocalCache(
   url: string,
   packageSources: string[],
@@ -131,14 +170,12 @@ export async function loadFromLocalCache(
     const resourceType = targetUrl.split('/').pop();
     if (!resourceType) return null;
 
-    let urlMatch: StructureDefinition | null = null;
-    let urlMatchSource: string = '';
-
     // Try each package source in priority order
     for (const source of packageSources) {
       try {
         // Read package directories
         const entries = await fs.readdir(source, { withFileTypes: true });
+        let sourceMatch: IndexedProfile | null = null;
 
         for (const entry of entries) {
           if (!entry.isDirectory()) continue;
@@ -156,68 +193,34 @@ export async function loadFromLocalCache(
 
           for (const packagePath of packagePaths) {
             try {
-              await fs.access(packagePath);
-
-              const checkSd = (sd: any, sourceName: string) => {
-                if (sd?.resourceType === 'StructureDefinition' && sd.url === targetUrl) {
-                  if (!targetVersion || sd.version === targetVersion) {
-                    if (!targetVersion && isPreReleaseVersion(sd.version) && !allowsUnversionedPreRelease(targetUrl)) {
-                      logger.info(`[SDLoader] Skipping pre-release profile ${targetUrl}@${sd.version} from ${sourceName}; unversioned canonicals must resolve to stable packages`);
-                      return null;
-                    }
-                    return sd; // Found exact match
-                  }
-                  // Keep candidate if we haven't found one yet
-                  if (!urlMatch && (!isPreReleaseVersion(sd.version) || allowsUnversionedPreRelease(targetUrl))) {
-                    urlMatch = sd;
-                    urlMatchSource = sourceName;
-                  }
+              const index = await loadPackageProfileIndex(packagePath, entry.name, resourceType);
+              const exact = selectExactProfile(index, targetUrl, targetVersion, fhirVersion);
+              if (exact) {
+                if (targetVersion) {
+                  logger.debug(`[SDLoader] Loaded ${url} from ${exact.sourceName}`);
+                  return exact.sd;
                 }
-                return null;
-              };
-
-              // Try standard filename: StructureDefinition-{ResourceType}.json
-              const fileName = `StructureDefinition-${resourceType}.json`;
-              const filePath = path.join(packagePath, fileName);
-
-              try {
-                const content = await fs.readFile(filePath, 'utf-8');
-                const sd = JSON.parse(content) as StructureDefinition;
-                const match = checkSd(sd, `${entry.name}/${fileName}`);
-                if (match) {
-                  logger.debug(`[SDLoader] Loaded ${url} from ${entry.name}`);
-                  return match;
-                }
-              } catch {
-                // File not found with simple name, will search all files below
+                sourceMatch = selectBetterUnversionedProfile(sourceMatch, exact, targetUrl);
               }
 
-              // Search all JSON files in package (some IGs don't prefix with "StructureDefinition-")
-              const files = await fs.readdir(packagePath);
-
-              for (const file of files) {
-                if (!file.endsWith('.json')) {
-                  continue;
-                }
-
-                const filePath = path.join(packagePath, file);
-                try {
-                  const content = await fs.readFile(filePath, 'utf-8');
-                  const sd = JSON.parse(content) as StructureDefinition;
-                  const match = checkSd(sd, `${entry.name}/${file}`);
-                  if (match) {
-                    logger.debug(`[SDLoader] Loaded ${url} from ${entry.name}/${file}`);
-                    return match;
-                  }
-                } catch {
-                  // Parse error or read error, skip this file
-                  continue;
+              if (!targetVersion && !sourceMatch) {
+                const candidate = selectUnversionedCandidate(index, targetUrl, fhirVersion);
+                if (candidate) {
+                  sourceMatch = candidate;
                 }
               }
             } catch {
               continue; // Try next path
             }
           }
+        }
+
+        if (sourceMatch) {
+          logger.info(
+            `[SDLoader] Loaded ${url} from ${sourceMatch.sourceName} ` +
+            `(selected version ${sourceMatch.sd.version || 'unknown'})`
+          );
+          return sourceMatch.sd;
         }
       } catch {
         continue; // Try next source
@@ -231,17 +234,155 @@ export async function loadFromLocalCache(
       return null;
     }
 
-    // Return candidate if found (and no exact match was returned above)
-    if (urlMatch) {
-      logger.info(`[SDLoader] Loaded version mismatch for ${url} from ${urlMatchSource} (found version ${(urlMatch as StructureDefinition).version})`);
-      return urlMatch;
-    }
-
     return null;
   } catch (error) {
     logger.error(`[SDLoader] Error loading from local cache:`, error);
     return null;
   }
+}
+
+async function loadPackageProfileIndex(
+  packagePath: string,
+  packageName: string,
+  preferredResourceType: string
+): Promise<PackageProfileIndex> {
+  const cacheKey = packagePath;
+  const existing = packageProfileIndexCache.get(cacheKey);
+  if (existing) return existing;
+
+  await fs.access(packagePath);
+  const promise = buildPackageProfileIndex(packagePath, packageName, preferredResourceType);
+  packageProfileIndexCache.set(cacheKey, promise);
+  return promise;
+}
+
+async function buildPackageProfileIndex(
+  packagePath: string,
+  packageName: string,
+  preferredResourceType: string
+): Promise<PackageProfileIndex> {
+  const index: PackageProfileIndex = {
+    byUrl: new Map(),
+    byVersionedUrl: new Map(),
+  };
+
+  const files = await fs.readdir(packagePath);
+  const preferredFile = `StructureDefinition-${preferredResourceType}.json`;
+  const jsonFiles = files
+    .filter(file => file.endsWith('.json'))
+    .sort((a, b) => {
+      if (a === preferredFile) return -1;
+      if (b === preferredFile) return 1;
+      return a.localeCompare(b);
+    });
+
+  for (const file of jsonFiles) {
+    const filePath = path.join(packagePath, file);
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      const sd = JSON.parse(content) as StructureDefinition;
+      if (sd?.resourceType !== 'StructureDefinition' || typeof sd.url !== 'string') {
+        continue;
+      }
+
+      const indexed: IndexedProfile = { sd, sourceName: `${packageName}/${file}` };
+      const candidates = index.byUrl.get(sd.url) ?? [];
+      candidates.push(indexed);
+      index.byUrl.set(sd.url, candidates);
+
+      if (typeof sd.version === 'string' && sd.version.length > 0) {
+        index.byVersionedUrl.set(`${sd.url}|${sd.version}`, indexed);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return index;
+}
+
+function selectExactProfile(
+  index: PackageProfileIndex,
+  targetUrl: string,
+  targetVersion: string | undefined,
+  fhirVersion: FhirVersionFamily,
+): IndexedProfile | null {
+  if (targetVersion) {
+    const exact = index.byVersionedUrl.get(`${targetUrl}|${targetVersion}`);
+    if (exact && matchesRequestedFhirVersion(exact.sd, fhirVersion)) return exact;
+
+    const candidates = index.byUrl.get(targetUrl) ?? [];
+    return candidates.find(candidate =>
+      typeof candidate.sd.version === 'string' &&
+      matchesRequestedFhirVersion(candidate.sd, fhirVersion) &&
+      areCanonicalVersionsEquivalent(targetVersion, candidate.sd.version)
+    ) ?? null;
+  }
+
+  const candidates = index.byUrl.get(targetUrl) ?? [];
+  for (const candidate of candidates) {
+    if (!matchesRequestedFhirVersion(candidate.sd, fhirVersion)) {
+      logger.info(`[SDLoader] Skipping FHIR-version-incompatible profile ${targetUrl}@${candidate.sd.version} from ${candidate.sourceName}`);
+      continue;
+    }
+    if (isPreReleaseVersion(candidate.sd.version) && !allowsUnversionedPreRelease(targetUrl)) {
+      logger.info(`[SDLoader] Skipping pre-release profile ${targetUrl}@${candidate.sd.version} from ${candidate.sourceName}; unversioned canonicals must resolve to stable packages`);
+      continue;
+    }
+    return candidate;
+  }
+
+  return null;
+}
+
+function areCanonicalVersionsEquivalent(requested: string, actual: string): boolean {
+  if (requested === actual) return true;
+  return normalizeShortSemverVersion(requested) === normalizeShortSemverVersion(actual);
+}
+
+function normalizeShortSemverVersion(version: string): string {
+  const match = version.match(/^(\d+)\.(\d+)$/);
+  if (!match) return version;
+  return `${match[1]}.${match[2]}.0`;
+}
+
+function selectBetterUnversionedProfile(
+  current: IndexedProfile | null,
+  candidate: IndexedProfile,
+  targetUrl: string
+): IndexedProfile | null {
+  if (isPreReleaseVersion(candidate.sd.version) && !allowsUnversionedPreRelease(targetUrl)) {
+    logger.info(
+      `[SDLoader] Skipping pre-release profile ${targetUrl}@${candidate.sd.version} ` +
+      `from ${candidate.sourceName}; unversioned canonicals must resolve to stable packages`
+    );
+    return current;
+  }
+
+  if (!current) return candidate;
+
+  const candidateVersion = candidate.sd.version || '0.0.0';
+  const currentVersion = current.sd.version || '0.0.0';
+  if (compareVersions(candidateVersion, currentVersion) > 0) {
+    return candidate;
+  }
+
+  return current;
+}
+
+function selectUnversionedCandidate(
+  index: PackageProfileIndex,
+  targetUrl: string,
+  fhirVersion: FhirVersionFamily,
+): IndexedProfile | null {
+  const candidates = index.byUrl.get(targetUrl) ?? [];
+  for (const candidate of candidates) {
+    if (!matchesRequestedFhirVersion(candidate.sd, fhirVersion)) continue;
+    if (!isPreReleaseVersion(candidate.sd.version) || allowsUnversionedPreRelease(targetUrl)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 /**

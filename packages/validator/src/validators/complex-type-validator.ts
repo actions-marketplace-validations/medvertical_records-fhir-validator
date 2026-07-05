@@ -21,6 +21,7 @@ export class ComplexTypeValidator {
     // wastes those caches. A singleton per ComplexTypeValidator is enough.
     private valueSetValidator: ValueSetValidator;
     private typeDefinitionCache = new Map<string, Promise<StructureDefinition | null>>();
+    private effectiveElementsCache = new Map<string, Promise<Map<string, ElementDefinition> | null>>();
 
     constructor(
         private sdLoader: StructureDefinitionLoader,
@@ -181,6 +182,21 @@ export class ComplexTypeValidator {
         parentStructureDef?: StructureDefinition,
         fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
     ): Promise<Map<string, ElementDefinition> | null> {
+        const cacheKey = this.getEffectiveElementsCacheKey(typeCode, basePath, parentStructureDef, fhirVersion);
+        let promise = this.effectiveElementsCache.get(cacheKey);
+        if (!promise) {
+            promise = this.buildEffectiveElementsUncached(typeCode, basePath, parentStructureDef, fhirVersion);
+            this.effectiveElementsCache.set(cacheKey, promise);
+        }
+        return promise;
+    }
+
+    private async buildEffectiveElementsUncached(
+        typeCode: string,
+        basePath: string,
+        parentStructureDef?: StructureDefinition,
+        fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
+    ): Promise<Map<string, ElementDefinition> | null> {
         const baseTypeDef = await this.loadTypeDefinition(typeCode, fhirVersion);
 
         if (!baseTypeDef?.snapshot?.element) {
@@ -211,6 +227,20 @@ export class ComplexTypeValidator {
         }
 
         return effective;
+    }
+
+    private getEffectiveElementsCacheKey(
+        typeCode: string,
+        basePath: string,
+        parentStructureDef: StructureDefinition | undefined,
+        fhirVersion: 'R4' | 'R5' | 'R6',
+    ): string {
+        const parentKey = [
+            parentStructureDef?.url ?? 'base',
+            parentStructureDef?.version ?? '',
+        ].join('|');
+        const normalizedBasePath = basePath.replace(/\[\d+\]/g, '');
+        return `${fhirVersion}|${typeCode}|${parentKey}|${normalizedBasePath}`;
     }
 
     /**

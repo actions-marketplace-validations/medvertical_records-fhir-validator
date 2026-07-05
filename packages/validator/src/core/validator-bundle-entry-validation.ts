@@ -5,6 +5,7 @@ import type { SnapshotGenerator } from './snapshot-generator';
 import { logger } from '../logger';
 import { buildBundleDocumentContextIssues, type BundleDocumentContextChildResult } from './bundle-document-context';
 import { loadProfileWithSnapshot } from './profile-loader-utils';
+import { shouldSuppressBundleEntryIssue } from './bundle-entry-issue-filter';
 
 export interface BundleEntryValidationDeps {
   sdLoader: StructureDefinitionLoader;
@@ -76,6 +77,7 @@ export async function validateBundleEntryResources(
     const dedupedEntryIssues: ValidationIssue[] = [];
 
     for (const issue of entryIssues) {
+      if (shouldSuppressBundleEntryIssue(issue)) continue;
       const key = `${issue.code}|${issue.path}|${issue.message}`;
       if (seen.has(key)) continue;
       seen.add(key);

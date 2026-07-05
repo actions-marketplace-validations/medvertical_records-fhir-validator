@@ -12,6 +12,7 @@ export interface ExtensionValidationContext {
 export interface ExtensionDefinition {
   url: string;
   path: string;
+  elementId?: string;
   min: number;
   max: string;
   typeCodes?: string[];

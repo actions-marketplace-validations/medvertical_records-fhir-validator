@@ -7,7 +7,7 @@
  * - Remote sources (packages.fhir.org, Simplifier)
  */
 
-import { PackageDownloader, packageDownloader } from '../package/package-downloader.js';
+import { PackageDownloader } from '../package/package-downloader.js';
 import { PackageRegistryClient, packageRegistryClient } from '../package/package-registry-client.js';
 import { logger } from '../logger';
 import type { StructureDefinition } from './structure-definition-types';
@@ -25,6 +25,7 @@ import { loadIGPackageIntoAvailableProfiles } from './sd-loader-ig-package';
 import { loadProfilesBatchWithCache } from './sd-loader-batch-loader';
 import { scanProfileSources, warmUpProfilesFromDatabase } from './sd-loader-initialization';
 import { loadProfile, type LoadProfileContext } from './sd-loader-load';
+export { normalizeKnownStructureDefinitionCanonicalUrl } from './sd-loader-version-utils';
 
 // Re-export types from separate file to break circular dependencies
 export type {
@@ -75,9 +76,9 @@ export class StructureDefinitionLoader {
     this.autoDownload = options?.autoDownload ?? (process.env.FHIR_AUTO_DOWNLOAD_PACKAGES === 'true');
     this.profileSourcesConfig = normalizeProfileSourcesConfig(options?.profileSourcesConfig);
     this.allowedPackages = options?.allowedPackages ?? parseAllowedPackages();
-    this.packageVersionPins = { ...(options?.packageVersionPins ?? {}) };
-    this.packageDownloader = options?.packageDownloader ?? packageDownloader;
     this.registryClient = options?.registryClient ?? packageRegistryClient;
+    this.packageVersionPins = { ...(options?.packageVersionPins ?? {}) };
+    this.packageDownloader = options?.packageDownloader ?? new PackageDownloader(this.cachePath, this.registryClient);
 
     // Priority order for package sources:
     // 1. Bundled profiles (shipped with app) - highest priority. Skipped

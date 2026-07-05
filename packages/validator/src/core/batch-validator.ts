@@ -10,6 +10,7 @@ import type { FhirClientLike } from './profile-loader-utils.js';
 import type { StructureDefinitionLoader } from './structure-definition-loader';
 import type { ProfileCache } from '../cache/profile-cache';
 import type { SnapshotGenerator } from './snapshot-generator';
+import type { ReferenceResolver } from '../validators/slicing-validator';
 import { logger } from '../logger';
 import {
   deduplicateResources,
@@ -26,8 +27,11 @@ export interface BatchValidationOptions {
   aspects?: ValidationAspectType[];
   settings?: ValidationSettings;
   fhirClient?: FhirClientLike;
+  referenceResolver?: ReferenceResolver;
   organizationId?: number;
   onResourceValidated?: (resource: any, result: unknown) => void | Promise<void>;
+  onEmbeddedResourceValidated?: (resource: any, result: unknown) => void | Promise<void>;
+  shouldStop?: () => boolean;
 }
 
 export interface BatchValidatorContext<T = ValidationIssue[]> {
@@ -45,6 +49,24 @@ type AspectTimingResult = {
   }>;
 };
 
+export class BatchValidationAbortedError extends Error {
+  constructor() {
+    super('Batch validation stopped');
+    this.name = 'BatchValidationAbortedError';
+  }
+}
+
+export function isBatchValidationAbortedError(error: unknown): error is BatchValidationAbortedError {
+  return error instanceof BatchValidationAbortedError ||
+    (error instanceof Error && error.name === 'BatchValidationAbortedError');
+}
+
+function throwIfBatchStopped(options: BatchValidationOptions): void {
+  if (options.shouldStop?.()) {
+    throw new BatchValidationAbortedError();
+  }
+}
+
 /**
  * Execute batch validation
  */
@@ -60,6 +82,8 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
   logger.info(`[RecordsValidator] ⚡ Starting batch validation of ${resources.length} resources (concurrency: ${maxConcurrency})`);
 
   try {
+    throwIfBatchStopped(options);
+
     // Step 1: Deduplicate resources by content hash
     const dedupStart = Date.now();
     const { unique, duplicateMap } = deduplicateResources(resources);
@@ -74,6 +98,7 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
 
     // Step 3: Pre-load all required profiles in parallel
     const preloadStart = Date.now();
+    throwIfBatchStopped(options);
     const profileUrls = Array.from(groupedByProfile.keys());
     await preloadProfiles(
       context.sdLoader,
@@ -92,6 +117,7 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
     const resultsMap = new Map<any, T>();
 
     for (const [profileUrl, resourceGroup] of groupedByProfile.entries()) {
+      throwIfBatchStopped(options);
       const groupValidationStart = Date.now();
       logger.info(`[RecordsValidator] 🔄 Validating ${resourceGroup.length} resources against ${profileUrl}...`);
 
@@ -99,12 +125,15 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
       const chunks = chunkArray(resourceGroup, maxConcurrency);
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+        throwIfBatchStopped(options);
         const chunk = chunks[chunkIndex];
         const chunkStart = Date.now();
 
         const chunkPromises = chunk.map(async (resource) => {
+          throwIfBatchStopped(options);
           const resourceStart = Date.now();
           const result = await context.validateResource(resource, profileUrl, fhirVersion);
+          throwIfBatchStopped(options);
           const resourceTime = Date.now() - resourceStart;
 
           if (resourceTime > 500) {
@@ -122,6 +151,7 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
         });
 
         await Promise.all(chunkPromises);
+        throwIfBatchStopped(options);
 
         const chunkTime = Date.now() - chunkStart;
         logger.debug(`[RecordsValidator]   - Chunk ${chunkIndex + 1}/${chunks.length}: ${chunkTime}ms (${chunk.length} resources)`);
@@ -169,6 +199,11 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
     return resultsMap;
 
   } catch (error) {
+    if (isBatchValidationAbortedError(error)) {
+      logger.info('[RecordsValidator] Batch validation stopped before completion');
+      throw error;
+    }
+
     logger.error('[RecordsValidator] Batch validation error:', error);
 
     // Return error results for all resources

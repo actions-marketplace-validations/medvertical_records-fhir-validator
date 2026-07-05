@@ -5,7 +5,7 @@
  * These functions have zero state dependencies and can be tested in isolation.
  */
 
-import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
+import { getPrimitiveSidecar, getResolvedPrimitiveSidecarType, resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
 
 export function getValueAtPath(obj: any, path: string): any {
   if (!path || path === '$this') return obj;
@@ -16,22 +16,50 @@ export function getValueAtPath(obj: any, path: string): any {
   const parts = normalizedPath.split('.');
   let current: any = obj;
 
-  for (const part of parts) {
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const part = parts[partIndex];
+    const hasRemainingPath = partIndex < parts.length - 1;
     if (current === null || current === undefined) return null;
 
     if (Array.isArray(current)) {
       for (const item of current) {
         if (item == null) continue;
-        const v = resolveFhirSegmentValue(item, part);
+        const v = resolveSegmentForPath(item, part, hasRemainingPath);
         if (v !== undefined) return v;
       }
       return null;
     }
 
-    current = resolveFhirSegmentValue(current, part);
+    current = resolveSegmentForPath(current, part, hasRemainingPath);
   }
 
   return current ?? null;
+}
+
+function resolveSegmentForPath(container: any, segment: string, hasRemainingPath: boolean): any {
+  if (
+    hasRemainingPath &&
+    container &&
+    typeof container === 'object' &&
+    !Array.isArray(container) &&
+    isPrimitiveValueOrPrimitiveArray(container[segment])
+  ) {
+    const sidecar = getPrimitiveSidecar(container, segment);
+    if (sidecar !== undefined) return sidecar;
+  }
+
+  return resolveFhirSegmentValue(container, segment);
+}
+
+function isPrimitiveValue(value: unknown): boolean {
+  return value === null ||
+    ['string', 'number', 'boolean'].includes(typeof value);
+}
+
+function isPrimitiveValueOrPrimitiveArray(value: unknown): boolean {
+  return Array.isArray(value)
+    ? value.every(isPrimitiveValue)
+    : isPrimitiveValue(value);
 }
 
 export function valuesMatch(value1: any, value2: any): boolean {
@@ -80,6 +108,8 @@ export function canonicalValuesMatch(actualValue: unknown, expectedValue: unknow
 }
 
 export function inferType(value: any): string {
+  const sidecarType = getResolvedPrimitiveSidecarType(value);
+  if (sidecarType) return sidecarType;
   if (typeof value === 'string') return 'string';
   if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'decimal';
   if (typeof value === 'boolean') return 'boolean';

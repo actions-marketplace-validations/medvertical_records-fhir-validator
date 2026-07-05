@@ -5,10 +5,8 @@
  * Extracted from valueset-validator.ts for modularity.
  */
 
-import * as fs from 'fs';
-import * as https from 'https';
-import axios, { isAxiosError, type AxiosRequestConfig } from 'axios';
-import type { TerminologyResolutionConfig, TerminologyServerOverride, TerminologyApiAuthConfig } from './valueset-types';
+import axios, { isAxiosError } from 'axios';
+import type { TerminologyResolutionConfig, TerminologyServerOverride } from './valueset-types';
 import { ValueSetCache, valueSetCache } from './valueset-cache';
 import { logger } from '../logger';
 import { CircuitBreaker } from '../terminology';
@@ -18,12 +16,15 @@ import {
     getFromCodeSystemValidateCodeCache,
     getFromSubsumesCache,
     getFromValidateCodeCache,
+    getFromValueSetNotResolvableCache,
     makeCodeSystemValidateCodeCacheKey,
     makeSubsumesCacheKey,
     makeValidateCodeCacheKey,
+    makeValueSetNotResolvableCacheKey,
     storeInCodeSystemValidateCodeCache,
     storeInSubsumesCache,
     storeInValidateCodeCache,
+    storeInValueSetNotResolvableCache,
 } from './terminology-api-cache';
 import {
     isSnomedNationalExtensionSystemCode,
@@ -35,6 +36,15 @@ import {
     operationOutcomeCannotResolveBinding,
     validateCodeSucceeded,
 } from './terminology-parameters';
+import { runSingleFlight } from './terminology-pending-requests';
+import { TerminologyRequestConfigBuilder } from './terminology-api-request-config';
+import {
+    DEFAULT_REMOTE_TERMINOLOGY_TIMEOUT_MS,
+    DEFAULT_VALUESET_EXPAND_TIMEOUT_MS,
+    getRemoteTerminologyTimeoutMs,
+    recordTerminologyResponse,
+} from './terminology-api-remote-policy';
+import { RemoteCodeSystemValidationBudget } from './terminology-api-remote-budget';
 
 export type {
     CodeSystemValidationIssue,
@@ -57,21 +67,43 @@ const codeSystemCircuitBreaker = new CircuitBreaker('codesystem-validation', {
     resetTimeout: 30000,    // Try again after 30 seconds
     successThreshold: 1,    // Close after 1 success
 });
+const valueSetValidateCodeCircuitBreakers = new Map<string, CircuitBreaker>();
+const valueSetExpansionCircuitBreakers = new Map<string, CircuitBreaker>();
+const subsumesCircuitBreakers = new Map<string, CircuitBreaker>();
 const pendingValidateCodeRequests = new Map<string, Promise<boolean>>();
 const pendingSubsumesRequests = new Map<string, Promise<SubsumptionOutcome>>();
 const pendingCodeSystemValidateCodeRequests = new Map<string, Promise<CodeSystemValidationResult>>();
+
+function getServerCircuitBreaker(
+    breakers: Map<string, CircuitBreaker>,
+    operation: string,
+    serverUrl: string,
+): CircuitBreaker {
+    const existing = breakers.get(serverUrl);
+    if (existing) return existing;
+
+    const breaker = new CircuitBreaker(`${operation}:${serverUrl}`, {
+        failureThreshold: 3,
+        resetTimeout: 30000,
+        successThreshold: 1,
+    });
+    breakers.set(serverUrl, breaker);
+    return breaker;
+}
+
+function isTransientTerminologyFailure(error: unknown): boolean {
+    const axiosResp = isAxiosError(error) ? error.response : undefined;
+    if (!axiosResp) return true;
+    return axiosResp.status >= 500;
+}
 
 // ============================================================================
 // Terminology API Client
 // ============================================================================
 
 export class TerminologyApiClient {
-    /**
-     * Cached OAuth2 access token with expiry. Refreshed lazily via
-     * `getOAuth2Token()` when it's missing or within 30s of expiry.
-     */
-    private oauth2Token: { accessToken: string; expiresAt: number } | null = null;
-    private mtlsAgent: { signature: string; agent: https.Agent } | null = null;
+    private readonly requestConfigBuilder = new TerminologyRequestConfigBuilder(() => this.config.auth);
+    private readonly remoteCodeSystemBudget = new RemoteCodeSystemValidationBudget();
 
     constructor(
         private config: TerminologyResolutionConfig,
@@ -86,151 +118,8 @@ export class TerminologyApiClient {
         const authChanged =
             JSON.stringify(this.config.auth) !== JSON.stringify(config.auth);
         this.config = config;
-        if (authChanged) this.oauth2Token = null;
-    }
-
-    /**
-     * Build request headers, including auth. When `authOverride` is
-     * provided (from scope-based per-call routing), it takes precedence
-     * over the client's default auth config.
-     */
-    private async buildHeaders(authOverride?: TerminologyApiAuthConfig): Promise<Record<string, string>> {
-        const headers: Record<string, string> = {
-            'Accept': 'application/fhir+json',
-        };
-        const auth = authOverride ?? this.config.auth;
-        if (!auth || auth.type === 'none') return headers;
-
-        switch (auth.type) {
-            case 'basic':
-                if (auth.username && auth.password) {
-                    const encoded = Buffer.from(`${auth.username}:${auth.password}`).toString('base64');
-                    headers['Authorization'] = `Basic ${encoded}`;
-                }
-                break;
-            case 'bearer':
-                if (auth.token) {
-                    headers['Authorization'] = `Bearer ${auth.token}`;
-                }
-                break;
-            case 'oauth2': {
-                const token = await this.getOAuth2Token(auth);
-                if (token) headers['Authorization'] = `Bearer ${token}`;
-                break;
-            }
-            case 'mtls':
-                break;
-        }
-        return headers;
-    }
-
-    private async buildRequestConfig(
-        authOverride: TerminologyApiAuthConfig | undefined,
-        timeout: number,
-        params?: Record<string, unknown>,
-    ): Promise<AxiosRequestConfig> {
-        const auth = authOverride ?? this.config.auth;
-        const httpsAgent = this.buildHttpsAgent(auth);
-
-        return {
-            ...(params ? { params } : {}),
-            timeout,
-            headers: await this.buildHeaders(auth),
-            ...(httpsAgent ? { httpsAgent } : {}),
-        };
-    }
-
-    private buildHttpsAgent(auth?: TerminologyApiAuthConfig): https.Agent | undefined {
-        if (!auth || auth.type !== 'mtls') return undefined;
-
-        const signature = JSON.stringify({
-            clientCert: auth.clientCert,
-            clientCertPath: auth.clientCertPath,
-            clientKey: auth.clientKey,
-            clientKeyPath: auth.clientKeyPath,
-            caCert: auth.caCert,
-            caCertPath: auth.caCertPath,
-            passphrase: auth.passphrase,
-            rejectUnauthorized: auth.rejectUnauthorized,
-        });
-        if (this.mtlsAgent?.signature === signature) {
-            return this.mtlsAgent.agent;
-        }
-
-        const cert = this.readTlsMaterial(auth.clientCert, auth.clientCertPath, 'client certificate');
-        const key = this.readTlsMaterial(auth.clientKey, auth.clientKeyPath, 'client key');
-        if (!cert || !key) {
-            logger.warn('[TerminologyApiClient] mTLS auth configured without both client certificate and key; request will be sent without mTLS credentials.');
-            return undefined;
-        }
-
-        const ca = this.readTlsMaterial(auth.caCert, auth.caCertPath, 'CA certificate');
-        const agent = new https.Agent({
-            cert,
-            key,
-            ...(ca ? { ca } : {}),
-            ...(auth.passphrase ? { passphrase: auth.passphrase } : {}),
-            rejectUnauthorized: auth.rejectUnauthorized ?? true,
-        });
-        this.mtlsAgent = { signature, agent };
-        return agent;
-    }
-
-    private readTlsMaterial(inlineValue: string | undefined, filePath: string | undefined, label: string): string | undefined {
-        if (inlineValue) return inlineValue;
-        if (!filePath) return undefined;
-
-        try {
-            return fs.readFileSync(filePath, 'utf8');
-        } catch (error) {
-            logger.warn(`[TerminologyApiClient] Could not read mTLS ${label} from configured path: ${error instanceof Error ? error.message : String(error)}`);
-            return undefined;
-        }
-    }
-
-    /**
-     * Get an OAuth2 access token via client-credentials grant. Caches
-     * the token until 30s before its `expires_in` window closes.
-     */
-    private async getOAuth2Token(
-        auth: NonNullable<TerminologyResolutionConfig['auth']>,
-    ): Promise<string | null> {
-        if (!auth.clientId || !auth.clientSecret || !auth.tokenUrl) return null;
-
-        // Return cached token if still fresh (refresh 30s before expiry)
-        if (this.oauth2Token && Date.now() < this.oauth2Token.expiresAt - 30_000) {
-            return this.oauth2Token.accessToken;
-        }
-
-        try {
-            const body = new URLSearchParams({
-                grant_type: 'client_credentials',
-                client_id: auth.clientId,
-                client_secret: auth.clientSecret,
-            });
-            if (auth.scope) body.append('scope', auth.scope);
-
-            const resp = await axios.post(auth.tokenUrl, body.toString(), {
-                timeout: 10000,
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            });
-            if (resp.data?.access_token) {
-                const expiresInSec = typeof resp.data.expires_in === 'number' ? resp.data.expires_in : 3600;
-                this.oauth2Token = {
-                    accessToken: resp.data.access_token,
-                    expiresAt: Date.now() + expiresInSec * 1000,
-                };
-                logger.info(`[TerminologyApiClient] OAuth2 token acquired (expires in ${expiresInSec}s)`);
-                return this.oauth2Token.accessToken;
-            }
-            logger.warn('[TerminologyApiClient] OAuth2 token endpoint returned no access_token');
-            return null;
-        } catch (err) {
-            logger.warn(
-                `[TerminologyApiClient] OAuth2 token acquisition failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            return null;
-        }
+        if (authChanged) this.requestConfigBuilder.resetAuthCache();
+        this.remoteCodeSystemBudget.reset();
     }
 
     /**
@@ -251,9 +140,16 @@ export class TerminologyApiClient {
             return cached;
         }
 
+        const circuitBreaker = getServerCircuitBreaker(valueSetExpansionCircuitBreakers, 'valueset-expand', serverUrl);
+        if (!(await circuitBreaker.allowRequest())) {
+            logger.debug(`[TerminologyApiClient] $expand circuit open for ${serverUrl}; skipping ${valueSetUrl}`);
+            return null;
+        }
+
         try {
+            const startedAt = Date.now();
             const response = await axios.get(`${serverUrl}/ValueSet/$expand`, {
-                ...(await this.buildRequestConfig(override?.auth, 10000, {
+                ...(await this.requestConfigBuilder.build(override?.auth, getRemoteTerminologyTimeoutMs(this.config, DEFAULT_VALUESET_EXPAND_TIMEOUT_MS), {
                     url: valueSetUrl,
                     _format: 'json'
                 })),
@@ -277,12 +173,19 @@ export class TerminologyApiClient {
                 }
 
                 logger.debug(`[TerminologyApiClient] Server $expand succeeded: ${valueSetUrl}, ${codes.size} codes`);
+                recordTerminologyResponse(circuitBreaker, this.config, '$expand', serverUrl, startedAt);
                 return codes;
             }
 
+            recordTerminologyResponse(circuitBreaker, this.config, '$expand', serverUrl, startedAt);
             return null;
         } catch (error: unknown) {
             const err = error instanceof Error ? error : new Error(String(error));
+            if (isTransientTerminologyFailure(error)) {
+                circuitBreaker.recordFailure();
+            } else {
+                circuitBreaker.recordSuccess();
+            }
             logger.debug(`[TerminologyApiClient] Server $expand failed for ${valueSetUrl}: ${err.message}`);
             return null;
         }
@@ -302,6 +205,12 @@ export class TerminologyApiClient {
         const serverUrl = override?.url ?? this.config.serverUrl;
         if (!serverUrl) return false;
 
+        const valueSetNotResolvableKey = makeValueSetNotResolvableCacheKey(serverUrl, valueSetUrl);
+        if (getFromValueSetNotResolvableCache(valueSetNotResolvableKey)) {
+            logger.debug(`[TerminologyApiClient] validate-code ValueSet not-resolvable cache HIT: ${valueSetUrl}`);
+            return true;
+        }
+
         // Short-circuit: identical (server,system,code,valueSet) lookups
         // are extremely common in bulk runs. The tx server would answer
         // the same way every time within the TTL window.
@@ -312,19 +221,19 @@ export class TerminologyApiClient {
             return cached;
         }
 
-        const pending = pendingValidateCodeRequests.get(cacheKey);
-        if (pending) {
-            logger.debug(`[TerminologyApiClient] validate-code in-flight HIT: ${code} in ${valueSetUrl}`);
-            return pending;
-        }
-
-        const request = this.executeValidateCodeRequest(cacheKey, code, system, valueSetUrl, bindingStrength, override);
-        pendingValidateCodeRequests.set(cacheKey, request);
-        try {
-            return await request;
-        } finally {
-            pendingValidateCodeRequests.delete(cacheKey);
-        }
+        return runSingleFlight(
+            pendingValidateCodeRequests,
+            cacheKey,
+            () => logger.debug(`[TerminologyApiClient] validate-code in-flight HIT: ${code} in ${valueSetUrl}`),
+            async () => {
+                const circuitBreaker = getServerCircuitBreaker(valueSetValidateCodeCircuitBreakers, 'valueset-validate-code', serverUrl);
+                if (!(await circuitBreaker.allowRequest())) {
+                    logger.debug(`[TerminologyApiClient] $validate-code circuit open for ${serverUrl}; skipping ${code} in ${valueSetUrl}`);
+                    return false;
+                }
+                return this.executeValidateCodeRequest(cacheKey, code, system, valueSetUrl, bindingStrength, override);
+            },
+        );
     }
 
     /**
@@ -353,25 +262,30 @@ export class TerminologyApiClient {
             return cached;
         }
 
-        const pending = pendingCodeSystemValidateCodeRequests.get(cacheKey);
-        if (pending) {
-            logger.debug(`[TerminologyApiClient] CodeSystem validate-code in-flight HIT: ${system}|${code}`);
-            return pending;
-        }
+        return runSingleFlight(
+            pendingCodeSystemValidateCodeRequests,
+            cacheKey,
+            () => logger.debug(`[TerminologyApiClient] CodeSystem validate-code in-flight HIT: ${system}|${code}`),
+            async () => {
+                // Circuit breaker: fail fast if server is down
+                if (codeSystemCircuitBreaker.isOpen()) {
+                    logger.debug(`[TerminologyApiClient] Circuit breaker OPEN, skipping CodeSystem validation for ${system}`);
+                    return { valid: true }; // Fail open when server unavailable
+                }
 
-        // Circuit breaker: fail fast if server is down
-        if (codeSystemCircuitBreaker.isOpen()) {
-            logger.debug(`[TerminologyApiClient] Circuit breaker OPEN, skipping CodeSystem validation for ${system}`);
-            return { valid: true }; // Fail open when server unavailable
-        }
+                if (!this.remoteCodeSystemBudget.reserve(serverUrl, this.config)) {
+                    return {
+                        valid: true,
+                        reason: 'remote-budget-exhausted',
+                        message:
+                            `Remote CodeSystem validation budget exhausted for ${serverUrl}; ` +
+                            `code/display was not verified remotely.`,
+                    };
+                }
 
-        const request = this.executeCodeSystemValidateCodeRequest(cacheKey, serverUrl, code, system, display, override);
-        pendingCodeSystemValidateCodeRequests.set(cacheKey, request);
-        try {
-            return await request;
-        } finally {
-            pendingCodeSystemValidateCodeRequests.delete(cacheKey);
-        }
+                return this.executeCodeSystemValidateCodeRequest(cacheKey, serverUrl, code, system, display, override);
+            },
+        );
     }
 
     private async executeCodeSystemValidateCodeRequest(
@@ -392,11 +306,12 @@ export class TerminologyApiClient {
 
             logger.debug(`[TerminologyApiClient] Validating code '${code}' in CodeSystem ${system} via ${serverUrl}`);
 
+            const startedAt = Date.now();
             const response = await axios.get(`${serverUrl}/CodeSystem/$validate-code`, {
-                ...(await this.buildRequestConfig(override?.auth, 5000, params)),
+                ...(await this.requestConfigBuilder.build(override?.auth, getRemoteTerminologyTimeoutMs(this.config, DEFAULT_REMOTE_TERMINOLOGY_TIMEOUT_MS), params)),
             });
 
-            codeSystemCircuitBreaker.recordSuccess();
+            recordTerminologyResponse(codeSystemCircuitBreaker, this.config, 'CodeSystem/$validate-code', serverUrl, startedAt);
             const result = parseCodeSystemValidationParameters(response.data, code, system);
             storeInCodeSystemValidateCodeCache(cacheKey, result);
             return result;
@@ -453,19 +368,19 @@ export class TerminologyApiClient {
             return cached;
         }
 
-        const pending = pendingSubsumesRequests.get(cacheKey);
-        if (pending) {
-            logger.debug(`[TerminologyApiClient] $subsumes in-flight HIT: ${system}|${codeA} → ${codeB}`);
-            return pending;
-        }
-
-        const request = this.executeSubsumesRequest(cacheKey, system, codeA, codeB, override);
-        pendingSubsumesRequests.set(cacheKey, request);
-        try {
-            return await request;
-        } finally {
-            pendingSubsumesRequests.delete(cacheKey);
-        }
+        return runSingleFlight(
+            pendingSubsumesRequests,
+            cacheKey,
+            () => logger.debug(`[TerminologyApiClient] $subsumes in-flight HIT: ${system}|${codeA} → ${codeB}`),
+            async () => {
+                const circuitBreaker = getServerCircuitBreaker(subsumesCircuitBreakers, 'subsumes', serverUrl);
+                if (!(await circuitBreaker.allowRequest())) {
+                    logger.debug(`[TerminologyApiClient] $subsumes circuit open for ${serverUrl}; skipping ${system}|${codeA} -> ${codeB}`);
+                    return 'unknown';
+                }
+                return this.executeSubsumesRequest(cacheKey, system, codeA, codeB, override);
+            },
+        );
     }
 
     private async executeValidateCodeRequest(
@@ -477,6 +392,8 @@ export class TerminologyApiClient {
         override?: TerminologyServerOverride,
     ): Promise<boolean> {
         const serverUrl = override?.url ?? this.config.serverUrl;
+        if (!serverUrl) return false;
+        const circuitBreaker = getServerCircuitBreaker(valueSetValidateCodeCircuitBreakers, 'valueset-validate-code', serverUrl);
         try {
             const params: Record<string, string> = {
                 url: valueSetUrl,
@@ -487,16 +404,19 @@ export class TerminologyApiClient {
                 params.system = system;
             }
 
+            const startedAt = Date.now();
             const response = await axios.get(`${serverUrl}/ValueSet/$validate-code`, {
-                ...(await this.buildRequestConfig(override?.auth, 5000, params)),
+                ...(await this.requestConfigBuilder.build(override?.auth, getRemoteTerminologyTimeoutMs(this.config, DEFAULT_REMOTE_TERMINOLOGY_TIMEOUT_MS), params)),
             });
 
             if (validateCodeSucceeded(response.data)) {
                 logger.debug(`[TerminologyApiClient] Server $validate-code CONFIRMED ${code} in ${valueSetUrl}`);
+                recordTerminologyResponse(circuitBreaker, this.config, 'ValueSet/$validate-code', serverUrl, startedAt);
                 storeInValidateCodeCache(cacheKey, true);
                 return true;
             }
 
+            recordTerminologyResponse(circuitBreaker, this.config, 'ValueSet/$validate-code', serverUrl, startedAt);
             storeInValidateCodeCache(cacheKey, false);
             return false;
         } catch (error: unknown) {
@@ -509,9 +429,13 @@ export class TerminologyApiClient {
             }
 
             if (axiosResp?.status === 422 || axiosResp?.status === 404) {
+                circuitBreaker.recordSuccess();
                 const cantResolve = operationOutcomeCannotResolveBinding(axiosResp.data);
                 if (cantResolve || bindingStrength !== 'required') {
                     logger.warn(`[TerminologyApiClient] Server returned ${axiosResp.status} (${cantResolve ? 'not-resolvable' : 'non-required binding'}). Failing open (assuming valid).`);
+                    if (cantResolve) {
+                        storeInValueSetNotResolvableCache(makeValueSetNotResolvableCacheKey(serverUrl, valueSetUrl));
+                    }
                     storeInValidateCodeCache(cacheKey, true);
                     return true;
                 }
@@ -521,6 +445,7 @@ export class TerminologyApiClient {
             }
 
             // Network / timeout / 5xx — don't cache, may be transient.
+            circuitBreaker.recordFailure();
             return false;
         }
     }
@@ -533,9 +458,12 @@ export class TerminologyApiClient {
         override?: TerminologyServerOverride,
     ): Promise<SubsumptionOutcome> {
         const serverUrl = override?.url ?? this.config.serverUrl;
+        if (!serverUrl) return 'unknown';
+        const circuitBreaker = getServerCircuitBreaker(subsumesCircuitBreakers, 'subsumes', serverUrl);
         try {
+            const startedAt = Date.now();
             const response = await axios.get(`${serverUrl}/CodeSystem/$subsumes`, {
-                ...(await this.buildRequestConfig(override?.auth, 5000, {
+                ...(await this.requestConfigBuilder.build(override?.auth, getRemoteTerminologyTimeoutMs(this.config, DEFAULT_REMOTE_TERMINOLOGY_TIMEOUT_MS), {
                     system,
                     codeA,
                     codeB,
@@ -545,11 +473,18 @@ export class TerminologyApiClient {
 
             const outcome = extractSubsumptionOutcome(response.data);
             if (outcome) {
+                recordTerminologyResponse(circuitBreaker, this.config, 'CodeSystem/$subsumes', serverUrl, startedAt);
                 storeInSubsumesCache(cacheKey, outcome);
                 return outcome;
             }
+            recordTerminologyResponse(circuitBreaker, this.config, 'CodeSystem/$subsumes', serverUrl, startedAt);
         } catch (error: unknown) {
             const err = error instanceof Error ? error : new Error(String(error));
+            if (isTransientTerminologyFailure(error)) {
+                circuitBreaker.recordFailure();
+            } else {
+                circuitBreaker.recordSuccess();
+            }
             logger.debug(`[TerminologyApiClient] Server $subsumes failed for ${system}|${codeA} -> ${codeB}: ${err.message}`);
         }
 

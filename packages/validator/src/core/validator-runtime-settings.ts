@@ -1,6 +1,7 @@
 import type { ValidationSettings } from '../types';
 import { normalizeProfileSourcesConfig } from '@records-fhir/validation-types';
 import type { TerminologyResolutionConfig } from '../validators/valueset-validator';
+import { DEFAULT_RESOLUTION_CONFIG } from '../validators/valueset-types';
 import type { StructureDefinitionLoader } from './structure-definition-loader';
 
 export function expandHomePath(pathStr: string): string {
@@ -40,6 +41,8 @@ export function buildTerminologyResolutionConfig(settings: ValidationSettings): 
     server.enabled && !server.circuitOpen && Boolean(server.url)
   );
   const primaryTerminologyServer = enabledTerminologyServers[0];
+  const defaultServerDelegation =
+    DEFAULT_RESOLUTION_CONFIG.serverDelegation as NonNullable<TerminologyResolutionConfig['serverDelegation']>;
 
   return {
     strategy: primaryTerminologyServer
@@ -56,7 +59,10 @@ export function buildTerminologyResolutionConfig(settings: ValidationSettings): 
       circuitOpen: server.circuitOpen,
       authConfig: server.authConfig,
     })),
-    serverDelegation: settings.terminologyResolution?.serverDelegation,
+    serverDelegation: {
+      ...defaultServerDelegation,
+      ...settings.terminologyResolution?.serverDelegation,
+    },
     twoPhaseExpansion: settings.terminologyResolution?.twoPhaseExpansion,
     reportUnverifiedBindings: settings.terminologyResolution?.reportUnverifiedBindings,
     strictUnverifiedRequiredBindings: settings.terminologyResolution?.strictUnverifiedRequiredBindings,

@@ -104,25 +104,59 @@ function resolveNextSegmentTargets(
       continue;
     }
 
-    const nextValue = resolveSegmentValue(target.current, segment);
-    if (Array.isArray(nextValue)) {
-      nextValue.forEach((item, arrayIndex) => {
-        newTargets.push({
-          current: item,
-          pathSoFar: [...target.pathSoFar, `${segment}[${arrayIndex}]`],
-          resourceTypePart: target.resourceTypePart
+    const nextValues = resolveSegmentTargets(target.current, segment);
+    for (const next of nextValues) {
+      if (Array.isArray(next.value)) {
+        next.value.forEach((item, arrayIndex) => {
+          newTargets.push({
+            current: item,
+            pathSoFar: [...target.pathSoFar, `${next.pathSegment}[${arrayIndex}]`],
+            resourceTypePart: target.resourceTypePart
+          });
         });
-      });
-    } else {
+        continue;
+      }
+
       newTargets.push({
-        current: nextValue,
-        pathSoFar: [...target.pathSoFar, segment],
+        current: next.value,
+        pathSoFar: [...target.pathSoFar, next.pathSegment],
         resourceTypePart: target.resourceTypePart
       });
     }
   }
 
   return newTargets;
+}
+
+function resolveSegmentTargets(
+  currentValue: any,
+  segment: string,
+): Array<{ value: any; pathSegment: string }> {
+  if (segment.endsWith('[x]') && currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue)) {
+    const baseName = segment.slice(0, -3);
+    const directChoiceKey = Object.keys(currentValue).find(key => isConcreteChoiceKey(key, baseName));
+    if (directChoiceKey) {
+      return [{ value: currentValue[directChoiceKey], pathSegment: directChoiceKey }];
+    }
+
+    const sidecarChoiceKey = Object.keys(currentValue).find(
+      key => key.startsWith('_') && isConcreteChoiceKey(key.slice(1), baseName),
+    );
+    if (sidecarChoiceKey) {
+      return [{
+        value: resolveFhirSegmentValue(currentValue, segment),
+        pathSegment: sidecarChoiceKey.slice(1),
+      }];
+    }
+  }
+
+  return [{ value: resolveSegmentValue(currentValue, segment), pathSegment: segment }];
+}
+
+function isConcreteChoiceKey(key: string, baseName: string): boolean {
+  return key.startsWith(baseName) &&
+    key.length > baseName.length &&
+    key[baseName.length] === key[baseName.length].toUpperCase();
 }
 
 function resolveSegmentValue(currentValue: any, segment: string): any {
@@ -148,7 +182,7 @@ function convertToValidationTarget(target: {
     value: target.current,
     fullPath,
     contextPath: contextPath || target.resourceTypePart,
-    isArrayElement: target.pathSoFar.some(segment => segment.includes('[')),
+    isArrayElement: target.pathSoFar.some(segment => /\[\d+\]/.test(segment)),
     arrayIndex: getLastArrayIndex(target.pathSoFar)
   };
 }

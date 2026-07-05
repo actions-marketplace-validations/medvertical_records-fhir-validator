@@ -360,10 +360,10 @@ Most consumers should import from the package root:
 import { getRecordsValidatorClass, ValueSetValidator } from '@records-fhir/validator';
 ```
 
-Advanced integrations can use the explicitly exported subpaths in `package.json`, for example:
+Repository quality and conformance tooling can use the explicit conformance subpath:
 
 ```ts
-import { toOperationOutcome } from '@records-fhir/validator/core/operation-outcome-converter';
+import { toOperationOutcome } from '@records-fhir/validator/conformance';
 ```
 
 Deep imports that are not listed in `exports` are internal and can change without notice.
@@ -521,6 +521,11 @@ evidence. The current engine remains StructureDefinition-first. The FHIR Schema
 graph path runs in parallel and is compared against both Records' current
 StructureDefinition path and Java/reference `OperationOutcome` evidence where a
 reference report exists.
+
+The converter and graph executor are exposed through the experimental
+`@records-fhir/validator/fhir-schema` subpath for evidence tooling and
+dual-path experiments. This does not make the graph path the default runtime
+validator.
 
 The current all-scope MII dual-path lane covers 555 real fixtures. Of those, 512
 have Java/reference coverage through the attached Java CLI supplement

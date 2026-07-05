@@ -71,6 +71,20 @@ describe('MetadataExecutor', () => {
       expect(profileItemIssue).toBeDefined();
     });
 
+    it('should reject meta.profile URLs with raw whitespace', async () => {
+      mockContext.resource.meta.profile = [
+        'http://h17.org.au/fhir/StructureDefinition/au-diagnostic request'
+      ];
+
+      const issues = await executor.validate(mockContext);
+
+      const profileUrlIssue = issues.find(i =>
+        i.code === 'metadata-profile-invalid-url' &&
+        i.path === 'meta.profile[0]'
+      );
+      expect(profileUrlIssue).toBeDefined();
+    });
+
     it('should validate meta.lastUpdated is a string', async () => {
       mockContext.resource.meta.lastUpdated = 12345 as any;
 

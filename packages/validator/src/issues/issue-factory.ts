@@ -203,6 +203,44 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
 // Convenience Factories
 // ============================================================================
 
+const CANONICAL_SYSTEM_SUGGESTIONS: Record<string, string> = {
+    'http://terminology.hl7.org/CodeSystem/condition-verstatus':
+        'http://terminology.hl7.org/CodeSystem/condition-ver-status',
+};
+
+const VALUE_SET_BASE_CANONICAL_SYSTEM_SUGGESTIONS: Record<string, Record<string, string>> = {
+    'http://hl7.org/fhir/ValueSet/allergyintolerance-clinical': {
+        'http://terminology.hl7.org/CodeSystem/condition-clinical':
+            'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical',
+    },
+    'http://hl7.org/fhir/ValueSet/allergyintolerance-verification': {
+        'http://terminology.hl7.org/CodeSystem/condition-ver-status':
+            'http://terminology.hl7.org/CodeSystem/allergyintolerance-verification',
+        'http://terminology.hl7.org/CodeSystem/condition-verstatus':
+            'http://terminology.hl7.org/CodeSystem/allergyintolerance-verification',
+    },
+};
+
+function withoutCanonicalVersion(url: string): string {
+    return url.split('|')[0] ?? url;
+}
+
+function buildBindingViolationDetails(system?: string, valueSet?: string): Record<string, unknown> | undefined {
+    if (!system) return undefined;
+
+    const valueSetBase = valueSet ? withoutCanonicalVersion(valueSet) : undefined;
+    const contextualSuggestion = valueSetBase
+        ? VALUE_SET_BASE_CANONICAL_SYSTEM_SUGGESTIONS[valueSetBase]?.[system]
+        : undefined;
+    const suggestedSystem = contextualSuggestion ?? CANONICAL_SYSTEM_SUGGESTIONS[system];
+    if (!suggestedSystem) return undefined;
+
+    return {
+        suggestedSystem,
+        fixHint: `Replace Coding.system '${system}' with '${suggestedSystem}'.`,
+    };
+}
+
 /**
  * Create a terminology binding violation issue.
  * Uses different message templates for primitive codes (no system) vs Coding types (with system).
@@ -237,6 +275,7 @@ export function createBindingViolation(params: {
         path: params.path,
         resourceType: params.resourceType,
         profile: params.profile,
+        details: buildBindingViolationDetails(params.system, params.valueSet),
         messageParams: hasSystem ? {
             code: params.code,
             system: params.system,

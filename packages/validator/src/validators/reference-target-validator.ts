@@ -280,6 +280,7 @@ export class ReferenceTargetValidator {
               reference: hit.reference,
             },
             severityOverride: 'error',
+            aspectOverride: 'reference',
           }));
         }
       }

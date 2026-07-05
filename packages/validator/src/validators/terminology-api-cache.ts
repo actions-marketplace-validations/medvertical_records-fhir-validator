@@ -1,25 +1,36 @@
 import type { SubsumptionOutcome } from './terminology-api-types';
 
-interface ValidateCodeCacheEntry {
-    result: boolean;
-    cachedAt: number;
-}
-
-interface SubsumesCacheEntry {
-    result: Exclude<SubsumptionOutcome, 'unknown'>;
-    cachedAt: number;
-}
-
-interface CodeSystemValidateCodeCacheEntry {
-    result: unknown;
+interface TimedCacheEntry<T> {
+    result: T;
     cachedAt: number;
 }
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_CACHE_SIZE = 5000;
-const validateCodeCache = new Map<string, ValidateCodeCacheEntry>();
-const subsumesCache = new Map<string, SubsumesCacheEntry>();
-const codeSystemValidateCodeCache = new Map<string, CodeSystemValidateCodeCacheEntry>();
+const validateCodeCache = new Map<string, TimedCacheEntry<boolean>>();
+const subsumesCache = new Map<string, TimedCacheEntry<Exclude<SubsumptionOutcome, 'unknown'>>>();
+const codeSystemValidateCodeCache = new Map<string, TimedCacheEntry<unknown>>();
+const valueSetNotResolvableCache = new Map<string, TimedCacheEntry<boolean>>();
+
+function getFromTimedLruCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string): T | undefined {
+    const entry = cache.get(key);
+    if (!entry) return undefined;
+    if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
+        cache.delete(key);
+        return undefined;
+    }
+    cache.delete(key);
+    cache.set(key, entry);
+    return entry.result;
+}
+
+function storeInTimedLruCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string, result: T): void {
+    if (cache.size >= MAX_CACHE_SIZE) {
+        const oldest = cache.keys().next().value;
+        if (oldest) cache.delete(oldest);
+    }
+    cache.set(key, { result, cachedAt: Date.now() });
+}
 
 export function makeValidateCodeCacheKey(
     serverUrl: string,
@@ -30,28 +41,32 @@ export function makeValidateCodeCacheKey(
     return `${serverUrl}|${system ?? ''}|${code}|${valueSetUrl}`;
 }
 
+export function makeValueSetNotResolvableCacheKey(
+    serverUrl: string,
+    valueSetUrl: string,
+): string {
+    return `${serverUrl}|${valueSetUrl}`;
+}
+
 export function getFromValidateCodeCache(key: string): boolean | undefined {
-    const entry = validateCodeCache.get(key);
-    if (!entry) return undefined;
-    if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
-        validateCodeCache.delete(key);
-        return undefined;
-    }
-    validateCodeCache.delete(key);
-    validateCodeCache.set(key, entry);
-    return entry.result;
+    return getFromTimedLruCache(validateCodeCache, key);
+}
+
+export function getFromValueSetNotResolvableCache(key: string): boolean | undefined {
+    return getFromTimedLruCache(valueSetNotResolvableCache, key);
 }
 
 export function storeInValidateCodeCache(key: string, result: boolean): void {
-    if (validateCodeCache.size >= MAX_CACHE_SIZE) {
-        const oldest = validateCodeCache.keys().next().value;
-        if (oldest) validateCodeCache.delete(oldest);
-    }
-    validateCodeCache.set(key, { result, cachedAt: Date.now() });
+    storeInTimedLruCache(validateCodeCache, key, result);
+}
+
+export function storeInValueSetNotResolvableCache(key: string): void {
+    storeInTimedLruCache(valueSetNotResolvableCache, key, true);
 }
 
 export function clearValidateCodeCache(): void {
     validateCodeCache.clear();
+    valueSetNotResolvableCache.clear();
 }
 
 export function getValidateCodeCacheSize(): number {
@@ -63,24 +78,12 @@ export function makeSubsumesCacheKey(serverUrl: string, system: string, codeA: s
 }
 
 export function getFromSubsumesCache(key: string): SubsumptionOutcome | undefined {
-    const entry = subsumesCache.get(key);
-    if (!entry) return undefined;
-    if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
-        subsumesCache.delete(key);
-        return undefined;
-    }
-    subsumesCache.delete(key);
-    subsumesCache.set(key, entry);
-    return entry.result;
+    return getFromTimedLruCache(subsumesCache, key);
 }
 
 export function storeInSubsumesCache(key: string, result: SubsumptionOutcome): void {
     if (result === 'unknown') return;
-    if (subsumesCache.size >= MAX_CACHE_SIZE) {
-        const oldest = subsumesCache.keys().next().value;
-        if (oldest) subsumesCache.delete(oldest);
-    }
-    subsumesCache.set(key, { result, cachedAt: Date.now() });
+    storeInTimedLruCache(subsumesCache, key, result);
 }
 
 export function getCachedSubsumesOutcome(
@@ -121,23 +124,11 @@ export function makeCodeSystemValidateCodeCacheKey(
 }
 
 export function getFromCodeSystemValidateCodeCache<T>(key: string): T | undefined {
-    const entry = codeSystemValidateCodeCache.get(key);
-    if (!entry) return undefined;
-    if (Date.now() - entry.cachedAt > CACHE_TTL_MS) {
-        codeSystemValidateCodeCache.delete(key);
-        return undefined;
-    }
-    codeSystemValidateCodeCache.delete(key);
-    codeSystemValidateCodeCache.set(key, entry);
-    return entry.result as T;
+    return getFromTimedLruCache(codeSystemValidateCodeCache, key) as T | undefined;
 }
 
 export function storeInCodeSystemValidateCodeCache(key: string, result: unknown): void {
-    if (codeSystemValidateCodeCache.size >= MAX_CACHE_SIZE) {
-        const oldest = codeSystemValidateCodeCache.keys().next().value;
-        if (oldest) codeSystemValidateCodeCache.delete(oldest);
-    }
-    codeSystemValidateCodeCache.set(key, { result, cachedAt: Date.now() });
+    storeInTimedLruCache(codeSystemValidateCodeCache, key, result);
 }
 
 export function clearCodeSystemValidateCodeCache(): void {

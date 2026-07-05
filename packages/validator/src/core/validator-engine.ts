@@ -46,6 +46,7 @@ import { validateResourceStructure } from './validator-structure-validation';
 import { validateRecordsBatch } from './validator-batch-validation';
 import { validateRecordsResource } from './validator-single-resource-validation';
 import { checkRecordsValidatorAvailability } from './validator-initialization';
+import type { ReferenceResolver } from '../validators/slicing-validator';
 
 export type { RecordsValidatorConfig } from './validator-engine-config';
 
@@ -167,13 +168,14 @@ export class RecordsValidator {
     profileUrl?: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
     settings?: ValidationSettings,
-    fhirClient?: FhirClientLike
+    fhirClient?: FhirClientLike,
+    referenceResolver?: ReferenceResolver | null
   ): Promise<ValidationIssue[]> {
     await this.waitForInitialization();
     this.applyRuntimeSettings(settings as ValidationSettings | undefined);
 
     return validateRecordsResource(
-      { resource, profileUrl, fhirVersion, settings, fhirClient },
+      { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver },
       {
         sdLoader: this.sdLoader,
         profileCache: this.profileCache,
@@ -311,11 +313,16 @@ export class RecordsValidator {
   }
 
   /**
-   * Check if a profile is supported
+   * Check if a profile is supported using the same resolution path as
+   * validation: canonical aliases, package pins, local caches, and optional
+   * package auto-downloads all apply.
    */
-  isProfileSupported(profileUrl: string): boolean {
-    // Check if profile is in cache or can be loaded
-    return this.sdLoader.isProfileAvailable(profileUrl);
+  async isProfileSupported(
+    profileUrl: string,
+    fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+  ): Promise<boolean> {
+    await this.waitForInitialization();
+    return (await this.loadProfileWithSnapshot(profileUrl, fhirVersion)) !== null;
   }
 
   /**

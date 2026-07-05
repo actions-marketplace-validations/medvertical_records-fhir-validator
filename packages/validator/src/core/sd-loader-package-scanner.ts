@@ -128,12 +128,14 @@ export async function scanCacheDirectory(
   try {
     const startTime = Date.now();
     const startProfileCount = availableProfiles.size;
+    const sourceProfiles = new Set<string>();
     const packageVersionPins = options.packageVersionPins ?? {};
     const hasVersionPins = Object.keys(packageVersionPins).length > 0;
+    const deduplicateEnabled = process.env.FHIR_DEDUPLICATE_PACKAGES !== 'false';
 
     // 1. Try to load from persistent index first
     if (!hasVersionPins) {
-      const cachedProfiles = await loadFromPersistentIndex(sourcePath);
+      const cachedProfiles = await loadFromPersistentIndex(sourcePath, { deduplicatePackages: deduplicateEnabled });
       if (cachedProfiles) {
         // Index is valid - use cached profiles
         for (const url of cachedProfiles) {
@@ -177,7 +179,6 @@ export async function scanCacheDirectory(
     // Select which packages to scan (deduplicate by preferring latest version)
     const packagesToScan: string[] = [];
     const skippedPackages: string[] = [];
-    const deduplicateEnabled = process.env.FHIR_DEDUPLICATE_PACKAGES !== 'false';
 
     for (const [baseName, versions] of packageVersions.entries()) {
       const pinnedVersion = packageVersionPins[baseName];
@@ -273,9 +274,13 @@ export async function scanCacheDirectory(
 
       try {
         await fs.access(packagePath);
-        const profileCountBefore = availableProfiles.size;
-        await scanPackageDirectory(packagePath, availableProfiles);
-        const profilesInPackage = availableProfiles.size - profileCountBefore;
+        const packageProfiles = new Set<string>();
+        await scanPackageDirectory(packagePath, packageProfiles);
+        for (const profileUrl of packageProfiles) {
+          sourceProfiles.add(profileUrl);
+          availableProfiles.add(profileUrl);
+        }
+        const profilesInPackage = packageProfiles.size;
 
         // Record package details for index
         packageDetails.push({ name: packageName, profileCount: profilesInPackage });
@@ -301,7 +306,7 @@ export async function scanCacheDirectory(
     // not persisted because the active pin set changes which local package
     // versions are eligible.
     if (!hasVersionPins) {
-      await saveToPersistentIndex(sourcePath, availableProfiles, packageDetails);
+      await saveToPersistentIndex(sourcePath, sourceProfiles, packageDetails, { deduplicatePackages: deduplicateEnabled });
     }
 
     return scannedCount;

@@ -10,7 +10,7 @@ export interface RecordsValidatorConfig {
    * and for an installed npm package (the bundled dir ships inside).
    * `RECORDS_BUNDLED_PROFILES_PATH` (env) overrides when set.
    */
-  bundledProfilesPath?: string;
+  bundledProfilesPath?: string | null;
   enableCaching?: boolean;
   strictMode?: boolean;
   timeout?: number;
@@ -36,6 +36,8 @@ export function resolveRecordsValidatorConfig(config: RecordsValidatorConfig): R
     autoDownload: config.autoDownload !== false,
     allowedPackages: config.allowedPackages,
     packageVersionPins: config.packageVersionPins,
-    bundledProfilesPath: config.bundledProfilesPath || process.env.RECORDS_BUNDLED_PROFILES_PATH,
+    bundledProfilesPath: config.bundledProfilesPath !== undefined
+      ? config.bundledProfilesPath
+      : process.env.RECORDS_BUNDLED_PROFILES_PATH,
   };
 }

@@ -98,6 +98,11 @@ export const CATALOG_CORE: Record<string, FixSuggestion> = {
         why: 'The resource cannot be parsed as valid JSON.',
         fix: 'Check for syntax errors: missing quotes, commas, brackets, or trailing commas.',
     },
+    'structural-invalid-format': {
+        why: 'The primitive value does not match the FHIR format for its declared type.',
+        fix: 'Use the FHIR primitive format expected by the element, such as adding seconds and a timezone for dateTime values.',
+        example: 'Use 2026-05-15T11:59:02Z instead of 2026-05-15T11:59:02',
+    },
     'structural-unknown-element': {
         why: 'This element is not defined in the FHIR specification for this resource type.',
         fix: 'Remove the unknown element, or use an extension if custom data is needed.',
@@ -198,8 +203,8 @@ export const CATALOG_CORE: Record<string, FixSuggestion> = {
         fix: 'Use just the version number without ETag wrapper.',
     },
     'metadata-version-id-same-as-id': {
-        why: 'versionId and resource id serve different purposes.',
-        fix: 'Use a separate version identifier, typically sequential numbers.',
+        why: 'versionId and resource id serve different purposes, but matching values are not a FHIR conformance error.',
+        fix: 'Informational only. Keep it if your server intentionally starts versioning at the logical id value.',
     },
     'metadata-version-id-very-high': {
         why: 'Unusually high versionId may indicate timestamp-based versioning.',

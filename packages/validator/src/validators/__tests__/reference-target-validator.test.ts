@@ -34,6 +34,7 @@ describe('ReferenceTargetValidator', () => {
       observationSubjectPatientProfile,
     );
     expect(issues).toContainEqual(expect.objectContaining({
+      aspect: 'reference',
       code: 'reference-target-type-invalid',
       path: 'Observation.subject',
     }));

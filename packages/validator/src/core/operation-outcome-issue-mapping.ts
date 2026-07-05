@@ -43,6 +43,9 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   // bb-obs-value-is-not-quantity baseline.
   ['structural-type-mismatch', 'structure'],
   ['structural-unknown-element', 'structure'],
+  // Java reports primitive date/dateTime/time/base64 format violations as
+  // `invalid` while structural type mismatches remain `structure`.
+  ['structural-invalid-format', 'invalid'],
   ['structural-invalid-id', 'invalid'],
   ['structural-empty-array', 'invalid'],
   ['structural-empty-object', 'invalid'],
@@ -90,6 +93,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['profile-', 'invalid'],
 
   // Terminology
+  ['terminology-codesystem-unresolvable', 'not-found'],
   ['terminology-binding-', 'code-invalid'],
   ['terminology-valueset-', 'code-invalid'],
   ['terminology-', 'code-invalid'],

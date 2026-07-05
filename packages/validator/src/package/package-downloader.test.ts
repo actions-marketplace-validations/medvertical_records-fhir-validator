@@ -65,4 +65,76 @@ describe('PackageDownloader local cache resolution', () => {
       version: '1.0.0-xtehr',
     });
   });
+
+  it('uses an installed stable FHIR-version-suffixed package for an unversioned IG id', async () => {
+    const cacheRoot = await mkdtemp(path.join(tmpdir(), 'records-packages-'));
+    tempDirs.push(cacheRoot);
+    await writeInstalledPackage(cacheRoot, 'hl7.fhir.uv.vulcan-schedule.r4#1.0.0', 'hl7.fhir.uv.vulcan-schedule.r4');
+
+    const downloader = new PackageDownloader(cacheRoot, {
+      getPackageInfo: async () => {
+        throw new Error('registry should not be queried');
+      },
+    } as any);
+
+    const result = await downloader.downloadAndInstall('hl7.fhir.uv.vulcan-schedule');
+
+    expect(result).toMatchObject({
+      success: true,
+      packageId: 'hl7.fhir.uv.vulcan-schedule.r4',
+      version: '1.0.0',
+    });
+  });
+
+  it('does not treat installed pre-release packages as latest for unversioned IG ids', async () => {
+    const cacheRoot = await mkdtemp(path.join(tmpdir(), 'records-packages-'));
+    tempDirs.push(cacheRoot);
+    await writeInstalledPackage(cacheRoot, 'hl7.fhir.uv.vulcan-schedule.r4#1.0.0-ballot', 'hl7.fhir.uv.vulcan-schedule.r4');
+    let registryCalls = 0;
+
+    const downloader = new PackageDownloader(cacheRoot, {
+      getPackageInfo: async () => {
+        registryCalls++;
+        return null;
+      },
+    } as any);
+
+    const result = await downloader.downloadAndInstall('hl7.fhir.uv.vulcan-schedule');
+
+    expect(registryCalls).toBe(1);
+    expect(result).toMatchObject({
+      success: false,
+      packageId: 'hl7.fhir.uv.vulcan-schedule',
+      version: 'unknown',
+      error: 'Package not found in registry',
+    });
+  });
+
+  it('shares concurrent downloads of the same package instead of returning in-progress errors', async () => {
+    const cacheRoot = await mkdtemp(path.join(tmpdir(), 'records-packages-'));
+    tempDirs.push(cacheRoot);
+    let registryCalls = 0;
+
+    const downloader = new PackageDownloader(cacheRoot, {
+      getPackageInfo: async () => {
+        registryCalls++;
+        await new Promise(resolve => setTimeout(resolve, 25));
+        return null;
+      },
+    } as any);
+
+    const [first, second] = await Promise.all([
+      downloader.downloadAndInstall('kbv.ita.for', '1.1.0'),
+      downloader.downloadAndInstall('kbv.ita.for', '1.1.0'),
+    ]);
+
+    expect(registryCalls).toBe(1);
+    expect(first).toMatchObject({
+      success: false,
+      packageId: 'kbv.ita.for',
+      version: '1.1.0',
+      error: 'Package not found in registry',
+    });
+    expect(second).toEqual(first);
+  });
 });

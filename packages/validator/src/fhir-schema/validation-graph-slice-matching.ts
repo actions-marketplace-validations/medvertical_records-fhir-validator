@@ -1,8 +1,9 @@
-import {
-  matchesPattern as matchesFhirPattern,
-  valuesMatch,
-} from '../validators/slice-utils';
 import type { ValidationGraphNode } from './validation-graph-types';
+import { getPrimitiveSidecar } from '../core/fhir-primitive-sidecar';
+import {
+  graphPatternMatches,
+  graphValuesMatch,
+} from './validation-graph-value-matching';
 
 export function matchesSliceForParent(
   value: unknown,
@@ -37,7 +38,10 @@ export function shouldReportUnmatchableRequiredSlice(
   if (usesResolveDiscriminator(parentNode)) {
     return true;
   }
-  return usesWholeElementDiscriminator(parentNode) && hasPatternMatchableChild(slice);
+  // Child-only patterns on a whole-element $this discriminator are useful schema
+  // evidence, but they are not enough to identify the slice without a root
+  // fixed/pattern or supported binding expansion.
+  return false;
 }
 
 function discriminatorMatchPaths(parentNode: ValidationGraphNode): string[] {
@@ -76,10 +80,10 @@ function normalizeChoiceBase(name: string): string {
 }
 
 function matchesSlice(value: unknown, slice: ValidationGraphNode): boolean {
-  if (slice.fixed !== undefined && !valuesMatch(value, slice.fixed)) {
+  if (slice.fixed !== undefined && !graphValuesMatch(value, slice.fixed)) {
     return false;
   }
-  if (slice.pattern !== undefined && !matchesFhirPattern(value, slice.pattern)) {
+  if (slice.pattern !== undefined && !graphPatternMatches(value, slice.pattern)) {
     return false;
   }
   if (slice.fixed !== undefined || slice.pattern !== undefined) {
@@ -105,10 +109,6 @@ function usesWholeElementDiscriminator(node: ValidationGraphNode): boolean {
   ) ?? false;
 }
 
-function hasPatternMatchableChild(slice: ValidationGraphNode): boolean {
-  return (slice.children ?? []).some(isPatternMatchableSlice);
-}
-
 function isPatternMatchableSlice(slice: ValidationGraphNode): boolean {
   return slice.fixed !== undefined
     || slice.pattern !== undefined
@@ -117,7 +117,9 @@ function isPatternMatchableSlice(slice: ValidationGraphNode): boolean {
 
 function getDirectValues(parent: unknown, property: string): unknown[] {
   if (!isRecord(parent) || !(property in parent)) {
-    return [];
+    const primitiveSidecar = getPrimitiveSidecar(parent, property);
+    if (primitiveSidecar === undefined) return [];
+    return Array.isArray(primitiveSidecar) ? primitiveSidecar : [primitiveSidecar];
   }
   const value = parent[property];
   return Array.isArray(value) ? value : [value];

@@ -1,5 +1,5 @@
 import type { ValidationIssue } from '../types';
-import { valuesMatch } from '../validators/slice-utils';
+import { getPrimitiveSidecar } from '../core/fhir-primitive-sidecar';
 import { matchPatternWithDiagnostic } from './validation-graph-pattern-diagnostics';
 import { validateReferenceTarget } from './validation-graph-reference-targets';
 import {
@@ -8,6 +8,7 @@ import {
   shouldReportUnmatchableRequiredSlice,
 } from './validation-graph-slice-matching';
 import type { ValidationGraph, ValidationGraphNode } from './validation-graph-types';
+import { graphValuesMatch } from './validation-graph-value-matching';
 
 export function validateResourceWithGraph(resource: unknown, graph: ValidationGraph): ValidationIssue[] {
   if (!isRecord(resource)) {
@@ -86,7 +87,7 @@ function validateNodeForParents(
   }
 
   for (const value of values) {
-    if (node.fixed !== undefined && !valuesMatch(value, node.fixed)) {
+    if (node.fixed !== undefined && !graphValuesMatch(value, node.fixed)) {
       issues.push(createIssue(
         'profile-fixed-value-mismatch',
         node.path,
@@ -228,7 +229,7 @@ function validateChoiceNode(
 
     const choiceValues = presentEntries.map(entry => entry.value);
     for (const value of choiceValues) {
-      if (node.fixed !== undefined && !valuesMatch(value, node.fixed)) {
+      if (node.fixed !== undefined && !graphValuesMatch(value, node.fixed)) {
         issues.push(createIssue('profile-fixed-value-mismatch', node.path, `Choice '${node.path}' does not match fixed value`, graph));
       }
       if (node.pattern !== undefined) {
@@ -257,7 +258,7 @@ function validateChoiceNode(
           ));
         }
       }
-      if (choiceSlice?.fixed !== undefined && !valuesMatch(entry.value, choiceSlice.fixed)) {
+      if (choiceSlice?.fixed !== undefined && !graphValuesMatch(entry.value, choiceSlice.fixed)) {
         issues.push(createIssue(
           'profile-fixed-value-mismatch',
           choiceSlice.path,
@@ -337,6 +338,12 @@ function collectProperty(value: unknown, part: string, out: unknown[]): void {
     return;
   }
 
+  const primitiveSidecarKey = `_${part}`;
+  if (primitiveSidecarKey in value) {
+    out.push(...getPrimitiveSidecarValues(value, part));
+    return;
+  }
+
   for (const [key, child] of Object.entries(value)) {
     if (!isChoiceProperty(key, part)) continue;
     if (Array.isArray(child)) out.push(...child);
@@ -346,10 +353,16 @@ function collectProperty(value: unknown, part: string, out: unknown[]): void {
 
 function getDirectValues(parent: unknown, property: string): unknown[] {
   if (!isRecord(parent) || !(property in parent)) {
-    return [];
+    return getPrimitiveSidecarValues(parent, property);
   }
   const value = parent[property];
   return Array.isArray(value) ? value : [value];
+}
+
+function getPrimitiveSidecarValues(parent: unknown, property: string): unknown[] {
+  const primitiveSidecar = getPrimitiveSidecar(parent, property);
+  if (primitiveSidecar === undefined) return [];
+  return Array.isArray(primitiveSidecar) ? primitiveSidecar : [primitiveSidecar];
 }
 
 function createIssue(code: string, path: string, message: string, graph?: ValidationGraph): ValidationIssue {

@@ -5,19 +5,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SlicingValidator } from '../slicing-validator';
 import { emitMatchedSliceChildIssues } from '../slicing-content-rules';
+import { resolveFhirSegmentValue } from '../../core/fhir-primitive-sidecar';
 import type { StructureDefinition } from '../../core/structure-definition-types';
+import { testStructureDefinition } from './slicing-test-builders';
 
 describe('SlicingValidator', () => {
   const validator = new SlicingValidator();
 
   it('does not report a required primitive child missing when only its sidecar is present', () => {
-    const profile: StructureDefinition = {
-      resourceType: 'StructureDefinition',
+    const profile = testStructureDefinition({
       url: 'http://example.org/StructureDefinition/patient',
       name: 'PatientProfile',
-      status: 'draft',
-      kind: 'resource',
-      abstract: false,
       type: 'Patient',
       snapshot: {
         element: [
@@ -33,7 +31,7 @@ describe('SlicingValidator', () => {
           },
         ],
       },
-    } as any;
+    });
 
     const issues = emitMatchedSliceChildIssues(
       {
@@ -53,14 +51,45 @@ describe('SlicingValidator', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('preserves profile context for missing mustSupport slice children', () => {
+    const profile = testStructureDefinition({
+      url: 'http://example.org/StructureDefinition/patient-slice',
+      name: 'PatientSliceProfile',
+      type: 'Patient',
+      snapshot: {
+        element: [
+          {
+            id: 'Patient.name:name',
+            path: 'Patient.name',
+            sliceName: 'name',
+          },
+          {
+            id: 'Patient.name:name.prefix',
+            path: 'Patient.name.prefix',
+            mustSupport: true,
+          },
+        ],
+      },
+    });
+
+    const issues = emitMatchedSliceChildIssues(
+      { family: 'Example' },
+      { path: 'Patient.name', sliceName: 'name' } as any,
+      'Patient.name[0]',
+      profile,
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'profile-mustsupport-missing',
+      path: 'Patient.name[0]:name.prefix',
+      profile: 'http://example.org/StructureDefinition/patient-slice',
+    }));
+  });
+
   it('matches value $this slices that constrain the whole Coding with patternCoding', async () => {
-    const bodyTemperatureProfile: StructureDefinition = {
-      resourceType: 'StructureDefinition',
+    const bodyTemperatureProfile = testStructureDefinition({
       url: 'http://nictiz.nl/fhir/StructureDefinition/zib-BodyTemperature',
       name: 'ZibBodyTemperature',
-      status: 'draft',
-      kind: 'resource',
-      abstract: false,
       type: 'Observation',
       snapshot: {
         element: [
@@ -89,7 +118,7 @@ describe('SlicingValidator', () => {
           },
         ],
       },
-    } as any;
+    });
 
     const issues = await validator.validateSlicing(
       [{ system: 'http://loinc.org', code: '8310-5', display: 'Body temperature' }],
@@ -1150,6 +1179,202 @@ describe('SlicingValidator', () => {
       }));
     });
 
+    it('does not match CARIN adjudication amount slices through discriminator-child bindings from another CodeSystem', async () => {
+      const loadValueSet = vi.fn(async (url: string) => {
+        if (url.includes('C4BBAdjudication')) {
+          return ['http://terminology.hl7.org/CodeSystem/adjudication|memberliability'];
+        }
+        return [];
+      });
+
+      const adjudicationValidator = new SlicingValidator();
+      (adjudicationValidator as any).getValueSetLoader = () => ({ loadValueSet });
+
+      const adjudicationProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/us/carin-bb/StructureDefinition/C4BB-ExplanationOfBenefit-Professional-NonClinician',
+        name: 'C4BBExplanationOfBenefitProfessionalNonClinician',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'ExplanationOfBenefit',
+        snapshot: {
+          element: [
+            {
+              id: 'ExplanationOfBenefit.item.adjudication',
+              path: 'ExplanationOfBenefit.item.adjudication',
+              slicing: {
+                discriminator: [{ type: 'pattern', path: 'category' }],
+                rules: 'open',
+              },
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.item.adjudication:adjudicationamounttype',
+              path: 'ExplanationOfBenefit.item.adjudication',
+              sliceName: 'adjudicationamounttype',
+              min: 0,
+              max: '*',
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.item.adjudication:adjudicationamounttype.category',
+              path: 'ExplanationOfBenefit.item.adjudication.category',
+              min: 1,
+              max: '1',
+              binding: {
+                strength: 'required',
+                valueSet: 'http://hl7.org/fhir/us/carin-bb/ValueSet/C4BBAdjudication',
+              },
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.item.adjudication:adjudicationamounttype.amount',
+              path: 'ExplanationOfBenefit.item.adjudication.amount',
+              min: 1,
+              max: '1',
+              type: [{ code: 'Money' }],
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.item.adjudication:adjustmentreason',
+              path: 'ExplanationOfBenefit.item.adjudication',
+              sliceName: 'adjustmentreason',
+              min: 0,
+              max: '*',
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.item.adjudication:adjustmentreason.category',
+              path: 'ExplanationOfBenefit.item.adjudication.category',
+              min: 1,
+              max: '1',
+              patternCodeableConcept: {
+                coding: [{
+                  system: 'http://hl7.org/fhir/us/carin-bb/CodeSystem/C4BBAdjudicationDiscriminator',
+                  code: 'adjustmentreason',
+                }],
+              },
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.item.adjudication:adjustmentreason.reason',
+              path: 'ExplanationOfBenefit.item.adjudication.reason',
+              min: 1,
+              max: '1',
+              type: [{ code: 'CodeableConcept' }],
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.item.adjudication:adjustmentreason.amount',
+              path: 'ExplanationOfBenefit.item.adjudication.amount',
+              min: 0,
+              max: '1',
+              type: [{ code: 'Money' }],
+            } as any,
+          ],
+        },
+      };
+
+      const issues = await adjudicationValidator.validateSlicing(
+        [{
+          category: {
+            coding: [{
+              system: 'http://hl7.org/fhir/us/carin-bb/CodeSystem/C4BBAdjudicationDiscriminator',
+              code: 'adjustmentreason',
+            }],
+          },
+        }],
+        'ExplanationOfBenefit.item.adjudication',
+        adjudicationProfile,
+      );
+
+      expect(loadValueSet).toHaveBeenCalledWith(
+        'http://hl7.org/fhir/us/carin-bb/ValueSet/C4BBAdjudication',
+      );
+      expect(issues).not.toContainEqual(expect.objectContaining({
+        path: expect.stringContaining(':adjudicationamounttype.amount'),
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'structural-required-element-missing',
+        path: 'ExplanationOfBenefit.item.adjudication[0]:adjustmentreason.reason',
+        details: expect.objectContaining({ sliceName: 'adjustmentreason' }),
+      }));
+    });
+
+    it('counts CARIN total slices matched through discriminator-child ValueSet bindings', async () => {
+      const loadValueSet = vi.fn(async (url: string) => {
+        if (url.includes('C4BBAdjudication')) {
+          return ['http://terminology.hl7.org/CodeSystem/adjudication|memberliability'];
+        }
+        return [];
+      });
+
+      const totalValidator = new SlicingValidator();
+      (totalValidator as any).getValueSetLoader = () => ({ loadValueSet });
+
+      const totalProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/us/carin-bb/StructureDefinition/C4BB-ExplanationOfBenefit',
+        name: 'C4BBExplanationOfBenefit',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'ExplanationOfBenefit',
+        snapshot: {
+          element: [
+            {
+              id: 'ExplanationOfBenefit.total',
+              path: 'ExplanationOfBenefit.total',
+              slicing: {
+                discriminator: [{ type: 'pattern', path: 'category' }],
+                rules: 'open',
+              },
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.total:adjudicationamounttype',
+              path: 'ExplanationOfBenefit.total',
+              sliceName: 'adjudicationamounttype',
+              min: 1,
+              max: '*',
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.total:adjudicationamounttype.category',
+              path: 'ExplanationOfBenefit.total.category',
+              min: 1,
+              max: '1',
+              binding: {
+                strength: 'required',
+                valueSet: 'http://hl7.org/fhir/us/carin-bb/ValueSet/C4BBAdjudication',
+              },
+            } as any,
+            {
+              id: 'ExplanationOfBenefit.total:adjudicationamounttype.amount',
+              path: 'ExplanationOfBenefit.total.amount',
+              min: 1,
+              max: '1',
+              type: [{ code: 'Money' }],
+            } as any,
+          ],
+        },
+      };
+
+      const issues = await totalValidator.validateSlicing(
+        [{
+          category: {
+            coding: [{
+              system: 'http://terminology.hl7.org/CodeSystem/adjudication',
+              code: 'memberliability',
+            }],
+          },
+          amount: { value: 12.34, currency: 'USD' },
+        }],
+        'ExplanationOfBenefit.total',
+        totalProfile,
+      );
+
+      expect(loadValueSet).toHaveBeenCalledWith(
+        'http://hl7.org/fhir/us/carin-bb/ValueSet/C4BBAdjudication',
+      );
+      expect(issues).not.toContainEqual(expect.objectContaining({
+        code: 'profile-slice-min-cardinality',
+        ruleId: 'slice-min-adjudicationamounttype',
+      }));
+    });
+
     it('does not match Condition.category slices through bare codes from another CodeSystem', async () => {
       const loadValueSet = vi.fn(async (url: string) => {
         if (url.includes('us-core-problem-or-health-concern')) {
@@ -1963,7 +2188,7 @@ describe('SlicingValidator', () => {
             type: [
               {
                 code: 'Reference',
-                profile: [MII_PATIENT_PROFILE],
+                targetProfile: [MII_PATIENT_PROFILE],
               },
             ],
           } as any,
@@ -1995,6 +2220,46 @@ describe('SlicingValidator', () => {
         i => i.code === 'profile-slice-min-cardinality',
       );
       expect(minErrors.length).toBe(0);
+    });
+
+    it('matches a resolved target profile when the slice canonical is versioned but meta.profile is not', async () => {
+      const versionedEncounterProfile: StructureDefinition = {
+        ...encounterProfile,
+        snapshot: {
+          element: encounterProfile.snapshot!.element!.map(element =>
+            element.id === 'Encounter.subject:miiPatient'
+              ? {
+                ...element,
+                type: [
+                  {
+                    code: 'Reference',
+                    targetProfile: [`${MII_PATIENT_PROFILE}|2026.0.3`],
+                  },
+                ],
+              } as any
+              : element,
+          ),
+        },
+      };
+      const referencedPatient = {
+        resourceType: 'Patient',
+        id: 'p1',
+        meta: { profile: [MII_PATIENT_PROFILE] },
+      };
+
+      const validator = new SlicingValidator();
+      validator.setReferenceResolver((ref: string) => {
+        if (ref === 'Patient/p1') return referencedPatient;
+        return null;
+      });
+
+      const issues = await validator.validateSlicing(
+        [{ reference: 'Patient/p1' }],
+        'Encounter.subject',
+        versionedEncounterProfile,
+      );
+
+      expect(issues.filter(i => i.code === 'profile-slice-min-cardinality')).toHaveLength(0);
     });
 
     it('flags a missing slice when the resolved target does NOT carry the required profile', async () => {
@@ -2287,6 +2552,7 @@ describe('SlicingValidator', () => {
       };
 
       const localValidator = new SlicingValidator();
+      (localValidator as any).getValueSetLoader = () => ({ loadValueSet: vi.fn(async () => null) });
       const issues = await localValidator.validateSlicing(
         [{
           system: 'https://mos.esante.gouv.fr/NOS/TRE_R36-AutreDiplomeObtenu/FHIR/TRE-R36-AutreDiplomeObtenu',
@@ -2344,7 +2610,244 @@ describe('SlicingValidator', () => {
       expect(issues.find(i => i.code === 'profile-slice-closed-unmatched')).toBeUndefined();
     });
 
-    it('matches nested Composition.section.entry slices by resolved targetProfile', async () => {
+    it('infers choice slice type from value[x] slice names when differentials omit type', async () => {
+      const conditionProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/StructureDefinition/condition-au',
+        name: 'ConditionAu',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Condition',
+        snapshot: {
+          element: [
+            {
+              id: 'Condition.extension:Festgestellt_am.value[x]',
+              path: 'Condition.extension.value[x]',
+              slicing: {
+                discriminator: [{ type: 'type', path: '$this' }],
+                rules: 'closed',
+              },
+            } as any,
+            {
+              id: 'Condition.extension:Festgestellt_am.value[x]:valueDateTime',
+              path: 'Condition.extension.value[x]',
+              sliceName: 'valueDateTime',
+              min: 1,
+            } as any,
+          ],
+        },
+      };
+
+      const localValidator = new SlicingValidator();
+      const issues = await localValidator.validateSlicing(
+        ['2022-09-29'],
+        'Condition.extension.value[x]',
+        conditionProfile,
+        null,
+        'Condition.extension:Festgestellt_am.value[x]',
+      );
+
+      expect(issues.find(i => i.code === 'profile-slice-closed-unmatched')).toBeUndefined();
+      expect(issues.find(i => i.code === 'profile-slice-min-cardinality')).toBeUndefined();
+    });
+
+    it('inherits Extension type.profile slice metadata from typed ancestor profiles', async () => {
+      const ownNameUrl = 'http://hl7.org/fhir/StructureDefinition/humanname-own-name';
+      const nameProfileUrl = 'https://fhir.kbv.de/StructureDefinition/KBV_PR_Base_Datatype_Name|1.3.0';
+      const localValidator = new SlicingValidator();
+      localValidator.setTypeProfileResolver(async (url) => url === nameProfileUrl
+        ? {
+          resourceType: 'StructureDefinition',
+          url: nameProfileUrl,
+          name: 'KBV_PR_Base_Datatype_Name',
+          status: 'active',
+          kind: 'complex-type',
+          abstract: false,
+          type: 'HumanName',
+          snapshot: {
+            element: [
+              { id: 'HumanName', path: 'HumanName' },
+              {
+                id: 'HumanName.family.extension:nachname',
+                path: 'HumanName.family.extension',
+                sliceName: 'nachname',
+                type: [{
+                  code: 'Extension',
+                  profile: [ownNameUrl],
+                }],
+              } as any,
+            ],
+          },
+        } as any
+        : null);
+
+      const practitionerProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'https://fhir.kbv.de/StructureDefinition/KBV_PR_FOR_Practitioner',
+        name: 'KBV_PR_FOR_Practitioner',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Practitioner',
+        snapshot: {
+          element: [
+            {
+              id: 'Practitioner.name:name',
+              path: 'Practitioner.name',
+              sliceName: 'name',
+              type: [{
+                code: 'HumanName',
+                profile: [nameProfileUrl],
+              }],
+            } as any,
+            {
+              id: 'Practitioner.name:name.family.extension',
+              path: 'Practitioner.name.family.extension',
+              slicing: {
+                discriminator: [{ type: 'value', path: 'url' }],
+                rules: 'closed',
+              },
+            } as any,
+            {
+              id: 'Practitioner.name:name.family.extension:nachname',
+              path: 'Practitioner.name.family.extension',
+              sliceName: 'nachname',
+              min: 1,
+            } as any,
+          ],
+        },
+      };
+
+      const issues = await localValidator.validateSlicing(
+        [{ url: ownNameUrl, valueString: 'Topp-Gluecklich' }],
+        'Practitioner.name.family.extension',
+        practitionerProfile,
+        null,
+        'Practitioner.name:name.family.extension',
+      );
+
+      expect(issues.find(i => i.code === 'profile-slice-closed-unmatched')).toBeUndefined();
+      expect(issues.find(i => i.code === 'profile-slice-min-cardinality')).toBeUndefined();
+    });
+
+  it('matches primitive sidecar-only choice values for type discriminator slices', async () => {
+      const conditionProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/StructureDefinition/condition-onset',
+        name: 'ConditionOnset',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Condition',
+        snapshot: {
+          element: [
+            {
+              id: 'Condition.onset[x]',
+              path: 'Condition.onset[x]',
+              min: 0,
+              max: '1',
+              slicing: {
+                discriminator: [{ type: 'type', path: '$this' }],
+                rules: 'closed',
+                ordered: false,
+              },
+            } as any,
+            {
+              id: 'Condition.onset[x]:onsetDateTime',
+              path: 'Condition.onset[x]',
+              sliceName: 'onsetDateTime',
+              min: 0,
+              max: '1',
+              type: [{ code: 'dateTime' }],
+            } as any,
+          ],
+        },
+      };
+
+      const condition = {
+        resourceType: 'Condition',
+        _onsetDateTime: {
+          extension: [{
+            url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+            valueCode: 'unknown',
+          }],
+        },
+      };
+
+      const onset = resolveFhirSegmentValue(condition, 'onset[x]');
+      const localValidator = new SlicingValidator();
+      const issues = await localValidator.validateSlicing(
+        [onset],
+        'Condition.onset[x]',
+        conditionProfile,
+      );
+
+      expect(issues.find(i => i.code === 'profile-slice-closed-unmatched')).toBeUndefined();
+      expect(issues.find(i => i.code === 'profile-slice-min-cardinality')).toBeUndefined();
+    });
+
+    it('matches Extension slices by type.profile when the generated slice has no fixed url child', async () => {
+      const conditionProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/StructureDefinition/condition',
+        name: 'ConditionProfile',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Condition',
+        snapshot: {
+          element: [
+            {
+              id: 'Condition.extension',
+              path: 'Condition.extension',
+              slicing: {
+                discriminator: [{ type: 'value', path: 'url' }],
+                rules: 'closed',
+                ordered: false,
+              },
+            } as any,
+            {
+              id: 'Condition.extension:Festgestellt_am',
+              path: 'Condition.extension',
+              sliceName: 'Festgestellt_am',
+              min: 1,
+              max: '1',
+              type: [{
+                code: 'Extension',
+                profile: ['http://hl7.org/fhir/StructureDefinition/condition-assertedDate'],
+              }],
+            } as any,
+            {
+              id: 'Condition.extension:Ursache',
+              path: 'Condition.extension',
+              sliceName: 'Ursache',
+              min: 0,
+              max: '3',
+              type: [{
+                code: 'Extension',
+                profile: ['http://hl7.org/fhir/StructureDefinition/condition-dueTo'],
+              }],
+            } as any,
+          ],
+        },
+      };
+
+      const localValidator = new SlicingValidator();
+      const issues = await localValidator.validateSlicing(
+        [{
+          url: 'http://hl7.org/fhir/StructureDefinition/condition-assertedDate',
+          valueDateTime: '2022-09-29',
+        }],
+        'Condition.extension',
+        conditionProfile,
+      );
+
+      expect(issues.find(i => i.code === 'profile-slice-closed-unmatched')).toBeUndefined();
+      expect(issues.find(i => i.code === 'profile-slice-min-cardinality')).toBeUndefined();
+    });
+
+    it('matches nested Composition.section.entry slices by $this.resolve() targetProfile', async () => {
       const MEDICAL_TEST_RESULT = 'http://hl7.eu/fhir/base/StructureDefinition/medicalTestResult-eu-core';
       const compositionProfile: StructureDefinition = {
         resourceType: 'StructureDefinition',
@@ -2362,7 +2865,7 @@ describe('SlicingValidator', () => {
               min: 0,
               max: '*',
               slicing: {
-                discriminator: [{ type: 'type', path: 'resolve()' }],
+                discriminator: [{ type: 'type', path: '$this.resolve()' }],
                 rules: 'open',
                 ordered: false,
               },

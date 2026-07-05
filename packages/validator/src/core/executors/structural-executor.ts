@@ -54,6 +54,7 @@ export class StructuralExecutor {
   private stringSecurityValidator: StringSecurityValidator;
   private sdLoader: StructureDefinitionLoader;
   private walkerTypeIndexCaches = new Map<'R4' | 'R5' | 'R6', Map<string, SnapshotIndex | null>>();
+  private walkerSnapshotIndexCaches = new Map<'R4' | 'R5' | 'R6', WeakMap<StructureDefinition, SnapshotIndex>>();
 
   constructor(sdLoader: StructureDefinitionLoader) {
     this.cardinalityValidator = new CardinalityValidator();
@@ -124,7 +125,9 @@ export class StructuralExecutor {
       // Seventh pass: Resource id format + empty array checks + attachment
       // size/data consistency (post-SD sanity checks that don't depend on the
       // profile snapshot)
-      issues.push(...this.validateResourceIdAndArrays(resource, ctx.contextQuestionnaire));
+      issues.push(...this.validateResourceIdAndArrays(resource, ctx.contextQuestionnaire, {
+        warnOnUnresolvedQuestionnaireReference: true,
+      }));
 
       // Eighth pass: choice-type property shape. Catches `value: true` where
       // the SD declares `value[x]` and `valueInteger` where integer is not
@@ -241,7 +244,7 @@ export class StructuralExecutor {
     resourceType: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
   ): Promise<ValidationIssue[]> {
-    const index = buildSnapshotIndex(structureDef);
+    const index = this.getWalkerSnapshotIndex(structureDef, fhirVersion);
     let typeIndexCache = this.walkerTypeIndexCaches.get(fhirVersion);
     if (!typeIndexCache) {
       typeIndexCache = new Map();
@@ -249,6 +252,24 @@ export class StructuralExecutor {
     }
     const deps = makeWalkerDeps(this.sdLoader, fhirVersion, typeIndexCache);
     return detectUnknownProperties(resource, index, resourceType, structureDef?.url, deps);
+  }
+
+  private getWalkerSnapshotIndex(
+    structureDef: StructureDefinition,
+    fhirVersion: 'R4' | 'R5' | 'R6',
+  ): SnapshotIndex {
+    let cache = this.walkerSnapshotIndexCaches.get(fhirVersion);
+    if (!cache) {
+      cache = new WeakMap();
+      this.walkerSnapshotIndexCaches.set(fhirVersion, cache);
+    }
+
+    const cached = cache.get(structureDef);
+    if (cached) return cached;
+
+    const index = buildSnapshotIndex(structureDef);
+    cache.set(structureDef, index);
+    return index;
   }
 
   /**
@@ -263,7 +284,8 @@ export class StructuralExecutor {
    */
   validateResourceIdAndArrays(
     resource: any,
-    contextQuestionnaire?: any
+    contextQuestionnaire?: any,
+    options: { warnOnUnresolvedQuestionnaireReference?: boolean } = {},
   ): ValidationIssue[] {
     return validateResourceSanity(
       resource,
@@ -275,7 +297,8 @@ export class StructuralExecutor {
         narrative: this.narrativeValidator,
         questionnaire: this.questionnaireValidator,
       },
-      contextQuestionnaire
+      contextQuestionnaire,
+      options,
     );
   }
 

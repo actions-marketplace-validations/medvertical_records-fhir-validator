@@ -56,6 +56,11 @@ export async function warmUpProfilesFromDatabase(params: {
       const family = fhirVersionFamily(sanitized);
       if (family) {
         cache.set(cacheKeyForProfile(result.canonicalUrl, family), sanitized);
+        if (result.version && result.version !== 'unknown') {
+          const versionedCanonical = `${result.canonicalUrl}|${result.version}`;
+          cache.set(cacheKeyForProfile(versionedCanonical, family), sanitized);
+          availableProfiles.add(versionedCanonical);
+        }
       }
       availableProfiles.add(result.canonicalUrl);
     }

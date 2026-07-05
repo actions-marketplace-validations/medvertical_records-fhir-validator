@@ -14,7 +14,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { logger } from '../logger';
 
-const INDEX_VERSION = 3; // Bumped: v2 omitted versioned canonical aliases from local profile scans
+const INDEX_VERSION = 4; // Bumped: v3 validated deduped scans against only scanned packages
 const INDEX_FILENAME = 'sdloader-profile-index.json';
 
 interface PackageIndexEntry {
@@ -24,11 +24,27 @@ interface PackageIndexEntry {
     mtime: number;
 }
 
+interface SourcePackageIndexEntry {
+    name: string;
+    /** Modification time of the package directory */
+    mtime: number;
+}
+
 interface ProfileIndex {
     version: number;
     generatedAt: number;
+    options?: {
+        deduplicatePackages?: boolean;
+    };
+    /** Packages whose StructureDefinitions were included in profileUrls. */
     packages: PackageIndexEntry[];
+    /** All package directories observed under the source path, including deduped/skipped versions. */
+    sourcePackages: SourcePackageIndexEntry[];
     profileUrls: string[];
+}
+
+export interface PersistentIndexOptions {
+    deduplicatePackages?: boolean;
 }
 
 /**
@@ -69,10 +85,15 @@ async function getPackageModTimes(sourcePath: string): Promise<Map<string, numbe
 /**
  * Check if the index is still valid (no package changes)
  */
-async function isIndexValid(index: ProfileIndex, sourcePath: string): Promise<boolean> {
+async function isIndexValid(index: ProfileIndex, sourcePath: string, options: PersistentIndexOptions): Promise<boolean> {
     // Check version
     if (index.version !== INDEX_VERSION) {
         logger.debug('[SDLoaderIndex] Index version mismatch, will rescan');
+        return false;
+    }
+
+    if ((index.options?.deduplicatePackages ?? true) !== (options.deduplicatePackages ?? true)) {
+        logger.debug('[SDLoaderIndex] Package deduplication mode changed, will rescan');
         return false;
     }
 
@@ -80,8 +101,9 @@ async function isIndexValid(index: ProfileIndex, sourcePath: string): Promise<bo
     const currentModTimes = await getPackageModTimes(sourcePath);
 
     // Build a map of indexed package names -> mtime
+    const indexedSourcePackages = index.sourcePackages ?? index.packages;
     const indexedModTimes = new Map(
-        index.packages.map(p => [p.name, p.mtime])
+        indexedSourcePackages.map(p => [p.name, p.mtime])
     );
 
     // Check if any packages were added
@@ -114,7 +136,8 @@ async function isIndexValid(index: ProfileIndex, sourcePath: string): Promise<bo
  * Returns null if index is missing, invalid, or outdated
  */
 export async function loadFromPersistentIndex(
-    sourcePath: string
+    sourcePath: string,
+    options: PersistentIndexOptions = {}
 ): Promise<Set<string> | null> {
     const indexPath = getIndexPath(sourcePath);
 
@@ -123,7 +146,7 @@ export async function loadFromPersistentIndex(
         const index: ProfileIndex = JSON.parse(content);
 
         // Validate index
-        if (!await isIndexValid(index, sourcePath)) {
+        if (!await isIndexValid(index, sourcePath, options)) {
             return null;
         }
 
@@ -148,7 +171,8 @@ export async function loadFromPersistentIndex(
 export async function saveToPersistentIndex(
     sourcePath: string,
     profileUrls: Set<string>,
-    packageDetails: Array<{ name: string; profileCount: number }>
+    packageDetails: Array<{ name: string; profileCount: number }>,
+    options: PersistentIndexOptions = {}
 ): Promise<void> {
     const indexPath = getIndexPath(sourcePath);
 
@@ -162,11 +186,16 @@ export async function saveToPersistentIndex(
             profileCount: p.profileCount,
             mtime: modTimes.get(p.name) || 0
         }));
+        const sourcePackages: SourcePackageIndexEntry[] = Array.from(modTimes.entries())
+            .map(([name, mtime]) => ({ name, mtime }))
+            .sort((a, b) => a.name.localeCompare(b.name));
 
         const index: ProfileIndex = {
             version: INDEX_VERSION,
             generatedAt: Date.now(),
+            options,
             packages,
+            sourcePackages,
             profileUrls: Array.from(profileUrls)
         };
 

@@ -39,19 +39,19 @@ export class BestPracticeValidator {
         // Resource-specific best practices
         switch (resourceType) {
             case 'Observation':
-                issues.push(...this.validateObservationBestPractices(resource));
+                issues.push(...this.validateObservationBestPractices(resource, resourceType));
                 break;
             case 'Patient':
-                issues.push(...this.validatePatientBestPractices(resource));
+                issues.push(...this.validatePatientBestPractices(resource, resourceType));
                 break;
             case 'Condition':
-                issues.push(...this.validateConditionBestPractices(resource));
+                issues.push(...this.validateConditionBestPractices(resource, resourceType));
                 break;
             case 'DiagnosticReport':
-                issues.push(...this.validateDiagnosticReportBestPractices(resource));
+                issues.push(...this.validateDiagnosticReportBestPractices(resource, resourceType));
                 break;
             case 'Encounter':
-                issues.push(...this.validateEncounterBestPractices(resource));
+                issues.push(...this.validateEncounterBestPractices(resource, resourceType));
                 break;
         }
 
@@ -76,7 +76,7 @@ export class BestPracticeValidator {
     /**
      * Best practice checks for Observation resources
      */
-    private validateObservationBestPractices(resource: any): ValidationIssue[] {
+    private validateObservationBestPractices(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         // Check for effectiveDateTime or effectivePeriod
@@ -99,6 +99,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-missing-effective',
                 message: 'All Observations should have an `effectiveDateTime` or an `effectivePeriod`',
                 path: 'Observation.effective[x]',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -121,6 +122,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-missing-performer',
                 message: 'All Observations should have a `performer`',
                 path: 'Observation.performer',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -144,7 +146,7 @@ export class BestPracticeValidator {
     /**
      * Best practice checks for Patient resources
      */
-    private validatePatientBestPractices(resource: any): ValidationIssue[] {
+    private validatePatientBestPractices(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         // Check for identifier - critical for patient matching
@@ -164,6 +166,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-patient-identifier',
                 message: 'Patient resources should have at least one identifier for reliable patient matching',
                 path: 'Patient.identifier',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -186,6 +189,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-patient-name',
                 message: 'Patient resources should have at least one name',
                 path: 'Patient.name',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -201,6 +205,7 @@ export class BestPracticeValidator {
                 code: 'dom-6',
                 message: 'A resource should have narrative for robust management',
                 path: 'Patient.text',
+                resourceType,
                 tags: ['best-practice', 'narrative'],
                 timestamp: new Date()
             });
@@ -212,7 +217,7 @@ export class BestPracticeValidator {
     /**
      * Best practice checks for Condition resources
      */
-    private validateConditionBestPractices(resource: any): ValidationIssue[] {
+    private validateConditionBestPractices(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         // Check for code display or text - ensures human readability
@@ -234,6 +239,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-condition-code-display',
                 message: 'Condition.code should include display text (code.text or coding.display) for human readability',
                 path: 'Condition.code',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -256,6 +262,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-condition-clinical-status',
                 message: 'Condition resources should have clinicalStatus (unless verificationStatus is entered-in-error)',
                 path: 'Condition.clinicalStatus',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -267,7 +274,7 @@ export class BestPracticeValidator {
     /**
      * Best practice checks for DiagnosticReport resources
      */
-    private validateDiagnosticReportBestPractices(resource: any): ValidationIssue[] {
+    private validateDiagnosticReportBestPractices(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         // Check for effective[x] - temporal context
@@ -286,6 +293,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-diagreport-effective',
                 message: 'DiagnosticReport should have effectiveDateTime or effectivePeriod for temporal context',
                 path: 'DiagnosticReport',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -305,6 +313,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-diagreport-issued',
                 message: 'DiagnosticReport should have issued timestamp indicating when the report was released',
                 path: 'DiagnosticReport.issued',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -316,7 +325,7 @@ export class BestPracticeValidator {
     /**
      * Best practice checks for Encounter resources
      */
-    private validateEncounterBestPractices(resource: any): ValidationIssue[] {
+    private validateEncounterBestPractices(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         // Check for period.start - when encounter began
@@ -335,6 +344,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-encounter-period',
                 message: 'Encounter should have period.start indicating when the encounter began',
                 path: 'Encounter.period',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });
@@ -354,6 +364,7 @@ export class BestPracticeValidator {
                 code: 'best-practice-encounter-class',
                 message: 'Encounter should have class indicating the type of encounter (e.g., ambulatory, emergency)',
                 path: 'Encounter.class',
+                resourceType,
                 tags: ['best-practice'],
                 timestamp: new Date()
             });

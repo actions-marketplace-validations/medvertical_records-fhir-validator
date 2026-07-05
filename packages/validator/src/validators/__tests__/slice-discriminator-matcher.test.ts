@@ -213,6 +213,31 @@ describe('matchDiscriminator', () => {
     )).toBe(true);
   });
 
+  it('matches $this.resolve() profile discriminators against resolved targetProfile references', () => {
+    const targetProfile = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/StructureDefinition/mii-pr-onko-diagnose-primaertumor';
+    const slice: SliceDefinition = {
+      sliceName: 'Primaertumor',
+      path: 'MedicationRequest.reasonReference',
+      min: 1,
+      max: '1',
+      discriminator: [{ type: 'profile', path: '$this.resolve()' }],
+      type: [{ code: 'Reference', targetProfile: [targetProfile] }],
+    };
+
+    expect(matchDiscriminator(
+      { reference: 'Condition/mii-exa-onko-colorectal-cancer-diagnosis' },
+      slice,
+      { type: 'profile', path: '$this.resolve()' },
+      () => ({
+        resourceType: 'Condition',
+        id: 'mii-exa-onko-colorectal-cancer-diagnosis',
+        meta: { profile: [`${targetProfile}|2026.0.3`] },
+      }),
+      matchesPattern,
+      codingMatchesBindingCodes,
+    )).toBe(true);
+  });
+
   it('applies value discriminator paths after resolve() to the resolved resource', () => {
     const slice: SliceDefinition = {
       sliceName: 'final-observation',
@@ -237,6 +262,58 @@ describe('matchDiscriminator', () => {
       slice,
       { type: 'value', path: 'resolve().status' },
       () => ({ resourceType: 'Observation', id: 'obs-2', status: 'preliminary' }),
+      matchesPattern,
+      codingMatchesBindingCodes,
+    )).toBe(false);
+  });
+
+  it('matches resolve() value discriminators by resolved targetProfile when the slice has no direct child discriminator evidence', () => {
+    const targetProfile = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-patho/StructureDefinition/mii-pr-patho-diagnostic-conclusion-grouper';
+    const slice: SliceDefinition = {
+      sliceName: 'diagnostic-conclusion',
+      path: 'DiagnosticReport.result',
+      min: 1,
+      max: '1',
+      discriminator: [{ type: 'value', path: 'resolve().code' }],
+      type: [{ code: 'Reference', targetProfile: [targetProfile] }],
+    };
+
+    expect(matchDiscriminator(
+      { reference: 'Observation/mii-exa-patho-diagnostic-conclusion-grouper' },
+      slice,
+      { type: 'value', path: 'resolve().code' },
+      () => ({
+        resourceType: 'Observation',
+        id: 'mii-exa-patho-diagnostic-conclusion-grouper',
+        meta: { profile: [`${targetProfile}|2026.0.0`] },
+        code: { coding: [{ system: 'http://loinc.org', code: '22637-3' }] },
+      }),
+      matchesPattern,
+      codingMatchesBindingCodes,
+    )).toBe(true);
+  });
+
+  it('does not match resolve() value discriminators by targetProfile when the resolved resource declares another profile', () => {
+    const targetProfile = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-patho/StructureDefinition/mii-pr-patho-diagnostic-conclusion-grouper';
+    const slice: SliceDefinition = {
+      sliceName: 'diagnostic-conclusion',
+      path: 'DiagnosticReport.result',
+      min: 1,
+      max: '1',
+      discriminator: [{ type: 'value', path: 'resolve().code' }],
+      type: [{ code: 'Reference', targetProfile: [targetProfile] }],
+    };
+
+    expect(matchDiscriminator(
+      { reference: 'Observation/other' },
+      slice,
+      { type: 'value', path: 'resolve().code' },
+      () => ({
+        resourceType: 'Observation',
+        id: 'other',
+        meta: { profile: ['https://example.org/fhir/StructureDefinition/other'] },
+        code: { coding: [{ system: 'http://loinc.org', code: '22637-3' }] },
+      }),
       matchesPattern,
       codingMatchesBindingCodes,
     )).toBe(false);

@@ -31,8 +31,10 @@ import type { ValidationResult } from '@records-fhir/validation-types';
 interface HapiValidationCoordinator {
   getIssuesByAspect(resourceId: string, aspect: string): ValidationIssue[];
 }
-// Lazy import to avoid circular dependency with records-validator
-// import { recordsValidator } from '..';
+interface RecordsMetadataValidator {
+  isAvailable(): boolean;
+  validateMetadata(resource: unknown): Promise<ValidationIssue[]>;
+}
 import { validateRequiredMetadata } from './completeness-checker';
 import {
   LastUpdatedValidator,
@@ -44,6 +46,59 @@ import { SecurityValidator } from './security-validators';
 import { TagValidator } from './tag-validators';
 import { validateProvenanceChain } from './provenance-chain-validator';
 import { logger } from '../logger';
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown error';
+}
+
+async function loadRecordsMetadataValidator(): Promise<RecordsMetadataValidator | null> {
+  try {
+    // Lazy import to avoid circular dependency with records-validator. Keep the
+    // explicit file target so Node ESM never treats the package dist directory as
+    // a module entrypoint at runtime.
+    const { recordsValidator } = await import('../index.js');
+    return recordsValidator;
+  } catch (error) {
+    logger.warn(
+      `[MetadataValidator] Records metadata engine unavailable; falling back to local metadata rules: ${getErrorMessage(error)}`
+    );
+    return null;
+  }
+}
+
+async function validateWithRecordsMetadataValidator(resource: unknown): Promise<ValidationIssue[] | null> {
+  const recordsValidator = await loadRecordsMetadataValidator();
+  if (!recordsValidator) return null;
+
+  try {
+    if (!recordsValidator.isAvailable()) return null;
+
+    logger.debug(`[MetadataValidator] Using Records validator...`);
+
+    const metadataTimeout = 10000;
+    const validationPromise = recordsValidator.validateMetadata(resource);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<ValidationIssue[]>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        logger.warn(`[MetadataValidator] Metadata validation timeout after ${metadataTimeout}ms`);
+        reject(new Error(`Metadata validation timeout after ${metadataTimeout}ms`));
+      }, metadataTimeout);
+    });
+
+    try {
+      return await Promise.race([validationPromise, timeoutPromise]);
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+    }
+  } catch (error) {
+    logger.warn(
+      `[MetadataValidator] Records metadata validation failed; falling back to local metadata rules: ${getErrorMessage(error)}`
+    );
+    return null;
+  }
+}
 
 export class MetadataValidator {
   private lastUpdatedValidator: LastUpdatedValidator;
@@ -121,7 +176,6 @@ export class MetadataValidator {
    *
    * Coordinates all metadata validation aspects and aggregates results.
    */
-  // eslint-disable-next-line max-lines-per-function
   async validateInternal(
     resource: any,
     resourceType: string,
@@ -136,32 +190,15 @@ export class MetadataValidator {
     logger.debug(`[MetadataValidator] Validating ${resourceType} resource metadata...`);
 
     try {
-      // Check if Records validator should be used
-      const engine = settings?.aspects?.metadata?.engine || 'records';
+      // Local metadata checks are the default. Delegating back into the global
+      // Records validator from inside Records validation is redundant and can
+      // stall batch runs while initialization or fallback timers settle.
+      const engine = settings?.aspects?.metadata?.engine || 'local';
 
       if (engine === 'records') {
-        // Lazy import to avoid circular dependency
-        const { recordsValidator } = await import('..');
-        if (recordsValidator.isAvailable()) {
-          logger.debug(`[MetadataValidator] Using Records validator...`);
-
-          // Add timeout to prevent hanging
-          const METADATA_TIMEOUT = 10000; // 10 seconds
-          const validationPromise = recordsValidator.validateMetadata(resource);
-          const timeoutPromise = new Promise<ValidationIssue[]>((_, reject) => {
-            setTimeout(() => {
-              logger.warn(`[MetadataValidator] Metadata validation timeout after ${METADATA_TIMEOUT}ms`);
-              reject(new Error(`Metadata validation timeout after ${METADATA_TIMEOUT}ms`));
-            }, METADATA_TIMEOUT);
-          });
-
-          try {
-            return await Promise.race([validationPromise, timeoutPromise]);
-          } catch (timeoutError: any) {
-            logger.error(`[MetadataValidator] Metadata validation failed:`, timeoutError.message);
-            // Return empty issues array instead of hanging
-            return [];
-          }
+        const recordsIssues = await validateWithRecordsMetadataValidator(resource);
+        if (recordsIssues) {
+          return recordsIssues;
         }
       }
 
@@ -275,11 +312,11 @@ export class MetadataValidator {
         aspect: 'metadata',
         severity: 'error',
         code: 'metadata-validation-error',
-        message: `Metadata validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        message: `Metadata validation failed: ${getErrorMessage(error)}`,
         path: '',
         humanReadable: 'Metadata validation encountered an error',
         details: {
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error: getErrorMessage(error),
           resourceType: resourceType
         },
         validationMethod: 'metadata-validation-error',

@@ -76,6 +76,7 @@ export class StringSecurityValidator {
                 // Skip Narrative.div — xhtml is legitimate there, the
                 // narrative-validator handles its own XHTML whitelist.
                 if (this.isInsideNarrative(childPath)) continue;
+                if (this.isConformanceDefinitionDocumentation(childPath)) continue;
 
                 if (containsHtmlTag(value)) {
                     issues.push(createValidationIssue({
@@ -109,6 +110,24 @@ export class StringSecurityValidator {
      */
     private isInsideNarrative(path: string): boolean {
         return path.endsWith('.text.div') || /\.text\.div\b/.test(path);
+    }
+
+    /**
+     * StructureDefinitions often carry formal prose, XPath/FHIRPath, and mapping
+     * expressions that mention XHTML/XML tokens like `<a>` as literal grammar.
+     * Those are not patient-facing narrative strings and should not be treated
+     * as embedded HTML content.
+     */
+    private isConformanceDefinitionDocumentation(path: string): boolean {
+        if (!/^StructureDefinition\.(snapshot|differential)\.element\[\d+\]\./.test(path)) {
+            return false;
+        }
+
+        return (
+            /\.(comment|definition|requirements|meaningWhenMissing)$/.test(path) ||
+            /\.constraint\[\d+\]\.(human|expression|xpath)$/.test(path) ||
+            /\.mapping\[\d+\]\.map$/.test(path)
+        );
     }
 }
 

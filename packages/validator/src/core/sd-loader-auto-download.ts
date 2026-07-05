@@ -73,12 +73,25 @@ const pendingRequests = new Map<string, Promise<StructureDefinition | null>>();
 /** Negative cache for profiles that weren't found (TTL: 30 minutes - long enough for batch validation runs) */
 const NOT_FOUND_CACHE_TTL_MS = 30 * 60 * 1000;
 const notFoundCache = new Map<string, number>(); // url -> timestamp
+const scopeNotFoundCache = new Map<string, number>(); // conservative generic canonical scope -> timestamp
+
+interface AutoDownloadAttemptResult {
+  profile: StructureDefinition | null;
+  /**
+   * True only when the resolver failed before finding any package candidate.
+   * This lets generic vendor hosts short-circuit subsequent sibling canonicals
+   * without suppressing namespaces where the registry did find a package.
+   */
+  scopeMiss: boolean;
+}
 
 /**
  * Clear negative cache for a specific URL (for testing or manual refresh)
  */
 export function clearNotFoundCacheEntry(url: string): void {
   notFoundCache.delete(url);
+  const scope = getGenericCanonicalScope(url);
+  if (scope) scopeNotFoundCache.delete(scope);
 }
 
 /**
@@ -87,6 +100,7 @@ export function clearNotFoundCacheEntry(url: string): void {
 export function clearAllCaches(): void {
   pendingRequests.clear();
   notFoundCache.clear();
+  scopeNotFoundCache.clear();
 }
 
 /**
@@ -97,6 +111,16 @@ export async function attemptAutoDownload(
   url: string,
   context: AutoDownloadContext
 ): Promise<StructureDefinition | null> {
+  const genericScope = getGenericCanonicalScope(url);
+  if (genericScope) {
+    const notFoundTimestamp = scopeNotFoundCache.get(genericScope);
+    if (notFoundTimestamp && Date.now() - notFoundTimestamp < NOT_FOUND_CACHE_TTL_MS) {
+      logger.debug(`[SDLoader] Skipping ${url} - generic scope ${genericScope} cached as not-found`);
+      notFoundCache.set(url, Date.now());
+      return null;
+    }
+  }
+
   // 1. Check negative cache first - skip profiles we already know don't exist
   const notFoundTimestamp = notFoundCache.get(url);
   if (notFoundTimestamp && Date.now() - notFoundTimestamp < NOT_FOUND_CACHE_TTL_MS) {
@@ -112,7 +136,12 @@ export async function attemptAutoDownload(
   }
 
   // 3. Execute actual download
-  const promise = executeAutoDownload(url, context);
+  const promise = executeAutoDownload(url, context).then(result => {
+    if (result.profile === null && result.scopeMiss && genericScope) {
+      scopeNotFoundCache.set(genericScope, Date.now());
+    }
+    return result.profile;
+  });
   pendingRequests.set(url, promise);
 
   try {
@@ -136,16 +165,17 @@ export async function attemptAutoDownload(
 async function executeAutoDownload(
   url: string,
   context: AutoDownloadContext
-): Promise<StructureDefinition | null> {
+): Promise<AutoDownloadAttemptResult> {
   const requestedFhirVersion = context.fhirVersion || 'R4';
   if (!urlMatchesRequestedFhirVersion(url, requestedFhirVersion)) {
     logger.info(`[SDLoader] Skipping auto-download for FHIR-version-incompatible profile URL: ${url} (${requestedFhirVersion})`);
-    return null;
+    return { profile: null, scopeMiss: false };
   }
 
   const config = normalizeProfileSourcesConfig(context.profileSourcesConfig);
   logger.info(`[SDLoader] Profile not found locally, trying remote sources for: ${url}`);
   logger.debug(`[SDLoader] Enabled sources: Simplifier=${config.simplifier}, Registry=${config.packageRegistry}`);
+  let sawPackageCandidate = false;
 
   try {
     // Wrap auto-download in a timeout to prevent indefinite hangs
@@ -166,7 +196,7 @@ async function executeAutoDownload(
                 } else {
                   cacheDownloadedProfile(url, sd as StructureDefinition, context);
                   logger.info(`[SDLoader] ✅ Profile fetched via external fallback: ${url}`);
-                  return sd as StructureDefinition;
+                  return { profile: sd as StructureDefinition, scopeMiss: false };
                 }
               }
               logger.debug(`[SDLoader] Profile not found via external fallback`);
@@ -179,11 +209,14 @@ async function executeAutoDownload(
         // Step 2: Try package registry if enabled
         if (config.packageRegistry) {
           const packageId = await context.registryClient.detectPackageForProfile(url);
+          sawPackageCandidate = !!packageId;
           if (packageId && isPackageAllowed(packageId, context.allowedPackages)) {
+            const requestedCanonicalVersion = getCanonicalVersion(url);
             const pinnedVersion = context.packageVersionPins?.[packageId];
-            logger.info(`[SDLoader] Detected package: ${packageId}${pinnedVersion ? `#${pinnedVersion}` : ''}`);
+            const packageVersion = pinnedVersion ?? requestedCanonicalVersion;
+            logger.info(`[SDLoader] Detected package: ${packageId}${packageVersion ? `#${packageVersion}` : ''}`);
 
-            const downloadResult = await context.packageDownloader.downloadAndInstall(packageId, pinnedVersion);
+            const downloadResult = await context.packageDownloader.downloadAndInstall(packageId, packageVersion);
 
             if (downloadResult.success) {
               logger.info(`[SDLoader] ✅ Package downloaded: ${packageId}#${downloadResult.version}`);
@@ -193,7 +226,7 @@ async function executeAutoDownload(
               if (sd) {
                 cacheDownloadedProfile(url, sd, context);
                 logger.info(`[SDLoader] ✅ Profile loaded from package: ${url}`);
-                return sd;
+                return { profile: sd, scopeMiss: false };
               }
               logger.warn(`[SDLoader] Profile still not found after downloading package: ${url}`);
             } else {
@@ -206,9 +239,9 @@ async function executeAutoDownload(
           }
         }
 
-        return null;
+        return { profile: null, scopeMiss: !sawPackageCandidate };
       })(),
-      new Promise<null>((_, reject) =>
+      new Promise<AutoDownloadAttemptResult>((_, reject) =>
         setTimeout(() => reject(new Error('Auto-download timeout after 20s')), 20000)
       )
     ]);
@@ -217,6 +250,48 @@ async function executeAutoDownload(
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn(`[SDLoader] Auto-download failed or timed out for ${url}:`, err.message);
+    return { profile: null, scopeMiss: false };
+  }
+}
+
+function getCanonicalVersion(url: string): string | undefined {
+  const separatorIndex = url.indexOf('|');
+  if (separatorIndex < 0) return undefined;
+  const version = url.slice(separatorIndex + 1).trim();
+  return version.length > 0 ? version : undefined;
+}
+
+function getGenericCanonicalScope(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const normalized = url.toLowerCase();
+
+    if (host === 'hl7.org' ||
+      host === 'hl7.eu' ||
+      host.endsWith('.hl7.org.uk') ||
+      host === 'hl7.org.au' ||
+      host === 'fhir.de' ||
+      host.endsWith('.fhir.de') ||
+      host === 'gematik.de' ||
+      host.endsWith('.gematik.de') ||
+      host === 'fhir.kbv.de' ||
+      host === 'profiles.ihe.net' ||
+      host === 'nictiz.nl' ||
+      host.endsWith('.nictiz.nl') ||
+      host === 'fhir.org') {
+      return null;
+    }
+
+    if (normalized.includes('medizininformatik') ||
+      normalized.includes('mii') ||
+      normalized.includes('fhir.uk') ||
+      normalized.includes('who.anc-cds')) {
+      return null;
+    }
+
+    return parsed.origin.toLowerCase();
+  } catch {
     return null;
   }
 }

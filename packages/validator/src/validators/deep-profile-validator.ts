@@ -101,12 +101,14 @@ export class DeepProfileValidator {
         const patternValue = this.extractPatternValue(elementDef);
         if (patternValue !== undefined && value !== undefined) {
             if (!matchesPattern(value, patternValue)) {
+                const mismatch = this.describePatternMismatch(path, value, patternValue);
                 issues.push(createValidationIssue({
                     code: 'profile-pattern-mismatch',
                     path,
                     resourceType,
-                    customMessage: `Value does not match required pattern`,
+                    customMessage: mismatch.message,
                     severityOverride: 'error',
+                    details: mismatch.details,
                 }));
             }
         }
@@ -261,6 +263,9 @@ export class DeepProfileValidator {
      * Check if two values are equal
      */
     private valuesEqual(actual: any, expected: any): boolean {
+        if (Array.isArray(actual) && !Array.isArray(expected)) {
+            return actual.some(item => this.valuesEqual(item, expected));
+        }
         if (typeof actual !== typeof expected) return false;
         if (typeof actual === 'object') {
             return JSON.stringify(actual) === JSON.stringify(expected);
@@ -319,6 +324,32 @@ export class DeepProfileValidator {
             ? `Use a code from required ValueSet '${valueSet}'.`
             : `Use a code from the required binding.`;
         return details;
+    }
+
+    private describePatternMismatch(
+        path: string,
+        actualValue: unknown,
+        expectedPattern: unknown
+    ): { message: string; details: Record<string, unknown> } {
+        const expected = this.formatIssueValue(expectedPattern);
+        const actual = this.formatIssueValue(actualValue);
+        return {
+            message: `Element ${path} does not match required pattern: expected ${expected}, found ${actual}`,
+            details: {
+                expectedPattern: expected,
+                actualValue: actual,
+            },
+        };
+    }
+
+    private formatIssueValue(value: unknown): string {
+        const raw = typeof value === 'string'
+            ? value
+            : JSON.stringify(value);
+        if (raw === undefined) {
+            return 'undefined';
+        }
+        return raw.length > 240 ? `${raw.slice(0, 237)}...` : raw;
     }
 }
 

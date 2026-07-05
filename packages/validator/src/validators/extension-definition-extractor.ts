@@ -4,14 +4,15 @@ import type { ExtensionDefinition } from './extension-types';
 
 export interface ExtensionDefinitionContext {
   byUrl: Map<string, ExtensionDefinition>;
-  byPath: Map<string, Map<string, ExtensionDefinition>>;
+  byPath: Map<string, Map<string, ExtensionDefinition[]>>;
+  elements: ElementDefinition[];
 }
 
 export function extractExtensionDefinitions(
   profileSD: StructureDefinition
 ): ExtensionDefinitionContext {
   const byUrl = new Map<string, ExtensionDefinition>();
-  const byPath = new Map<string, Map<string, ExtensionDefinition>>();
+  const byPath = new Map<string, Map<string, ExtensionDefinition[]>>();
   const elements = profileSD.snapshot?.element || profileSD.differential?.element || [];
 
   for (const element of elements) {
@@ -21,18 +22,19 @@ export function extractExtensionDefinitions(
 
     const normalizedPath = normalizeElementPath(element.path);
 
-    if (!byPath.has(normalizedPath)) {
-      byPath.set(normalizedPath, new Map<string, ExtensionDefinition>());
-    }
-
     const extensionUrl = identifyExtensionUrl(element);
     if (!extensionUrl) {
       continue;
     }
 
+    if (!byPath.has(normalizedPath)) {
+      byPath.set(normalizedPath, new Map<string, ExtensionDefinition[]>());
+    }
+
     const extDef: ExtensionDefinition = {
       url: extensionUrl,
       path: normalizedPath,
+      ...(element.id ? { elementId: element.id } : {}),
       min: element.min ?? 0,
       max: element.max || '*',
       isModifier: element.isModifier || false,
@@ -42,11 +44,13 @@ export function extractExtensionDefinitions(
     };
 
     byUrl.set(extensionUrl, extDef);
-    byPath.get(normalizedPath)!.set(extensionUrl, extDef);
+    const definitionsForUrl = byPath.get(normalizedPath)!.get(extensionUrl) ?? [];
+    definitionsForUrl.push(extDef);
+    byPath.get(normalizedPath)!.set(extensionUrl, definitionsForUrl);
   }
 
   logger.debug(`[ExtensionValidator] Found ${byUrl.size} extension definitions across ${byPath.size} element paths`);
-  return { byUrl, byPath };
+  return { byUrl, byPath, elements };
 }
 
 export function extractSubExtensionDefinitions(
@@ -65,6 +69,7 @@ export function extractSubExtensionDefinitions(
     result.set(url, {
       url,
       path: element.path,
+      ...(element.id ? { elementId: element.id } : {}),
       min: element.min ?? 0,
       max: element.max || '*',
       isModifier: element.isModifier || false,

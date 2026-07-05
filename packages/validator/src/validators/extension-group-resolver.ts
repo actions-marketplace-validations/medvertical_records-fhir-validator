@@ -72,8 +72,10 @@ function getPrimitiveExtensionGroups(
     if (container == null || typeof container !== 'object' || Array.isArray(container)) continue;
     if (!(primitiveKey in container)) continue;
 
-    foundPrimitiveParent = true;
     const primitiveValue = container[primitiveKey];
+    if (!isPrimitiveElementValue(primitiveValue)) continue;
+
+    foundPrimitiveParent = true;
     const sidecar = container[`_${primitiveKey}`];
 
     if (Array.isArray(primitiveValue)) {
@@ -87,6 +89,14 @@ function getPrimitiveExtensionGroups(
   }
 
   return foundPrimitiveParent ? groups : null;
+}
+
+function isPrimitiveElementValue(value: any): boolean {
+  if (Array.isArray(value)) {
+    return value.every(item => item == null || typeof item !== 'object');
+  }
+
+  return value == null || typeof value !== 'object';
 }
 
 function getExtensionGroupFromSidecar(sidecar: any, leafKey: string): any[] {

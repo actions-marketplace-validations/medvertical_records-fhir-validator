@@ -46,6 +46,7 @@ export interface BundleIssue {
     severity: IssueSeverity;
     code: string;
     message: string;
+    path?: string;
     entryIndex?: number;
     reference?: string;
 }

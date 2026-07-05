@@ -1,3 +1,5 @@
+import { KNOWN_FHIR_RESOURCE_TYPES_BY_LOWERCASE } from '../reference/reference-resource-types';
+
 /**
  * Resource Type Normalization
  *
@@ -156,7 +158,8 @@ const KNOWN_RESOURCE_TYPE_BY_LOWERCASE: Record<string, string> = {
 function inferResourceTypeFromPath(path: string): string | undefined {
     const firstPathSegment = path.split(/[.[/:]/)[0]?.toLowerCase();
     if (!firstPathSegment) return undefined;
-    return KNOWN_RESOURCE_TYPE_BY_LOWERCASE[firstPathSegment];
+    return KNOWN_RESOURCE_TYPE_BY_LOWERCASE[firstPathSegment] ??
+        KNOWN_FHIR_RESOURCE_TYPES_BY_LOWERCASE.get(firstPathSegment);
 }
 
 export function normalizeResourceType(resourceType: string, path: string): string {

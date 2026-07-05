@@ -23,6 +23,19 @@ function matchesFhirVersion(sd: StructureDefinition, fhirVersion: 'R4' | 'R5' | 
   return sdFhirVersion.startsWith(expectedPrefix);
 }
 
+function requestedCanonicalVersion(url: string): string | undefined {
+  const [, version] = url.split('|');
+  return version || undefined;
+}
+
+function matchesExplicitCanonicalVersion(sd: StructureDefinition, url: string): boolean {
+  const requestedVersion = requestedCanonicalVersion(url);
+  if (!requestedVersion) return true;
+
+  const sdVersion = (sd as { version?: string }).version;
+  return sdVersion === requestedVersion;
+}
+
 /**
  * Look up a profile in the embedder-provided ProfileSource.
  * @param url - Profile canonical URL
@@ -54,6 +67,11 @@ export async function checkDatabaseCache(
     if (sd) {
       if (!matchesFhirVersion(sd, fhirVersion)) {
         logger.debug(`[SDLoader] Found in ProfileSource but wrong FHIR version for ${url}`);
+        dbCacheNotFound.add(cacheKey);
+        return null;
+      }
+      if (!matchesExplicitCanonicalVersion(sd, url)) {
+        logger.debug(`[SDLoader] Found in ProfileSource but wrong canonical version for ${url}`);
         dbCacheNotFound.add(cacheKey);
         return null;
       }

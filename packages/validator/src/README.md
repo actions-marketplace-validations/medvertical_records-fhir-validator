@@ -39,6 +39,9 @@ npm run oss:audit-validator
 node scripts/oss/audit-validator-boundary.mjs --include-tests
 ```
 
+Fallbacks, fail-open behavior, and deprecated compatibility exports are
+documented in [`docs/technical/validator-fallback-policy.md`](../../../docs/technical/validator-fallback-policy.md).
+
 ## Main Areas
 
 | Directory | Purpose |
@@ -60,8 +63,30 @@ Consumers should normally import from the package root:
 import { getRecordsValidatorClass, ValueSetValidator } from '@records-fhir/validator';
 ```
 
+Host applications that embed the validator and need to wire database-backed
+profile resolution, custom rules, logging, package installation, or warmup
+lifecycle hooks should import from the dedicated host surface:
+
+```ts
+import { setProfileSource, resetWarmupState } from '@records-fhir/validator/host';
+```
+
+The FHIR Schema converter and validation graph are available as an experimental
+evidence surface:
+
+```ts
+import { convertToFHIRSchema, compileFHIRSchemaToValidationGraph } from '@records-fhir/validator/fhir-schema';
+```
+
+This subpath is for dual-path comparison and representation experiments. The
+default validator remains StructureDefinition-first.
+
 Stable subpaths are listed in `packages/validator/package.json` under
-`exports`. Anything else is internal and can change without notice.
+`exports`. Legacy `core/*`, `validators/*`, and `package/*` exports are kept
+only as deprecated compatibility surfaces for existing npm consumers. Records
+repository code is guarded from importing those compatibility exports; new
+host, conformance, or tooling needs should be added to the stable subpaths
+instead of importing implementation modules directly.
 
 ## Conformance
 

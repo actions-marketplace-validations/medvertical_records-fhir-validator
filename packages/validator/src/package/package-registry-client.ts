@@ -217,8 +217,10 @@ export class PackageRegistryClient {
         return null;
       }
 
-      // Determine version to use
-      const targetVersion = version || manifest['dist-tags'].latest || this.getLatestVersion(manifest);
+      // Determine version to use. Some published canonicals use short
+      // SemVer (for example `|2.7`) while the package registry publishes the
+      // package as `2.7.0`.
+      const targetVersion = this.resolveManifestVersion(manifest, version);
       if (!targetVersion) {
         logger.warn(`[PackageRegistry] No version found for ${packageId}`);
         return null;
@@ -321,6 +323,27 @@ export class PackageRegistryClient {
     });
 
     return versions[0];
+  }
+
+  private resolveManifestVersion(manifest: PackageManifest, requestedVersion?: string): string | null {
+    if (requestedVersion) {
+      if (manifest.versions[requestedVersion]) return requestedVersion;
+
+      const normalizedVersion = this.normalizeShortSemverVersion(requestedVersion);
+      if (normalizedVersion !== requestedVersion && manifest.versions[normalizedVersion]) {
+        return normalizedVersion;
+      }
+
+      return requestedVersion;
+    }
+
+    return manifest['dist-tags'].latest || this.getLatestVersion(manifest);
+  }
+
+  private normalizeShortSemverVersion(version: string): string {
+    const match = version.match(/^(\d+)\.(\d+)$/);
+    if (!match) return version;
+    return `${match[1]}.${match[2]}.0`;
   }
 
   /**

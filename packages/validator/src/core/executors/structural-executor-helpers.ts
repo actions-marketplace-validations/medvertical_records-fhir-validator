@@ -48,6 +48,19 @@ export function getDirectValue(resource: any, path: string): any {
         if (current === undefined || current === null) {
             return undefined;
         }
+        if (Array.isArray(current)) {
+            const index = Number.parseInt(part, 10);
+            if (Number.isInteger(index) && index >= 0 && index < current.length) {
+                current = current[index];
+                continue;
+            }
+
+            const values = current
+                .map(item => resolveFhirSegmentValue(item, part))
+                .filter(value => value !== undefined);
+            current = values.length > 0 ? values : undefined;
+            continue;
+        }
         const value = resolveFhirSegmentValue(current, part);
         current = value;
         if (current === undefined) {

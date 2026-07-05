@@ -51,7 +51,7 @@ export const CANONICAL_URL_SANITY_RULES: AdvisorRule[] = [
   {
     id: 'builtin-hl7-trailing-slash',
     action: 'override-message',
-    match: { message: 'http://hl7.org/fhir/' },
+    match: { messageRegex: '(^|[^A-Za-z0-9+.-])http://hl7\\.org/fhir/($|[^A-Za-z0-9._~:/?#\\[\\]@!$&()*+,;=%-])' },
     transform: { message: 'Trailing slash on HL7 FHIR canonical URL — may cause resolution failures' },
     reason: 'Trailing slash breaks canonical resolution',
     enabled: true,

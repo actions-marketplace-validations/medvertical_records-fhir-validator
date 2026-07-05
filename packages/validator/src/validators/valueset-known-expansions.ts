@@ -1,7 +1,7 @@
 // Local expansions for small, spec-fixed required-binding ValueSets so they
 // validate without a terminology server (gap P-3 step a).
 //
-// INVARIANT: only ValueSets whose code set is *identical across R4/R5/R6* may
+// INVARIANT: only ValueSets whose code set is *identical across R4/R5* may
 // live here — this map is not version-keyed, and the local expansion is
 // authoritative for required bindings, so a version-divergent set (e.g.
 // encounter-status, composition-status, quantity-comparator) would produce
@@ -54,17 +54,6 @@ export const KNOWN_VALUE_SET_EXPANSIONS: Record<string, string[]> = {
     'http://hl7.org/fhir/contact-point-use|old',
     'http://hl7.org/fhir/contact-point-use|mobile',
     'home', 'work', 'temp', 'old', 'mobile'
-  ],
-
-  'http://hl7.org/fhir/ValueSet/device-nametype': [
-    'http://hl7.org/fhir/device-nametype|udi-label-name',
-    'http://hl7.org/fhir/device-nametype|user-friendly-name',
-    'http://hl7.org/fhir/device-nametype|patient-reported-name',
-    'http://hl7.org/fhir/device-nametype|manufacturer-name',
-    'http://hl7.org/fhir/device-nametype|model-name',
-    'http://hl7.org/fhir/device-nametype|other',
-    'udi-label-name', 'user-friendly-name', 'patient-reported-name',
-    'manufacturer-name', 'model-name', 'other'
   ],
 
   'http://hl7.org/fhir/ValueSet/observation-status': [
@@ -191,3 +180,8 @@ export const KNOWN_VALUE_SET_EXPANSIONS: Record<string, string[]> = {
     'current', 'superseded', 'entered-in-error'
   ]
 };
+
+export function getKnownValueSetExpansion(baseUrl: string, fhirVersion?: string): string[] | undefined {
+  if (fhirVersion === 'R6') return undefined;
+  return KNOWN_VALUE_SET_EXPANSIONS[baseUrl];
+}

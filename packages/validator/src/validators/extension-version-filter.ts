@@ -19,16 +19,16 @@ export function filterDefinitionContextForFhirVersion(
   fhirVersion: FhirVersionFamily,
 ): ExtensionDefinitionContext {
   const byUrl = filterDefinitionsForFhirVersion(definitionContext.byUrl, fhirVersion);
-  const byPath = new Map<string, Map<string, ExtensionDefinition>>();
+  const byPath = new Map<string, Map<string, ExtensionDefinition[]>>();
 
   for (const [path, definitions] of definitionContext.byPath.entries()) {
-    const filtered = filterDefinitionsForFhirVersion(definitions, fhirVersion);
+    const filtered = filterDefinitionListsForFhirVersion(definitions, fhirVersion);
     if (filtered.size > 0) {
       byPath.set(path, filtered);
     }
   }
 
-  return { byUrl, byPath };
+  return { byUrl, byPath, elements: definitionContext.elements };
 }
 
 export function filterDefinitionsForFhirVersion(
@@ -43,6 +43,24 @@ export function filterDefinitionsForFhirVersion(
       continue;
     }
     filtered.set(url, definition);
+  }
+
+  return filtered;
+}
+
+function filterDefinitionListsForFhirVersion(
+  definitions: Map<string, ExtensionDefinition[]>,
+  fhirVersion: FhirVersionFamily,
+): Map<string, ExtensionDefinition[]> {
+  const filtered = new Map<string, ExtensionDefinition[]>();
+
+  for (const [url, list] of definitions.entries()) {
+    const compatible = list.filter(definition => {
+      if (isExtensionDefinitionCompatible(definition, fhirVersion)) return true;
+      logger.debug(`[ExtensionValidator] Skipping FHIR-version-incompatible extension definition: ${definition.profileUrl ?? definition.url} (${fhirVersion})`);
+      return false;
+    });
+    if (compatible.length > 0) filtered.set(url, compatible);
   }
 
   return filtered;

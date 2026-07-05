@@ -33,6 +33,7 @@ const CHOICE_TYPE_BASES = [
   'product',
   'performed',
   'deceased',
+  'definition',
   'asneeded',
   'multiplebirth',
   'serviced',

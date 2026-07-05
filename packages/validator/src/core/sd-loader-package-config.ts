@@ -18,9 +18,12 @@ export function parseAllowedPackages(): string[] {
       'hl7.fhir.us.qicore',
       'hl7.fhir.r4.core',
       'hl7.fhir.r5.core',
+      'hl7.fhir.uv.sdc',
       'de.basisprofil.r4',
       'de.gematik.isik-basismodul',
       'kbv.basis',
+      'kbv.ita.eau',
+      'kbv.ita.for',
       'uk.core',
       'hl7.fhir.au.*',
       'hl7.fhir.ca.baseline'

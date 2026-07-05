@@ -32,8 +32,11 @@ export function createBundleReferenceResolver(
       return containedById?.get(id) ?? null;
     }
 
+    const relativeKey = normalizeReferenceKey(reference);
+
     return bundleIndex?.fullUrl.get(reference)
       ?? bundleIndex?.relative.get(reference)
+      ?? (relativeKey ? bundleIndex?.relative.get(relativeKey) : null)
       ?? null;
   };
 }
@@ -63,4 +66,37 @@ function getBundleReferenceIndex(bundle: Record<string, unknown>): BundleReferen
   const index = { fullUrl, relative, hasEntries: fullUrl.size > 0 || relative.size > 0 };
   bundleReferenceIndexCache.set(bundle, index);
   return index;
+}
+
+function normalizeReferenceKey(reference: string): string | null {
+  if (!reference || reference.startsWith('#')) return null;
+
+  const path = extractReferencePath(reference);
+  if (!path) return null;
+
+  const segments = path
+    .split('/')
+    .map(segment => segment.trim())
+    .filter(Boolean);
+  if (segments.length < 2) return null;
+
+  const historyIndex = segments.indexOf('_history');
+  if (historyIndex >= 2) {
+    return `${segments[historyIndex - 2]}/${segments[historyIndex - 1]}`;
+  }
+
+  return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
+}
+
+function extractReferencePath(reference: string): string | null {
+  try {
+    if (/^https?:\/\//i.test(reference)) {
+      return new URL(reference).pathname;
+    }
+  } catch {
+    return null;
+  }
+
+  const withoutQuery = reference.split('?')[0]?.split('#')[0] ?? '';
+  return withoutQuery || null;
 }

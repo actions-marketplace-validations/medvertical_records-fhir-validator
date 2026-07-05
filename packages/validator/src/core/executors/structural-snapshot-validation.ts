@@ -11,12 +11,14 @@ import type { BundleValidator } from '../../validators/bundle-validator';
 import type { QuestionnaireValidator } from '../../validators/questionnaire-validator';
 import { getValidationTargets, shouldValidateRequired } from '../../business-rules';
 import { logger } from '../../logger';
+import { expandContentReferenceElements } from '../content-reference-elements';
 import { getDirectValue, isValueEmpty } from './structural-executor-helpers';
 import {
   hasElementDefinitionRules,
   shouldSkipRulesForSiblingSliceTarget,
   shouldSkipSnapshotElement,
 } from './structural-element-rules';
+import { shouldSuppressServerManagedMetadataIssue } from '../server-managed-metadata-issue-filter';
 
 type FhirVersion = 'R4' | 'R5' | 'R6';
 type ValidationTarget = ReturnType<typeof getValidationTargets>[number];
@@ -57,8 +59,9 @@ interface SnapshotElementParams extends StructuralSnapshotParams {
 export async function validateStructuralSnapshot(params: StructuralSnapshotParams): Promise<ValidationIssue[]> {
   const { resource, structureDef, effectiveProfileUrl, getValueAtPath, fhirVersion, deps, resolveReference } = params;
   const issues: ValidationIssue[] = [];
+  const snapshotElements = expandContentReferenceElements(structureDef.snapshot?.element ?? []);
 
-  for (const elementDef of structureDef.snapshot?.element ?? []) {
+  for (const elementDef of snapshotElements) {
     if (elementDef.path === resource.resourceType) continue;
     if (shouldSkipSnapshotElement(elementDef, resource.resourceType)) continue;
 
@@ -88,7 +91,7 @@ export async function validateStructuralSnapshot(params: StructuralSnapshotParam
     issues.push(...deps.questionnaireValidator.validateQuestionnaireResponse(resource));
   }
 
-  return issues;
+  return issues.filter(issue => !shouldSuppressServerManagedMetadataIssue(issue));
 }
 
 async function validateSnapshotElement(params: SnapshotElementParams): Promise<ValidationIssue[]> {
@@ -155,15 +158,22 @@ async function validateElementTargets(
 
   for (const group of groupTargetsByContext(validationTargets).values()) {
     const first = group[0];
-    if (!shouldValidateRequired(resource, first.contextPath || first.fullPath)) continue;
+    if (!shouldValidateResolvedTarget(resource, first)) continue;
 
     const count = group.filter(t => t.value !== undefined && t.value !== null).length;
-    issues.push(...deps.cardinalityValidator.validate(
+    const validationPath = first.fullPath || elementDef.path;
+    const cardinalityIssues = deps.cardinalityValidator.validate(
       new Array(count).fill(null),
       elementDef,
-      elementDef.path,
+      validationPath,
       effectiveProfileUrl,
       resource,
+      { parentExists: true },
+    );
+    issues.push(...cardinalityIssues.map(issue =>
+      first.fullPath && first.fullPath !== elementDef.path && issue.path === elementDef.path
+        ? retargetIssuePath(issue, elementDef.path, first.fullPath)
+        : issue
     ));
   }
 
@@ -177,11 +187,11 @@ async function validateElementTargets(
 async function validateSingleTarget(params: SnapshotElementParams, target: ValidationTarget): Promise<ValidationIssue[]> {
   const { resource, elementDef, effectiveProfileUrl, structureDef, fhirVersion, deps } = params;
   const targetHasValue = target.value !== undefined && target.value !== null;
-  const shouldValidate = shouldValidateRequired(resource, target.fullPath);
+  const shouldValidate = shouldValidateResolvedTarget(resource, target);
   const shouldApplyChoiceElementRules =
     !shouldValidate &&
     targetHasValue &&
-    target.fullPath.includes('[x]') &&
+    elementDef.path.includes('[x]') &&
     hasElementDefinitionRules(elementDef as unknown as Record<string, unknown>);
 
   if (shouldApplyChoiceElementRules) {
@@ -238,6 +248,33 @@ async function validateExistingValue(params: {
   ));
 
   return issues;
+}
+
+function shouldValidateResolvedTarget(resource: any, target: ValidationTarget): boolean {
+  if (target.contextPath && target.contextPath !== resource.resourceType) {
+    return true;
+  }
+
+  return shouldValidateRequired(resource, target.fullPath);
+}
+
+function retargetIssuePath(issue: ValidationIssue, sourcePath: string, targetPath: string): ValidationIssue {
+  const replacePath = (value: unknown): unknown =>
+    typeof value === 'string' ? value.split(sourcePath).join(targetPath) : value;
+
+  const details = issue.details && typeof issue.details === 'object'
+    ? Object.fromEntries(
+      Object.entries(issue.details).map(([key, value]) => [key, replacePath(value)])
+    )
+    : issue.details;
+
+  return {
+    ...issue,
+    path: targetPath,
+    message: replacePath(issue.message) as string,
+    humanReadable: replacePath(issue.humanReadable) as string | undefined,
+    details,
+  };
 }
 
 function groupTargetsByContext(validationTargets: ValidationTarget[]): Map<string, ValidationTarget[]> {

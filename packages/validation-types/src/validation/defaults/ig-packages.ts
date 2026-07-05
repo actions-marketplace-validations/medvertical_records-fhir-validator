@@ -9,6 +9,24 @@ export interface FhirPackagePin {
   version: string;
 }
 
+export const FHIR_CORE_TERMINOLOGY_PACKAGE_VERSIONS = {
+  'hl7.terminology.r4': '7.1.0',
+  'hl7.terminology.r5': '7.1.0',
+} as const;
+
+export const FHIR_CORE_TERMINOLOGY_PACKAGE_SET: FhirPackagePin[] = Object.entries(
+  FHIR_CORE_TERMINOLOGY_PACKAGE_VERSIONS
+).map(([id, version]) => ({ id, version }));
+
+export const FHIR_CORE_EXTENSION_PACKAGE_VERSIONS = {
+  'hl7.fhir.uv.extensions.r4': '5.3.0',
+  'hl7.fhir.uv.extensions.r5': '5.3.0',
+} as const;
+
+export const FHIR_CORE_EXTENSION_PACKAGE_SET: FhirPackagePin[] = Object.entries(
+  FHIR_CORE_EXTENSION_PACKAGE_VERSIONS
+).map(([id, version]) => ({ id, version }));
+
 export const MII_2026_PACKAGE_VERSIONS = {
   'de.basisprofil.r4': '1.5.4',
   'de.medizininformatikinitiative.kerndatensatz.meta': '2026.0.0',

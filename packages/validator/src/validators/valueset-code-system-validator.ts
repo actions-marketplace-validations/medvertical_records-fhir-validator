@@ -26,11 +26,19 @@ export async function validateCodeInCodeSystemWithFallbacks({
 }): Promise<CodeSystemValidationResult> {
   const result = await apiClient.validateCodeInCodeSystem(code, system, display, primaryOverride);
   if (!display || !isDisplayMismatchResult(result)) {
-    return validateInactiveCodeWithFallbackServers({
+    const codeMembershipResult = await validateCodeMembershipWithFallbackServers({
       apiClient,
       code,
       primaryOverride,
       primaryResult: result,
+      resolutionConfig,
+      system,
+    });
+    return validateInactiveCodeWithFallbackServers({
+      apiClient,
+      code,
+      primaryOverride,
+      primaryResult: codeMembershipResult,
       resolutionConfig,
       system,
     });
@@ -56,6 +64,48 @@ export async function validateCodeInCodeSystemWithFallbacks({
     resolutionConfig,
     system,
   });
+}
+
+async function validateCodeMembershipWithFallbackServers({
+  apiClient,
+  code,
+  primaryOverride,
+  primaryResult,
+  resolutionConfig,
+  system,
+}: {
+  apiClient: TerminologyApiClient;
+  code: string;
+  primaryOverride?: TerminologyServerOverride;
+  primaryResult: CodeSystemValidationResult;
+  resolutionConfig: TerminologyResolutionConfig;
+  system: string;
+}): Promise<CodeSystemValidationResult> {
+  if (!shouldTryCodeMembershipFallback(primaryResult, primaryOverride)) return primaryResult;
+
+  const fallbackServers = getFallbackTerminologyServers(resolutionConfig, primaryOverride);
+  if (fallbackServers.length === 0) return primaryResult;
+
+  for (const server of fallbackServers) {
+    const fallbackResult = await apiClient.validateCodeInCodeSystem(code, system, undefined, server);
+    if (fallbackResult.valid || isDisplayMismatchResult(fallbackResult)) {
+      return fallbackResult;
+    }
+  }
+
+  return primaryResult;
+}
+
+function shouldTryCodeMembershipFallback(
+  result: CodeSystemValidationResult,
+  primaryOverride: TerminologyServerOverride | undefined,
+): boolean {
+  if (result.valid) return false;
+  if (result.reason === 'system-unresolvable') return true;
+
+  // A preferred server is the configured authority for that CodeSystem. For a
+  // generic default server, "unknown code" may only mean missing coverage.
+  return result.reason === 'code-unknown' && !primaryOverride;
 }
 
 function isEquivalentDisplayMismatch(

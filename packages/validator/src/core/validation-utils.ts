@@ -8,7 +8,7 @@
 
 import type { ValidationIssue } from '../types';
 import { normalizeChoiceTypePath } from './choice-type-path';
-import { resolveFhirSegmentValue } from './fhir-primitive-sidecar';
+import { getPrimitiveSidecar, resolveFhirSegmentValue } from './fhir-primitive-sidecar';
 
 /**
  * Helper: Get value at FHIRPath-like path
@@ -23,7 +23,9 @@ export function getValueAtPath(resource: any, path: string): any {
 
   let currentValues: any[] = [resource];
 
-  for (const part of parts) {
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const part = parts[partIndex];
+    const hasRemainingPath = partIndex < parts.length - 1;
     const nextValues: any[] = [];
 
     for (const current of currentValues) {
@@ -36,13 +38,13 @@ export function getValueAtPath(resource: any, path: string): any {
           if (item === undefined || item === null) {
             continue;
           }
-          const value = resolveFhirSegmentValue(item, part);
+          const value = resolveSegmentForPath(item, part, hasRemainingPath);
           if (value !== undefined) {
             nextValues.push(value);
           }
         }
       } else {
-        const value = resolveFhirSegmentValue(current, part);
+        const value = resolveSegmentForPath(current, part, hasRemainingPath);
 
         if (value !== undefined) {
           nextValues.push(value);
@@ -64,6 +66,32 @@ export function getValueAtPath(resource: any, path: string): any {
   }
 
   return currentValues.length === 1 ? currentValues[0] : currentValues;
+}
+
+function resolveSegmentForPath(container: any, segment: string, hasRemainingPath: boolean): any {
+  if (
+    hasRemainingPath &&
+    container &&
+    typeof container === 'object' &&
+    !Array.isArray(container) &&
+    isPrimitiveValueOrPrimitiveArray(container[segment])
+  ) {
+    const sidecar = getPrimitiveSidecar(container, segment);
+    if (sidecar !== undefined) return sidecar;
+  }
+
+  return resolveFhirSegmentValue(container, segment);
+}
+
+function isPrimitiveValue(value: unknown): boolean {
+  return value === null ||
+    ['string', 'number', 'boolean'].includes(typeof value);
+}
+
+function isPrimitiveValueOrPrimitiveArray(value: unknown): boolean {
+  return Array.isArray(value)
+    ? value.every(isPrimitiveValue)
+    : isPrimitiveValue(value);
 }
 
 /**
@@ -112,7 +140,12 @@ export function createValidationInfoIssue(
   };
 }
 
-export { dedupeIssues } from './validation-issue-dedupe';
+export {
+  dedupeIssues,
+  dedupeIssuesWithTrace,
+  type DedupeIssuesResult,
+  type DedupeSuppressionTrace,
+} from './validation-issue-dedupe';
 
 /**
  * Suppress terminology binding warnings on paths where a structural
@@ -132,27 +165,197 @@ export function suppressRedundantBindingWarnings(
   issues: ValidationIssue[],
 ): ValidationIssue[] {
   const typeMismatchPaths = new Set<string>();
-  const minCardinalityPaths = new Set<string>();
+  const missingRequiredElementPaths = new Set<string>();
+  const invalidCodeBindingParentPaths = new Set<string>();
   for (const issue of issues) {
     if (issue.code === 'structural-type-mismatch' && issue.path) {
       typeMismatchPaths.add(normalizeChoiceTypePath(issue.path));
     }
-    if (issue.code === 'structural-cardinality-min' && issue.path) {
-      minCardinalityPaths.add(normalizeChoiceTypePath(issue.path));
+    if (isRequiredElementPresenceIssue(issue) && issue.path) {
+      missingRequiredElementPaths.add(normalizeChoiceTypePath(issue.path));
+    }
+    if (issue.code === 'terminology-code-invalid' && issue.path) {
+      const bindingParentPath = parentBindingPathForInvalidCode(issue.path);
+      if (bindingParentPath) invalidCodeBindingParentPaths.add(bindingParentPath);
     }
   }
-  if (typeMismatchPaths.size === 0 && minCardinalityPaths.size === 0) return issues;
+  if (
+    typeMismatchPaths.size === 0 &&
+    missingRequiredElementPaths.size === 0 &&
+    invalidCodeBindingParentPaths.size === 0
+  ) return issues;
 
   return issues.filter(issue => {
-    if (issue.code === 'binding-required-missing' && issue.path) {
-      return !minCardinalityPaths.has(normalizeChoiceTypePath(issue.path));
-    }
     if (
-      issue.code !== 'terminology-binding-extensible-code' &&
-      issue.code !== 'terminology-binding-preferred-code' &&
-      issue.code !== 'terminology-binding-example-code'
-    ) return true;
+      (issue.code === 'binding-required-missing' || issue.code === 'terminology-binding-missing') &&
+      issue.path
+    ) {
+      return !missingRequiredElementPaths.has(normalizeChoiceTypePath(issue.path));
+    }
+    if (!isNonRequiredBindingIssue(issue)) return true;
     if (!issue.path) return true;
+    const normalizedPath = normalizeChoiceTypePath(issue.path);
+    if (invalidCodeBindingParentPaths.has(normalizedPath)) return false;
     return !typeMismatchPaths.has(normalizeChoiceTypePath(issue.path));
   });
+}
+
+function isRequiredElementPresenceIssue(issue: ValidationIssue): boolean {
+  return issue.code === 'structural-cardinality-min' ||
+    issue.code === 'questionnaire-missing-status' ||
+    issue.code === 'qr-missing-status';
+}
+
+function isNonRequiredBindingIssue(issue: ValidationIssue): boolean {
+  return issue.code === 'terminology-binding-extensible' ||
+    issue.code === 'terminology-binding-extensible-code' ||
+    issue.code === 'terminology-binding-preferred' ||
+    issue.code === 'terminology-binding-preferred-code' ||
+    issue.code === 'terminology-binding-example' ||
+    issue.code === 'terminology-binding-example-code';
+}
+
+function parentBindingPathForInvalidCode(path: string): string | null {
+  const codeableConceptParent = path.replace(/\.coding\[\d+\]\.code$/i, '');
+  if (codeableConceptParent !== path) {
+    return normalizeChoiceTypePath(codeableConceptParent);
+  }
+
+  const codeableConceptParentBySystem = path.replace(/\.coding\[\d+\]\.system$/i, '');
+  if (codeableConceptParentBySystem !== path) {
+    return normalizeChoiceTypePath(codeableConceptParentBySystem);
+  }
+
+  const codingParent = path.replace(/\.code$/i, '');
+  if (codingParent !== path) {
+    return normalizeChoiceTypePath(codingParent);
+  }
+
+  const codingParentBySystem = path.replace(/\.system$/i, '');
+  if (codingParentBySystem !== path) {
+    return normalizeChoiceTypePath(codingParentBySystem);
+  }
+
+  return null;
+}
+
+const REMOTE_BUDGET_AGGREGATION_THRESHOLD = 5;
+const REMOTE_BUDGET_SAMPLE_LIMIT = 5;
+
+export function aggregateRemoteCodeSystemBudgetIssues(
+  issues: ValidationIssue[],
+): ValidationIssue[] {
+  const groups = new Map<string, ValidationIssue[]>();
+  const groupedIssues = new Set<ValidationIssue>();
+
+  for (const issue of issues) {
+    if (!isRemoteBudgetCodeSystemIssue(issue)) continue;
+    const system = remoteBudgetIssueSystem(issue);
+    const reason = remoteBudgetIssueReason(issue);
+    if (!system || !reason) continue;
+    const key = `${system}\u0000${reason}`;
+    const group = groups.get(key) ?? [];
+    group.push(issue);
+    groups.set(key, group);
+    groupedIssues.add(issue);
+  }
+
+  if (!Array.from(groups.values()).some(group => group.length > REMOTE_BUDGET_AGGREGATION_THRESHOLD)) {
+    return issues;
+  }
+
+  const emittedGroups = new Set<string>();
+  const out: ValidationIssue[] = [];
+  for (const issue of issues) {
+    if (!groupedIssues.has(issue)) {
+      out.push(issue);
+      continue;
+    }
+
+    const system = remoteBudgetIssueSystem(issue);
+    const reason = remoteBudgetIssueReason(issue);
+    const key = system && reason ? `${system}\u0000${reason}` : '';
+    const group = key ? groups.get(key) : undefined;
+    if (!group || group.length <= REMOTE_BUDGET_AGGREGATION_THRESHOLD) {
+      out.push(issue);
+      continue;
+    }
+    if (emittedGroups.has(key)) continue;
+
+    emittedGroups.add(key);
+    out.push(buildRemoteBudgetAggregateIssue(issue, group, system!, reason!));
+  }
+
+  return out;
+}
+
+function isRemoteBudgetCodeSystemIssue(issue: ValidationIssue): boolean {
+  return issue.aspect === 'terminology' &&
+    issue.code === 'terminology-codesystem-unverified' &&
+    issue.severity !== 'error' &&
+    remoteBudgetIssueReason(issue) === 'remote-budget-exhausted';
+}
+
+function remoteBudgetIssueSystem(issue: ValidationIssue): string | null {
+  const details = issue.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const system = (details as Record<string, unknown>).system;
+  return typeof system === 'string' && system.length > 0 ? system : null;
+}
+
+function remoteBudgetIssueReason(issue: ValidationIssue): string | null {
+  const details = issue.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const reason = (details as Record<string, unknown>).reason;
+  return typeof reason === 'string' && reason.length > 0 ? reason : null;
+}
+
+function remoteBudgetIssueCode(issue: ValidationIssue): string | null {
+  const details = issue.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const code = (details as Record<string, unknown>).code;
+  return typeof code === 'string' && code.length > 0 ? code : null;
+}
+
+function buildRemoteBudgetAggregateIssue(
+  representative: ValidationIssue,
+  group: ValidationIssue[],
+  system: string,
+  reason: string,
+): ValidationIssue {
+  const representativeDetails =
+    representative.details && typeof representative.details === 'object' && !Array.isArray(representative.details)
+      ? withoutRemoteBudgetSingleCodeDetails(representative.details)
+      : {};
+  const sampleCodes = uniqueStrings(group.map(remoteBudgetIssueCode)).slice(0, REMOTE_BUDGET_SAMPLE_LIMIT);
+  const samplePaths = uniqueStrings(group.map(issue => issue.path ?? '')).slice(0, REMOTE_BUDGET_SAMPLE_LIMIT);
+  const codeSample = sampleCodes.length > 0 ? ` (examples: ${sampleCodes.join(', ')})` : '';
+
+  return {
+    ...representative,
+    id: `${representative.id}-aggregate`,
+    message:
+      `Remote CodeSystem validation budget was exhausted; ${group.length} codes from ${system} ` +
+      `were not verified against the terminology server${codeSample}`,
+    path: samplePaths[0] ?? representative.path,
+    details: {
+      ...representativeDetails,
+      system,
+      reason,
+      count: group.length,
+      sampleCodes,
+      samplePaths,
+      fixHint:
+        'Increase maxRemoteCodeSystemValidations for deeper remote terminology evidence, or provide a local CodeSystem package/cache.',
+    },
+  };
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
+}
+
+function withoutRemoteBudgetSingleCodeDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const { code: _code, display: _display, ...aggregateDetails } = details;
+  return aggregateDetails;
 }

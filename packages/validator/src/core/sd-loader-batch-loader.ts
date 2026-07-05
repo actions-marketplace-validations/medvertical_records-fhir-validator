@@ -3,6 +3,8 @@ import type { StructureDefinition } from './structure-definition-types';
 import {
   cacheKeyForProfile,
   matchesRequestedFhirVersion,
+  normalizeVersionedCoreStructureDefinitionUrl,
+  urlMatchesRequestedFhirVersion,
 } from './sd-loader-version-utils';
 
 interface LoadProfilesBatchArgs {
@@ -68,7 +70,13 @@ function collectUncachedUrls(
   const uncachedUrls: string[] = [];
 
   for (const url of uniqueUrls) {
-    const resolvedUrl = resolvePinnedCanonical(url);
+    if (!urlMatchesRequestedFhirVersion(url, fhirVersion)) {
+      uncachedUrls.push(url);
+      continue;
+    }
+
+    const lookupUrl = normalizeVersionedCoreStructureDefinitionUrl(url, fhirVersion);
+    const resolvedUrl = resolvePinnedCanonical(lookupUrl);
     const cacheKey = cacheKeyForProfile(resolvedUrl, fhirVersion);
     const cached = cache.get(cacheKey);
     if (cached && matchesRequestedFhirVersion(cached, fhirVersion)) {

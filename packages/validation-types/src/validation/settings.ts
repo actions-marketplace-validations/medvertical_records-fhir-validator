@@ -78,6 +78,7 @@ export interface AdvisorRuleMatch {
   code?: string | string[];
   path?: string | string[];
   message?: string;
+  messageRegex?: string | string[];
   aspect?: string | string[];
   severity?: string;
   profile?: string;
@@ -202,6 +203,12 @@ export interface ValidationSettings {
       cacheResults: boolean;
       /** Cache expiration in seconds (default: 3600) */
       cacheTTLSeconds: number;
+      /** Per-request timeout for remote terminology operations. */
+      requestTimeoutMs?: number;
+      /** Open the remote terminology circuit after repeated slow responses. */
+      slowResponseThresholdMs?: number;
+      /** Cap direct remote CodeSystem validations per validator instance. */
+      maxRemoteCodeSystemValidations?: number;
     };
 
     /**

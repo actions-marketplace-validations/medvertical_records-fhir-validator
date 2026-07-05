@@ -11,7 +11,8 @@ import {
 } from './executors';
 import type { StructureDefinition } from './structure-definition-types';
 import { runAllAspectValidations } from './validation-orchestrator';
-import { dedupeIssues, suppressRedundantBindingWarnings } from './validation-utils';
+import { aggregateRemoteCodeSystemBudgetIssues, dedupeIssues, suppressRedundantBindingWarnings } from './validation-utils';
+import type { ReferenceResolver } from '../validators/slicing-validator';
 
 export interface SingleResourceValidationInput {
   resource: any;
@@ -22,6 +23,7 @@ export interface SingleResourceValidationInput {
   settings?: ValidationSettings;
   profileFallbackIssue?: ValidationIssue | null;
   contextQuestionnaire?: any;
+  referenceResolver?: ReferenceResolver | null;
 }
 
 export interface SingleResourceValidationDeps {
@@ -50,6 +52,7 @@ export async function collectSingleResourceValidationIssues(
       strictMode: input.strictMode,
       settings: input.settings,
       contextQuestionnaire: input.contextQuestionnaire,
+      referenceResolver: input.referenceResolver,
     },
     deps.structuralExecutor,
     deps.profileExecutor,
@@ -60,16 +63,30 @@ export async function collectSingleResourceValidationIssues(
     deps.referenceExecutor,
   );
 
-  const bestPracticeIssues = deps.bestPracticeValidator.validate({
-    resource: input.resource,
-    resourceType: input.resource.resourceType,
-    profileUrl: input.profileUrl,
-  });
+  const bestPracticeIssues = shouldValidateBestPractices(input.settings)
+    ? deps.bestPracticeValidator.validate({
+      resource: input.resource,
+      resourceType: input.resource.resourceType,
+      profileUrl: input.profileUrl,
+    })
+    : [];
 
-  return suppressRedundantBindingWarnings(dedupeIssues([
+  const bundleEntryIssues = shouldValidateBundleEntryResources(input.settings)
+    ? await deps.validateBundleEntriesIfNeeded(input.resource, input.fhirVersion)
+    : [];
+
+  return aggregateRemoteCodeSystemBudgetIssues(suppressRedundantBindingWarnings(dedupeIssues([
     ...(input.profileFallbackIssue ? [input.profileFallbackIssue] : []),
     ...aspectIssues,
     ...bestPracticeIssues,
-    ...(await deps.validateBundleEntriesIfNeeded(input.resource, input.fhirVersion)),
-  ]));
+    ...bundleEntryIssues,
+  ])));
+}
+
+export function shouldValidateBundleEntryResources(settings?: ValidationSettings): boolean {
+  return settings?.recursiveReferenceValidation?.validateBundleEntries !== false;
+}
+
+export function shouldValidateBestPractices(settings?: ValidationSettings): boolean {
+  return settings?.enableBestPracticeChecks !== false;
 }

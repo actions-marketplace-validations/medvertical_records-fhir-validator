@@ -6,6 +6,8 @@ import type {
   TerminologyResolutionConfig,
   CodeBindingOutcome,
   TerminologyDiagnostics,
+  CodeSystem,
+  CodeSystemConcept,
 } from './valueset-types';
 import {
   DEFAULT_RESOLUTION_CONFIG,
@@ -14,6 +16,7 @@ import {
 } from './valueset-types';
 import {
   type BindingStrength,
+  displaysEquivalentForCodeInfo,
 } from './valueset-display-utils';
 import { type FhirVersion } from './valueset-expansion-cache-key';
 import { KNOWN_VALUE_SET_EXPANSIONS } from './valueset-known-expansions';
@@ -44,6 +47,7 @@ import {
   type BindingValidationDeps,
   type ValidateBindingOptions,
 } from './valueset-binding-validator';
+import { isMimeTypesValueSet, validateMimeTypeBindingCode } from './valueset-mimetype-utils';
 import {
   cloneTerminologyDiagnostics,
   createEmptyTerminologyDiagnostics,
@@ -53,6 +57,51 @@ import {
 import { validateCodeViaTerminologyServerWithFilters } from './valueset-terminology-server-validation';
 
 export type { TerminologyResolutionStrategy, TerminologyResolutionConfig, ValueSet, CodeSystem } from './valueset-types';
+
+function fhirVersionToPackageMajor(fhirVersion?: FhirVersion): string | undefined {
+  if (fhirVersion === 'R4') return '4';
+  if (fhirVersion === 'R5') return '5';
+  if (fhirVersion === 'R6') return '6';
+  return undefined;
+}
+
+function isAssertableCodeSystem(codeSystem: CodeSystem): boolean {
+  return codeSystem.content !== 'not-present' && codeSystem.content !== 'supplement';
+}
+
+function findCodeSystemConcept(
+  concepts: CodeSystemConcept[] | undefined,
+  code: string,
+): CodeSystemConcept | null {
+  if (!concepts) return null;
+  for (const concept of concepts) {
+    if (concept.code === code) return concept;
+    const nested = findCodeSystemConcept(concept.concept, code);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function shouldTreatCodeUnknownAsUnverifiable(
+  system: string,
+  result: CodeSystemValidationResult,
+  config: TerminologyResolutionConfig,
+): boolean {
+  return system === 'http://snomed.info/sct' &&
+    result.reason === 'code-unknown' &&
+    !hasEnabledPreferredTerminologyServer(config, system);
+}
+
+function hasEnabledPreferredTerminologyServer(
+  config: TerminologyResolutionConfig,
+  system: string,
+): boolean {
+  return (config.servers ?? []).some(server =>
+    server.enabled &&
+    !server.circuitOpen &&
+    server.preferredSystems?.includes(system)
+  );
+}
 
 export class ValueSetValidator {
   private resolutionConfig: TerminologyResolutionConfig;
@@ -79,7 +128,19 @@ export class ValueSetValidator {
    * Configure the terminology resolution strategy
    */
   setResolutionConfig(config: Partial<TerminologyResolutionConfig>): void {
-    this.resolutionConfig = { ...this.resolutionConfig, ...config };
+    const { serverDelegation, ...rest } = config;
+    this.resolutionConfig = {
+      ...this.resolutionConfig,
+      ...rest,
+      ...(serverDelegation !== undefined
+        ? {
+          serverDelegation: {
+            ...this.resolutionConfig.serverDelegation,
+            ...serverDelegation,
+          },
+        }
+        : {}),
+    };
     this.apiClient.setConfig(this.resolutionConfig);
     this.twoPhaseShadow.setConfig(this.resolutionConfig.twoPhaseExpansion);
     const twoPhase = this.resolutionConfig.twoPhaseExpansion?.enabled
@@ -176,9 +237,10 @@ export class ValueSetValidator {
     valueSetUrl: string,
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
+    elementPath?: string,
   ): Promise<CodeBindingOutcome> {
     try {
-      return await this.resolveCodeBinding(code, system, valueSetUrl, bindingStrength, fhirVersion);
+      return await this.resolveCodeBinding(code, system, valueSetUrl, bindingStrength, fhirVersion, elementPath);
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
       if (bindingStrength === 'required') {
@@ -197,7 +259,11 @@ export class ValueSetValidator {
     code: string,
     system: string,
     display?: string,
+    fhirVersion?: FhirVersion,
   ): Promise<CodeSystemValidationResult> {
+    const localResult = await this.validateCodeInLocalCodeSystem(code, system, display, fhirVersion);
+    if (localResult) return localResult;
+
     if (!this.isExternalCodeSystem(system)) {
       return { valid: true };
     }
@@ -205,7 +271,7 @@ export class ValueSetValidator {
     // this system, call THAT server instead of the default. Otherwise
     // pass undefined and the api client uses its default serverUrl.
     const override = this.resolveServerForSystem(system);
-    return validateCodeInCodeSystemWithFallbacks({
+    const result = await validateCodeInCodeSystemWithFallbacks({
       apiClient: this.apiClient,
       code,
       display,
@@ -213,6 +279,64 @@ export class ValueSetValidator {
       resolutionConfig: this.resolutionConfig,
       system,
     });
+    if (shouldTreatCodeUnknownAsUnverifiable(system, result, this.resolutionConfig)) {
+      return {
+        valid: false,
+        reason: 'system-unresolvable',
+        message:
+          `Could not verify SNOMED CT code '${code}' against an authoritative unversioned SNOMED edition. ` +
+          `Configure a SNOMED-preferred terminology server or provide a versioned Coding.version to enforce code membership.`,
+      };
+    }
+    return result;
+  }
+
+  private async validateCodeInLocalCodeSystem(
+    code: string,
+    system: string,
+    display?: string,
+    fhirVersion?: FhirVersion,
+  ): Promise<CodeSystemValidationResult | null> {
+    const codeSystem = this.cache.getCodeSystem(system)
+      ?? this.cache.getCodeSystemFile(system)
+      ?? await this.packageLoader.loadCodeSystem(system, fhirVersionToPackageMajor(fhirVersion));
+    if (!codeSystem || !isAssertableCodeSystem(codeSystem)) return null;
+
+    const concept = findCodeSystemConcept(codeSystem.concept, code);
+    if (!concept) {
+      return {
+        valid: false,
+        reason: 'code-unknown',
+        message: `Unknown code '${code}' in CodeSystem '${system}'${codeSystem.version ? ` version '${codeSystem.version}'` : ''}`,
+      };
+    }
+
+    const acceptedDisplays = [
+      concept.display,
+      ...(concept.designation ?? []).map(designation => designation.value),
+    ].filter((value): value is string => Boolean(value?.trim()));
+
+    if (
+      display &&
+      acceptedDisplays.length > 0 &&
+      !acceptedDisplays.some(expected => displaysEquivalentForCodeInfo(expected, display, { code, system }))
+    ) {
+      const expectedDisplay = acceptedDisplays[0];
+      return {
+        valid: false,
+        reason: 'display-mismatch',
+        display: expectedDisplay,
+        message: `Wrong Display Name '${display}' for ${system}#${code}. Valid display is '${expectedDisplay}'`,
+        issues: [{
+          severity: 'error',
+          code: 'invalid-display',
+          message: `Wrong Display Name '${display}' for ${system}#${code}. Valid display is '${expectedDisplay}'`,
+          source: 'local-code-system',
+        }],
+      };
+    }
+
+    return { valid: true, display: concept.display };
   }
 
   /**
@@ -357,9 +481,14 @@ export class ValueSetValidator {
     valueSetUrl: string,
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
+    elementPath?: string,
   ): Promise<CodeBindingOutcome> {
     if (isLanguageBinding(valueSetUrl, system)) {
       return validateBCP47(code) ? 'valid' : 'invalid';
+    }
+
+    if (isMimeTypesValueSet(valueSetUrl)) {
+      return validateMimeTypeBindingCode(code, system, elementPath) ? 'valid' : 'invalid';
     }
 
     const twoPhaseLookup = await this.twoPhaseShadow.lookup(code, system, valueSetUrl, fhirVersion);

@@ -51,15 +51,6 @@ export class LastUpdatedValidator {
         return issues;
       }
 
-      // Recommend UTC — but +00:00 / -00:00 are semantically UTC
-      if (!this.isUtc(lastUpdated) && this.hasTimezone(lastUpdated)) {
-        issues.push(createValidationIssue({
-          code: 'metadata-last-updated-non-utc',
-          path: PATH, resourceType, profile: profileUrl,
-          messageParams: { value: lastUpdated },
-        }));
-      }
-
       if (!this.hasSeconds(lastUpdated)) {
         issues.push(createValidationIssue({
           code: 'metadata-last-updated-missing-seconds',
@@ -125,10 +116,6 @@ export class LastUpdatedValidator {
 
   private hasTimezone(timestamp: string): boolean {
     return timestamp.endsWith('Z') || /(?:[+-]\d{2}:\d{2})$/.test(timestamp);
-  }
-
-  private isUtc(timestamp: string): boolean {
-    return timestamp.endsWith('Z') || /[+-]00:00$/.test(timestamp);
   }
 
   private hasSeconds(timestamp: string): boolean {

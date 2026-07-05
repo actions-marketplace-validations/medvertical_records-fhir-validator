@@ -164,7 +164,7 @@ import {
   setEngineLogger,
   setProfileSource,
 } from '@records-fhir/validator';
-import { toOperationOutcome } from '@records-fhir/validator/core/operation-outcome-converter';
+import { toOperationOutcome } from '@records-fhir/validator/conformance';
 
 const noopLogger = {
   debug() {},

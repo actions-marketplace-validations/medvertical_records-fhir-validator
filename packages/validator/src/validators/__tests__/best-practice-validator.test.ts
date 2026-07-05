@@ -38,6 +38,7 @@ describe('BestPracticeValidator Observation rules', () => {
       code: 'best-practice-missing-performer',
       message: 'All Observations should have a `performer`',
       path: 'Observation.performer',
+      resourceType: 'Observation',
     }));
     expect(issues.find(issue => issue.code === 'best-practice-observation-method')).toBeUndefined();
     expect(issues.find(issue => issue.code === 'best-practice-observation-interpretation')).toBeUndefined();
@@ -57,5 +58,23 @@ describe('BestPracticeValidator Observation rules', () => {
     });
 
     expect(issues.find(issue => issue.code === 'best-practice-missing-performer')).toBeUndefined();
+  });
+});
+
+describe('BestPracticeValidator Patient rules', () => {
+  it('emits Patient narrative advice with resourceType for central dedupe', () => {
+    const issues = validator.validate({
+      resourceType: 'Patient',
+      resource: {
+        resourceType: 'Patient',
+        id: 'p1',
+      },
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'dom-6',
+      path: 'Patient.text',
+      resourceType: 'Patient',
+    }));
   });
 });

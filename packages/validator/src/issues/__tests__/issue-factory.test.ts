@@ -172,6 +172,24 @@ describe('validation-issue-factory', () => {
             expect(issue.resourceType).toBe('Procedure');
             expect(issue.details?.resourceType).toBe('Procedure');
         });
+
+        it('infers R5 resource types from canonical paths', () => {
+            const ingredientIssue = createValidationIssue({
+                code: 'structural-invalid-uri',
+                path: 'Ingredient.identifier.system',
+                resourceType: 'Unknown',
+            });
+            const requestOrchestrationIssue = createValidationIssue({
+                code: 'structural-invalid-uri',
+                path: 'RequestOrchestration.action[0].definitionCanonical',
+                resourceType: 'Unknown',
+            });
+
+            expect(ingredientIssue.resourceType).toBe('Ingredient');
+            expect(ingredientIssue.details?.resourceType).toBe('Ingredient');
+            expect(requestOrchestrationIssue.resourceType).toBe('RequestOrchestration');
+            expect(requestOrchestrationIssue.details?.resourceType).toBe('RequestOrchestration');
+        });
     });
 
     describe('createBindingViolation', () => {
@@ -226,6 +244,57 @@ describe('validation-issue-factory', () => {
             });
 
             expect(issue.code).toBe('terminology-binding-example');
+        });
+
+        it('adds a fix hint for known CodeSystem canonical typos', () => {
+            const issue = createBindingViolation({
+                strength: 'required',
+                code: 'confirmed',
+                system: 'http://terminology.hl7.org/CodeSystem/condition-verstatus',
+                valueSet: 'http://hl7.org/fhir/ValueSet/condition-ver-status|4.0.1',
+                path: 'Condition.verificationStatus',
+                resourceType: 'Condition',
+            });
+
+            expect(issue.code).toBe('terminology-binding-required');
+            expect(issue.details).toMatchObject({
+                suggestedSystem: 'http://terminology.hl7.org/CodeSystem/condition-ver-status',
+                fixHint: expect.stringContaining('condition-ver-status'),
+            });
+        });
+
+        it('adds a context-aware fix hint for Condition clinical status used in AllergyIntolerance', () => {
+            const issue = createBindingViolation({
+                strength: 'required',
+                code: 'active',
+                system: 'http://terminology.hl7.org/CodeSystem/condition-clinical',
+                valueSet: 'http://hl7.org/fhir/ValueSet/allergyintolerance-clinical|4.0.1',
+                path: 'AllergyIntolerance.clinicalStatus',
+                resourceType: 'AllergyIntolerance',
+            });
+
+            expect(issue.code).toBe('terminology-binding-required');
+            expect(issue.details).toMatchObject({
+                suggestedSystem: 'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical',
+                fixHint: expect.stringContaining('allergyintolerance-clinical'),
+            });
+        });
+
+        it('adds a context-aware fix hint for Condition verification status used in AllergyIntolerance', () => {
+            const issue = createBindingViolation({
+                strength: 'required',
+                code: 'confirmed',
+                system: 'http://terminology.hl7.org/CodeSystem/condition-ver-status',
+                valueSet: 'http://hl7.org/fhir/ValueSet/allergyintolerance-verification|4.0.1',
+                path: 'AllergyIntolerance.verificationStatus',
+                resourceType: 'AllergyIntolerance',
+            });
+
+            expect(issue.code).toBe('terminology-binding-required');
+            expect(issue.details).toMatchObject({
+                suggestedSystem: 'http://terminology.hl7.org/CodeSystem/allergyintolerance-verification',
+                fixHint: expect.stringContaining('allergyintolerance-verification'),
+            });
         });
 
         it('creates binding violation for primitive code type (no system)', () => {

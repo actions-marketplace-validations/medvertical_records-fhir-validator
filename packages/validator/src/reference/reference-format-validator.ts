@@ -191,7 +191,7 @@ export function extractReferences(resource: any, resourceType: string): Array<{ 
     if (!obj || typeof obj !== 'object') return;
 
     // Check if current object is a Reference
-    if (obj.reference && typeof obj.reference === 'string') {
+    if (obj.reference && typeof obj.reference === 'string' && !isFhirExpression(obj)) {
       references.push({
         path: currentPath,
         reference: obj.reference
@@ -215,4 +215,13 @@ export function extractReferences(resource: any, resourceType: string): Array<{ 
 
   traverse(resource, resourceType);
   return references;
+}
+
+function isFhirExpression(obj: Record<string, unknown>): boolean {
+  if (typeof obj.reference !== 'string') return false;
+
+  return typeof obj.language === 'string'
+    || typeof obj.expression === 'string'
+    || typeof obj.name === 'string'
+    || typeof obj.description === 'string';
 }

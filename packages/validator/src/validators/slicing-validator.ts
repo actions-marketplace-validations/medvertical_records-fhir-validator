@@ -32,6 +32,7 @@ import {
 import { validateSliceOrdering } from './slicing-ordering';
 import { createIsolatedSlicingValueSetLoader } from './slicing-valueset-loader';
 import { urlMatchesRequestedFhirVersion, type FhirVersionFamily } from '../core/sd-loader-version-utils';
+import { isRelaxedCodingIdentityCardinalityMatch } from './slicing-cardinality-relaxation';
 
 // ============================================================================
 // Types
@@ -432,17 +433,13 @@ export class SlicingValidator {
     allSlices: SliceDefinition[],
     referenceResolverOverride?: ReferenceResolver | null,
   ): boolean {
-    for (const discriminator of discriminators) {
-      if (!this.matchDiscriminator(element, slice, discriminator, allSlices, referenceResolverOverride)) {
-        return false;
-      }
-
-      if (isCodingIdentityRelaxedPatternMatch(element, slice, discriminator)) {
-        return true;
-      }
-    }
-
-    return false;
+    return isRelaxedCodingIdentityCardinalityMatch(
+      element,
+      slice,
+      discriminators,
+      (candidate, candidateSlice, discriminator) =>
+        this.matchDiscriminator(candidate, candidateSlice, discriminator, allSlices, referenceResolverOverride),
+    );
   }
 
   /**
@@ -573,31 +570,4 @@ export class SlicingValidator {
     return evidencePaths;
   }
 
-}
-
-function isCodingIdentityRelaxedPatternMatch(
-  element: any,
-  slice: SliceDefinition,
-  discriminator: SlicingDiscriminator,
-): boolean {
-  if (discriminator.type !== 'pattern') return false;
-  if (discriminator.path && discriminator.path !== '$this') return false;
-  if (slice.patternKind !== 'patternCoding' || slice.pattern === undefined) return false;
-
-  const elementValue = getValueAtPath(element, discriminator.path);
-  if (matchesPattern(elementValue, slice.pattern)) return false;
-
-  return codingIdentityMatchesPattern(elementValue, slice.pattern);
-}
-
-function codingIdentityMatchesPattern(elementValue: any, patternValue: any): boolean {
-  if (!isRecord(elementValue) || !isRecord(patternValue)) return false;
-  if (typeof patternValue.system !== 'string' || typeof patternValue.code !== 'string') {
-    return false;
-  }
-  return elementValue.system === patternValue.system && elementValue.code === patternValue.code;
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -27,14 +27,23 @@ interface ResourceSanityValidators {
     validateNarrative(resource: any, resourceType: string): ValidationIssue[];
   };
   questionnaire: {
-    validateAnyResource(resource: any, contextQuestionnaire?: any): ValidationIssue[];
+    validateAnyResource(
+      resource: any,
+      contextQuestionnaire?: any,
+      options?: ResourceSanityOptions,
+    ): ValidationIssue[];
   };
+}
+
+interface ResourceSanityOptions {
+  warnOnUnresolvedQuestionnaireReference?: boolean;
 }
 
 export function validateResourceSanity(
   resource: any,
   validators: ResourceSanityValidators,
   contextQuestionnaire?: any,
+  options: ResourceSanityOptions = {},
 ): ValidationIssue[] {
   const resourceType = resource?.resourceType || 'Resource';
   const issues = [
@@ -54,7 +63,7 @@ export function validateResourceSanity(
   ];
 
   if (resourceType === 'Questionnaire' || resourceType === 'QuestionnaireResponse') {
-    issues.push(...validators.questionnaire.validateAnyResource(resource, contextQuestionnaire));
+    issues.push(...validators.questionnaire.validateAnyResource(resource, contextQuestionnaire, options));
   }
 
   return issues;

@@ -1,16 +1,63 @@
 
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
+import { KNOWN_FHIR_RESOURCE_TYPES } from '../reference/reference-resource-types';
 
 /**
  * Paths where the FHIR spec explicitly allows relative URIs.
  * These use `uri` type in the SD but are not required to be absolute.
  */
 const RELATIVE_URI_PATHS = new Set([
+    'StructureDefinition.type', // Core definitions use type names/element paths such as Patient or Address.city
     'meta.source', // Meta.source is a uri and may be a relative source reference
+    'coding.system', // Coding.system is validated terminologically; Java reports unknown systems rather than structural URI errors
+    'expression.reference', // Expression.reference is a uri that commonly points at relative CQL artifacts
+    'parameter.value[x]', // ValueSet.expansion.parameter.valueUri is a primitive uri and can be relative
     'request.url',   // Bundle.entry.request.url — relative request target
     'response.location', // Bundle.entry.response.location
 ]);
+
+const RELATIVE_URI_EXACT_PATHS = new Set([
+    'MessageDefinition.eventUri',
+    'ValueSet.expansion.identifier',
+    'ValueSet.expansion.parameter.valueUri',
+    'ValueSet.expansion.contains.system',
+    'TestScript.setup.action.operation.resource',
+    'TestScript.setup.action.assert.resource',
+    'TestScript.test.action.operation.resource',
+    'TestScript.test.action.assert.resource',
+    'TestScript.teardown.action.operation.resource',
+    'TestReport.participant.uri',
+    'TestReport.setup.action.operation.detail',
+    'TestReport.setup.action.assert.detail',
+    'TestReport.test.action.operation.detail',
+    'TestReport.test.action.assert.detail',
+    'TestReport.teardown.action.operation.detail',
+    'TestReport.teardown.action.assert.detail',
+]);
+
+const RELATIVE_FHIR_TYPE_CODE_PATH_SUFFIXES = [
+    '.definitionDataRequirement.type',
+    '.dataRequirement.type',
+    '.input.type',
+    '.output.type',
+    '.observationRequirement.type',
+    '.observationResultRequirement.type',
+    '.data.type',
+];
+
+const CANONICAL_REFERENCE_PATH_SUFFIXES = [
+    '.activityDefinition',
+    '.definitionCanonical',
+    '.instantiatesCanonical',
+    '.library',
+    '.message',
+    '.operationDefinition',
+    '.profile',
+    '.questionnaire',
+    '.relatedArtifact.resource',
+    '.targetProfile',
+];
 
 /**
  * Check if a path ends with a segment that allows relative URIs.
@@ -19,6 +66,10 @@ const RELATIVE_URI_PATHS = new Set([
 function allowsRelativeUri(path: string): boolean {
     // Strip array indices for matching
     const stripped = path.replace(/\[\d+\]/g, '');
+    if (RELATIVE_URI_EXACT_PATHS.has(stripped)) return true;
+    if (isFhirTypeCodePath(stripped)) return true;
+    if (isCodingSystemPath(stripped)) return true;
+
     const segments = stripped.split('.');
     if (segments.length >= 2) {
         const tail = segments.slice(-2).join('.');
@@ -27,7 +78,22 @@ function allowsRelativeUri(path: string): boolean {
     return false;
 }
 
-function buildInvalidUriDetails(value: string): Record<string, unknown> {
+function buildInvalidUriDetails(value: string, path: string): Record<string, unknown> {
+    if (/\s/.test(value)) {
+        const canonicalHint = isCanonicalReferencePath(path)
+            ? ' Use a valid absolute canonical URL without spaces; encode literal spaces as %20 only when they are part of the canonical.'
+            : '';
+        return {
+            value,
+            fixHint: `Remove whitespace from the URI value.${canonicalHint}`,
+        };
+    }
+
+    const canonicalReferenceDetails = buildCanonicalReferenceDetails(value, path);
+    if (canonicalReferenceDetails) {
+        return canonicalReferenceDetails;
+    }
+
     const oidPattern = /^\d+(?:\.\d+)+$/;
     if (oidPattern.test(value)) {
         const suggestedUri = `urn:oid:${value}`;
@@ -53,12 +119,77 @@ function buildInvalidUriDetails(value: string): Record<string, unknown> {
     };
 }
 
+function buildCanonicalReferenceDetails(value: string, path: string): Record<string, unknown> | null {
+    if (!isCanonicalReferencePath(path)) return null;
+
+    const relativeReferenceMatch = value.match(/^([A-Z][A-Za-z0-9]*)\/[^/\s]+(?:\/_history\/[^/\s]+)?$/);
+    if (!relativeReferenceMatch) return null;
+
+    const targetResourceType = relativeReferenceMatch[1];
+    if (!KNOWN_FHIR_RESOURCE_TYPES.has(targetResourceType)) return null;
+
+    return {
+        value,
+        expectedUriType: 'canonical URL',
+        targetResourceType,
+        fixHint: `Use the target ${targetResourceType}.url canonical, not the relative FHIR REST reference '${value}'.`,
+    };
+}
+
+function isAbsoluteUri(value: string): boolean {
+    return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
+}
+
+function isReferenceTypePath(path: string): boolean {
+    const stripped = path.replace(/\[\d+\]/g, '');
+    if (isFhirTypeCodePath(stripped)) return false;
+    return stripped.endsWith('.type') && !stripped.endsWith('StructureDefinition.type');
+}
+
+function isFhirTypeCodePath(strippedPath: string): boolean {
+    return RELATIVE_FHIR_TYPE_CODE_PATH_SUFFIXES.some(suffix => strippedPath.endsWith(suffix));
+}
+
+function isCodingSystemPath(strippedPath: string): boolean {
+    if (!strippedPath.endsWith('.system')) return false;
+
+    const segments = strippedPath.split('.');
+    const parent = segments[segments.length - 2];
+    return parent === 'coding' || parent === 'code' || parent.endsWith('Coding');
+}
+
+function isCanonicalReferencePath(path: string): boolean {
+    const stripped = path.replace(/\[\d+\]/g, '');
+    return CANONICAL_REFERENCE_PATH_SUFFIXES.some(suffix => stripped.endsWith(suffix));
+}
+
+function validateReferenceTypeUri(value: string, path: string, resourceType: string): ValidationIssue | null {
+    if (KNOWN_FHIR_RESOURCE_TYPES.has(value) || isAbsoluteUri(value)) {
+        return null;
+    }
+
+    return createValidationIssue({
+        code: 'reference-type-unknown',
+        path,
+        resourceType,
+        aspectOverride: 'reference',
+        severityOverride: 'warning',
+        customMessage: `Unknown Reference.type value: '${value}'. Use a FHIR resource type such as 'Patient' or an absolute logical model URL.`,
+        details: {
+            value,
+            referencedResourceType: value,
+            fixHint: `Use a known FHIR resource type such as 'Patient', or an absolute logical model URL.`,
+        },
+    });
+}
+
 /**
- * Validates that a string is a valid absolute URI
- * HAPI rule: "URI must be absolute"
+ * Validates URI-shaped primitive values that Java reports as absolute-only.
  *
- * Skips the absolute check for paths where FHIR explicitly allows relative URIs
- * (e.g. Bundle.entry.request.url).
+ * Some FHIR `uri` fields accept relative references while canonical/url-like
+ * fields do not. Keep the absolute check path-sensitive to preserve Java parity
+ * on fields such as Questionnaire.url while avoiding false positives on
+ * relative TestReport detail links.
  */
 export function validateUriFormat(value: string, path: string, resourceType: string, profileUrl?: string): ValidationIssue | null {
     if (!value || typeof value !== 'string') {
@@ -76,11 +207,11 @@ export function validateUriFormat(value: string, path: string, resourceType: str
         return null;
     }
 
-    // Reference.type holds a resource type name (e.g. "Patient") which
-    // is typed as `uri` in the SD but is NOT an actual URI. Skip the
-    // absolute-URI check for these short alphanumeric tokens.
-    if (path.endsWith('.type') && /^[A-Z][A-Za-z]+$/.test(value)) {
-        return null;
+    // Reference.type is typed as `uri`, but FHIR uses relative resource type
+    // names here (for example "Patient"). Unknown relative values are a
+    // reference-type issue, not an invalid-absolute-URI structural issue.
+    if (isReferenceTypePath(path)) {
+        return validateReferenceTypeUri(value, path, resourceType);
     }
 
     // Bundle.entry.fullUrl and Bundle.link.url are validated by
@@ -90,19 +221,17 @@ export function validateUriFormat(value: string, path: string, resourceType: str
         return null;
     }
 
-    // Regex for absolute URI (must start with scheme)
-    // Simple check: scheme starts with alpha, followed by alpha/digit/+/-/., then colon
-    const absoluteUriRegex = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
-
-    if (!absoluteUriRegex.test(value)) {
+    if (/\s/.test(value) || !isAbsoluteUri(value)) {
         return createValidationIssue({
             code: 'structural-invalid-uri',
             path,
             resourceType,
             profile: profileUrl,
             severityOverride: 'error',
-            customMessage: `URI '${value}' is not a valid absolute URI`,
-            details: buildInvalidUriDetails(value)
+            customMessage: /\s/.test(value)
+                ? `URI '${value}' contains whitespace and is not a valid absolute URI`
+                : `URI '${value}' is not a valid absolute URI`,
+            details: buildInvalidUriDetails(value, path)
         });
     }
 

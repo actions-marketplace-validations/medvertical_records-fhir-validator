@@ -106,12 +106,52 @@ describe('ReferenceFormatValidator', () => {
                 expect(issues).toHaveLength(1);
                 expect(issues[0].code).toBe('reference-invalid-format');
             });
+
+            it('downgrades labelled urn:uuid placeholders to warnings', () => {
+                const issues = validator.validateReferenceString('urn:uuid:patient-fbc-001', 'subject', 'Observation');
+                expect(issues).toHaveLength(1);
+                expect(issues[0]).toMatchObject({
+                    code: 'reference-invalid-format',
+                    severity: 'warning',
+                });
+            });
         });
 
         describe('unknown resource types', () => {
             it('accepts Substance relative references', () => {
                 const issues = validator.validateReferenceString('Substance/additive-1', 'container.additive', 'Specimen');
                 expect(issues.some(i => i.code === 'reference-type-unknown')).toBe(false);
+            });
+
+            it('accepts PlanDefinition relative references', () => {
+                const issues = validator.validateReferenceString(
+                    'PlanDefinition/pd-od-sty-008-8-icm9',
+                    'ResearchStudy.protocol[0]',
+                    'ResearchStudy',
+                );
+
+                expect(issues.some(i => i.code === 'reference-type-unknown')).toBe(false);
+            });
+
+            it('accepts R5 relative references used by medication and definition resources', () => {
+                const references = [
+                    'MedicinalProductDefinition/mp-1',
+                    'AdministrableProductDefinition/apd-1',
+                    'ManufacturedItemDefinition/mid-1',
+                    'PackagedProductDefinition/ppd-1',
+                    'RegulatedAuthorization/ra-1',
+                    'ClinicalUseDefinition/cud-1',
+                ];
+
+                for (const reference of references) {
+                    const issues = validator.validateReferenceString(
+                        reference,
+                        'ClinicalUseDefinition.subject[0]',
+                        'ClinicalUseDefinition',
+                    );
+
+                    expect(issues.some(i => i.code === 'reference-type-unknown')).toBe(false);
+                }
             });
 
             it('should warn about unknown resource types in relative references', () => {
@@ -173,6 +213,39 @@ describe('ReferenceFormatValidator', () => {
 
             const issues = validator.validateAllReferences(resource);
             expect(issues.some(i => i.code === 'reference-invalid-format')).toBe(true);
+        });
+
+        it('does not treat Expression.reference as a FHIR Reference.reference', () => {
+            const resource = {
+                resourceType: 'PlanDefinition',
+                id: 'test-plan',
+                action: [{
+                    condition: [{
+                        kind: 'applicability',
+                        expression: {
+                            language: 'text/cql',
+                            reference: 'cql/QuestionnaireLogicLibrary|1.0',
+                        },
+                    }],
+                    participant: [{
+                        actorCanonical: 'http://example.org/fhir/ActorDefinition/clinician',
+                    }],
+                }],
+                subjectReference: {
+                    reference: 'not-valid',
+                },
+            };
+
+            const issues = validator.validateAllReferences(resource);
+
+            expect(issues.some(i =>
+                i.code === 'reference-invalid-format'
+                && i.path === 'PlanDefinition.action[0].condition[0].expression.reference'
+            )).toBe(false);
+            expect(issues.some(i =>
+                i.code === 'reference-invalid-format'
+                && i.path === 'PlanDefinition.subjectReference.reference'
+            )).toBe(true);
         });
 
         it('should return empty array for resources without references', () => {

@@ -36,10 +36,11 @@ const AS_OPERATOR = new RegExp(`(\\$this|\\)|${PATH})\\s+as\\s+${TYPE}`, 'g');
 // already-singleton context (`.all(...)`, `.where(...)`, or a choice-element
 // constraint handled upstream), so wrapping it would be redundant noise.
 const IS_OPERATOR = new RegExp(`(\\)|${PATH})\\s+is\\s+${TYPE}`, 'g');
+const RESERVED_MEMBER_NAMES = ['div'];
 
 export function rewriteCollectionTypeOperators(expression: string): string {
     if (!expression) return expression;
-    let rewritten = expression;
+    let rewritten = rewriteReservedMemberNames(expression);
     if (/\bas\b/.test(rewritten)) {
         rewritten = rewritten.replace(AS_OPERATOR, (_m, operand: string, type: string) =>
             `${operand}.ofType(${type})`,
@@ -51,4 +52,58 @@ export function rewriteCollectionTypeOperators(expression: string): string {
         );
     }
     return rewritten;
+}
+
+function rewriteReservedMemberNames(expression: string): string {
+    let rewritten = '';
+    for (let index = 0; index < expression.length; index++) {
+        const char = expression[index];
+
+        if (char === "'" || char === '`') {
+            const { value, endIndex } = readQuotedSegment(expression, index, char);
+            rewritten += value;
+            index = endIndex;
+            continue;
+        }
+
+        if (char === '.') {
+            const replacement = RESERVED_MEMBER_NAMES.find(name =>
+                expression.startsWith(name, index + 1) &&
+                !isIdentifierCharacter(expression[index + name.length + 1])
+            );
+            if (replacement) {
+                rewritten += `.\`${replacement}\``;
+                index += replacement.length;
+                continue;
+            }
+        }
+
+        rewritten += char;
+    }
+    return rewritten;
+}
+
+function readQuotedSegment(
+    expression: string,
+    startIndex: number,
+    quote: "'" | '`',
+): { value: string; endIndex: number } {
+    let value = quote;
+    for (let index = startIndex + 1; index < expression.length; index++) {
+        const char = expression[index];
+        value += char;
+        if (char === '\\') {
+            index++;
+            if (index < expression.length) value += expression[index];
+            continue;
+        }
+        if (char === quote) {
+            return { value, endIndex: index };
+        }
+    }
+    return { value, endIndex: expression.length - 1 };
+}
+
+function isIdentifierCharacter(char: string | undefined): boolean {
+    return !!char && /[A-Za-z0-9_]/.test(char);
 }

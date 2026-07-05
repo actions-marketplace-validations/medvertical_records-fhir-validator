@@ -4,7 +4,6 @@
  * Loads ValueSet and CodeSystem resources from local FHIR packages.
  * Extracted from valueset-validator.ts for modularity.
  */
-
 import * as path from 'path';
 import * as os from 'os';
 import type {
@@ -25,7 +24,6 @@ import {
     findResourceByCanonicalScan,
     findResourceInPackages,
 } from './valueset-package-search';
-
 export interface ValueSetConceptFilter {
     system: string;
     property: string;
@@ -54,7 +52,7 @@ export class ValueSetPackageLoader {
         // Primary cache (allows override via env)
         const envPath = process.env.FHIR_PACKAGE_CACHE_PATH;
         if (envPath) {
-            directories.push(path.resolve(envPath));
+            directories.push(path.resolve(expandHomePath(envPath)));
         } else {
             directories.push(path.join(os.homedir(), '.fhir', 'packages'));
         }
@@ -180,7 +178,8 @@ export class ValueSetPackageLoader {
                 ? `${systemUrl}|fhir${preferredFhirMajor}`
                 : systemUrl;
         if (this.cache.hasCodeSystemFile(cacheKey)) {
-            return this.cache.getCodeSystemFile(cacheKey) || null;
+            const cached = this.cache.getCodeSystemFile(cacheKey);
+            if (cached) return cached;
         }
         const canonical = systemUrl.split('|')[0];
         const lastSegment = canonical.split('/').pop();
@@ -199,6 +198,8 @@ export class ValueSetPackageLoader {
         if (bestMatch) {
             this.cache.setCodeSystemFile(cacheKey, bestMatch);
             this.cache.setCodeSystem(cacheKey, bestMatch);
+            this.cache.setCodeSystemFile(canonical, bestMatch);
+            this.cache.setCodeSystem(canonical, bestMatch);
             return bestMatch;
         }
         this.cache.setCodeSystemFile(cacheKey, null);
@@ -482,4 +483,17 @@ export class ValueSetPackageLoader {
     extractCodesFromCodeSystem(codeSystem: CodeSystem): string[] {
         return extractCodesFromCodeSystem(codeSystem);
     }
+}
+
+function expandHomePath(pathStr: string): string {
+    if (pathStr.startsWith('$HOME/') || pathStr.startsWith('$HOME\\')) {
+        return pathStr.replace('$HOME', process.env.HOME || os.homedir() || '/tmp');
+    }
+    if (pathStr.startsWith('${HOME}/') || pathStr.startsWith('${HOME}\\')) {
+        return pathStr.replace('${HOME}', process.env.HOME || os.homedir() || '/tmp');
+    }
+    if (pathStr.startsWith('~/')) {
+        return pathStr.replace('~', process.env.HOME || os.homedir() || '/tmp');
+    }
+    return pathStr;
 }

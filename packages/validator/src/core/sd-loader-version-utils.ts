@@ -36,6 +36,41 @@ export function urlMatchesRequestedFhirVersion(
   return !family || family === fhirVersion;
 }
 
+export function normalizeVersionedCoreStructureDefinitionUrl(
+  url: string,
+  fhirVersion: FhirVersionFamily
+): string {
+  if (!urlMatchesRequestedFhirVersion(url, fhirVersion)) return url;
+
+  const [canonicalUrl, version] = url.split('|');
+  const match = canonicalUrl.match(/^http:\/\/hl7\.org\/fhir\/[456]\.0(?:\.\d+)?\/StructureDefinition\/(.+)$/);
+  if (!match) return normalizeKnownStructureDefinitionCanonicalUrl(url);
+
+  const normalized = `http://hl7.org/fhir/StructureDefinition/${match[1]}`;
+  return normalizeKnownStructureDefinitionCanonicalUrl(version ? `${normalized}|${version}` : normalized);
+}
+
+export function normalizeKnownStructureDefinitionCanonicalUrl(url: string): string {
+  const [canonicalUrl, version] = url.split('|');
+  const normalizedUsCore = canonicalUrl.replace(
+    /^(https?:\/\/hl7\.org\/fhir\/us\/core\/StructureDefinition\/)(us-core-[^/|]+)$/i,
+    (_match, prefix: string, profileId: string) => `${prefix}${profileId.toLowerCase()}`,
+  );
+  const normalizedDaVinci = normalizedUsCore.replace(
+    /^https?:\/\/hl7\.org\/fhir\/us\/davinci-crd(?:\/R4)?\/StructureDefinition\/profile-devicerequest-r4$/i,
+    'http://hl7.org/fhir/us/davinci-crd/StructureDefinition/profile-devicerequest',
+  );
+  const normalizedMiiMolgen = normalizedDaVinci.replace(
+    /^(https:\/\/www\.medizininformatik-initiative\.de\/fhir\/ext\/modul-molgen\/StructureDefinition\/)(genomic-study(?:-analysis)?)$/i,
+    (_match, prefix: string, profileId: string) => `${prefix}mii-pr-molgen-${profileId}`,
+  );
+  const normalized = normalizedMiiMolgen.replace(
+    /^(https:\/\/www\.medizininformatik-initiative\.de\/fhir\/ext\/modul-icu\/StructureDefinition\/mii-pr-icu-)ect-(.+)$/i,
+    '$1$2',
+  );
+  return version ? `${normalized}|${version}` : normalized;
+}
+
 export function cacheKeyForProfile(
   url: string,
   fhirVersion: FhirVersionFamily

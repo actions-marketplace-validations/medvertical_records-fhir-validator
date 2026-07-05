@@ -2,6 +2,7 @@ import type { ValidationIssue } from '../../types';
 import { valueSetCache } from '../../validators/valueset-cache';
 import type { ValueSetValidator } from '../../validators/valueset-validator';
 import { displaysEquivalentForCodeInfo } from '../../validators/valueset-display-utils';
+import { ValueSetPackageLoader } from '../../validators/valueset-package-loader';
 import { buildInvalidUcumIssueDetails, buildInvalidUcumMessage } from './terminology-ucum-rules';
 import { validateUcumCode } from '../../validators/ucum-validator';
 import {
@@ -11,11 +12,16 @@ import {
   extractExpectedDisplay,
   uniqueAcceptedDisplays,
 } from './terminology-display-rules';
+import {
+  isValidFhirCodePrimitive,
+  missingCodingSystemSeverity,
+} from './terminology-coding-hygiene-rules';
 
 interface TerminologyServerIssue {
   code?: string;
   severity?: unknown;
   message?: string;
+  source?: 'local-code-system' | 'terminology-server';
 }
 
 interface LoincCheckDigitDiagnostic {
@@ -25,12 +31,16 @@ interface LoincCheckDigitDiagnostic {
   fixHint: string;
 }
 
+type CodeSystemReferenceMode = 'syntax' | 'not-found';
+
 const LOINC_SYSTEM_URL = 'http://loinc.org';
+const localCodeSystemKnownCache = new Map<string, Promise<boolean>>();
 
 export async function validateExternalCodeSystems(
   value: any,
   path: string,
   valuesetValidator: ValueSetValidator,
+  fhirVersion?: 'R4' | 'R5' | 'R6',
 ): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
   const codings = Array.isArray(value) ? value : [value];
@@ -39,14 +49,22 @@ export async function validateExternalCodeSystems(
     const coding = codings[i];
     const isArrayInput = Array.isArray(value);
     if (coding && typeof coding === 'object' && coding.code && !coding.system) {
+      const codingPath = isArrayInput ? `${path}[${i}]` : path;
+      const resourceType = resourceTypeFromPath(codingPath);
       issues.push({
         id: `terminology-coding-missing-system-${Date.now()}-${i}`,
         aspect: 'terminology',
-        severity: 'warning',
+        severity: missingCodingSystemSeverity(resourceType, codingPath),
         code: 'terminology-coding-missing-system',
         message: 'Coding has no system. A code with no system has no defined meaning, and it cannot be validated. A system should be provided',
-        path: isArrayInput ? `${path}[${i}]` : path,
+        path: codingPath,
+        resourceType,
         timestamp: new Date(),
+        details: {
+          code: coding.code,
+          ...(coding.display ? { display: coding.display } : {}),
+          fieldPath: codingPath,
+        },
       });
       continue;
     }
@@ -55,24 +73,35 @@ export async function validateExternalCodeSystems(
       continue;
     }
 
-    issues.push(...validateCodeSystemReference(coding, path, i, isArrayInput));
+    issues.push(...await validateCodeSystemReference(coding, path, i, isArrayInput, 'syntax', fhirVersion));
+    if (typeof coding.code === 'string' && !isValidFhirCodePrimitive(coding.code)) {
+      continue;
+    }
     issues.push(...validateUcumCoding(coding, path, i, isArrayInput));
-    issues.push(...await validateExternalCoding(coding, path, i, isArrayInput, valuesetValidator));
+    issues.push(...await validateExternalCoding(coding, path, i, isArrayInput, valuesetValidator, fhirVersion));
+    issues.push(...await validateCodeSystemReference(coding, path, i, isArrayInput, 'not-found', fhirVersion));
   }
 
   return issues;
 }
 
-function validateCodeSystemReference(
+function resourceTypeFromPath(path: string): string {
+  const [resourceType] = path.split('.');
+  return resourceType || 'Resource';
+}
+
+async function validateCodeSystemReference(
   coding: any,
   path: string,
   index: number,
   isArrayInput: boolean,
-): ValidationIssue[] {
+  mode: CodeSystemReferenceMode,
+  fhirVersion?: 'R4' | 'R5' | 'R6',
+): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
   const systemPath = isArrayInput ? `${path}[${index}].system` : `${path}.system`;
 
-  if (/\/ValueSet\//i.test(coding.system)) {
+  if (mode === 'syntax' && /\/ValueSet\//i.test(coding.system)) {
     issues.push({
       id: `terminology-codesystem-is-valueset-${Date.now()}-${index}`,
       aspect: 'terminology',
@@ -89,22 +118,82 @@ function validateCodeSystemReference(
   }
 
   const systemValidation = validateCodeSystemUrl(coding.system);
-  const cacheKnowsIt =
+  const cacheKnowsIt = mode === 'not-found' && (
     valueSetCache.hasCodeSystem(coding.system) ||
-    valueSetCache.hasCodeSystemFile(coding.system);
-  if (!systemValidation.valid && !cacheKnowsIt) {
+    valueSetCache.hasCodeSystemFile(coding.system) ||
+    await localCodeSystemExists(coding.system, fhirVersion)
+  );
+  if (mode === 'not-found' && !systemValidation.valid && !cacheKnowsIt) {
     issues.push({
-      id: `terminology-codesystem-not-found-${Date.now()}-${index}`,
+      id: `terminology-codesystem-unresolvable-${Date.now()}-${index}`,
       aspect: 'terminology',
       severity: 'warning',
-      code: 'not-found',
+      code: 'terminology-codesystem-unresolvable',
       message: `A definition for CodeSystem '${coding.system}' could not be found, so the code cannot be validated`,
       path: systemPath,
       timestamp: new Date(),
+      details: {
+        code: coding.code,
+        system: coding.system,
+        ...(coding.display ? { display: coding.display } : {}),
+        fieldPath: systemPath,
+        ...buildCodeSystemUrlDetails(coding.system),
+      },
     });
   }
 
   return issues;
+}
+
+function fhirVersionToPackageMajor(fhirVersion?: 'R4' | 'R5' | 'R6'): string | undefined {
+  if (fhirVersion === 'R4') return '4';
+  if (fhirVersion === 'R5') return '5';
+  if (fhirVersion === 'R6') return '6';
+  return undefined;
+}
+
+function localCodeSystemExists(
+  systemUrl: string,
+  fhirVersion?: 'R4' | 'R5' | 'R6',
+): Promise<boolean> {
+  if (!isAbsoluteCodeSystemUri(systemUrl)) {
+    return Promise.resolve(false);
+  }
+
+  const key = `${systemUrl}|${fhirVersion ?? ''}`;
+  let lookup = localCodeSystemKnownCache.get(key);
+  if (!lookup) {
+    lookup = new ValueSetPackageLoader(valueSetCache)
+      .loadCodeSystem(systemUrl, fhirVersionToPackageMajor(fhirVersion))
+      .then(Boolean)
+      .catch(() => false);
+    localCodeSystemKnownCache.set(key, lookup);
+  }
+  return lookup;
+}
+
+function buildCodeSystemUrlDetails(systemUrl: string): Record<string, unknown> {
+  const oidPattern = /^\d+(?:\.\d+)+$/;
+  if (oidPattern.test(systemUrl)) {
+    const suggestedSystem = `urn:oid:${systemUrl}`;
+    return {
+      expectedSystemType: 'absolute CodeSystem URI',
+      suggestedSystem,
+      fixHint: `Use '${suggestedSystem}' if this Coding.system is an OID; otherwise replace Coding.system with the absolute CodeSystem.url that defines the code.`,
+    };
+  }
+
+  if (!isAbsoluteCodeSystemUri(systemUrl)) {
+    return {
+      expectedSystemType: 'absolute CodeSystem URI',
+      fixHint: `Replace Coding.system '${systemUrl}' with the absolute CodeSystem.url that defines the code; Coding.system cannot be a local label or code-system mnemonic.`,
+    };
+  }
+
+  return {
+    expectedSystemType: 'known CodeSystem URI',
+    fixHint: `Verify '${systemUrl}' is the canonical CodeSystem.url and provide a local CodeSystem package/cache or terminology server that can validate it.`,
+  };
 }
 
 function validateUcumCoding(
@@ -137,22 +226,55 @@ async function validateExternalCoding(
   index: number,
   isArrayInput: boolean,
   valuesetValidator: ValueSetValidator,
+  fhirVersion?: 'R4' | 'R5' | 'R6',
 ): Promise<ValidationIssue[]> {
   if (/\/ValueSet\//i.test(coding.system)) return [];
-  if (!valuesetValidator.isExternalCodeSystem(coding.system)) return [];
 
   const result = await valuesetValidator.validateCodeInCodeSystem(
     coding.code,
     coding.system,
     typeof coding.display === 'string' ? coding.display : undefined,
+    fhirVersion,
   );
   const issues: ValidationIssue[] = [];
   const terminologyServerIssues = result.issues ?? [];
+  issues.push(...buildRemoteBudgetIssues(coding, result, path, index, isArrayInput));
   issues.push(...buildDisplayIssues(coding, result, terminologyServerIssues, path, index, isArrayInput));
   issues.push(...buildInactiveIssues(coding, result, terminologyServerIssues, path, index, isArrayInput));
   issues.push(...buildInvalidCodeIssues(coding, result, path, index, isArrayInput));
 
   return issues;
+}
+
+function buildRemoteBudgetIssues(
+  coding: any,
+  result: any,
+  path: string,
+  index: number,
+  isArrayInput: boolean,
+): ValidationIssue[] {
+  if (result.reason !== 'remote-budget-exhausted') return [];
+
+  const codingPath = isArrayInput ? `${path}[${index}].code` : `${path}.code`;
+  return [{
+    id: `terminology-codesystem-unverified-${Date.now()}-${index}`,
+    aspect: 'terminology',
+    severity: 'information',
+    code: 'terminology-codesystem-unverified',
+    message:
+      `Remote CodeSystem validation budget was exhausted; ${coding.system}#${coding.code} ` +
+      `was not verified against the terminology server`,
+    path: codingPath,
+    timestamp: new Date(),
+    details: {
+      code: coding.code,
+      system: coding.system,
+      ...(coding.display ? { display: coding.display } : {}),
+      reason: result.reason,
+      fixHint:
+        'Increase maxRemoteCodeSystemValidations for deeper remote terminology evidence, or provide a local CodeSystem package/cache.',
+    },
+  }];
 }
 
 function buildDisplayIssues(
@@ -358,9 +480,13 @@ function validateCodeSystemUrl(systemUrl: string): { valid: boolean; message?: s
     return { valid: true };
   }
 
-  if (!systemUrl.startsWith('http://') && !systemUrl.startsWith('https://') && !systemUrl.startsWith('urn:')) {
+  if (!isAbsoluteCodeSystemUri(systemUrl)) {
     return { valid: false, message: `CodeSystem URL should be an absolute URI: '${systemUrl}'` };
   }
 
   return { valid: false, message: `Unknown CodeSystem URL: ${systemUrl}` };
+}
+
+function isAbsoluteCodeSystemUri(systemUrl: string): boolean {
+  return systemUrl.startsWith('http://') || systemUrl.startsWith('https://') || systemUrl.startsWith('urn:');
 }

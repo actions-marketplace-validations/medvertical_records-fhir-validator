@@ -317,6 +317,112 @@ describe('ExtensionValidator', () => {
       );
       expect(cardinalityErrors.length).toBeGreaterThan(0);
     });
+
+    it('applies extension cardinality only from matching parent slices', async () => {
+      const profileWithAddressSlices: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/profile/patient-address-slices',
+        name: 'PatientAddressSlices',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Patient',
+        snapshot: {
+          element: [
+            { id: 'Patient', path: 'Patient', min: 0, max: '*' },
+            {
+              id: 'Patient.address:Strassenanschrift',
+              path: 'Patient.address',
+              sliceName: 'Strassenanschrift',
+            } as ElementDefinition,
+            {
+              id: 'Patient.address:Strassenanschrift.type',
+              path: 'Patient.address.type',
+              patternCode: 'both',
+            } as ElementDefinition,
+            {
+              id: 'Patient.address:Strassenanschrift.line.extension:Strasse',
+              path: 'Patient.address.line.extension',
+              sliceName: 'Strasse',
+              min: 0,
+              max: '1',
+              type: [{
+                code: 'Extension',
+                profile: ['http://hl7.org/fhir/StructureDefinition/iso21090-ADXP-streetName'],
+              }],
+            } as ElementDefinition,
+            {
+              id: 'Patient.address:Strassenanschrift.line.extension:Postfach',
+              path: 'Patient.address.line.extension',
+              sliceName: 'Postfach',
+              min: 0,
+              max: '0',
+              type: [{
+                code: 'Extension',
+                profile: ['http://hl7.org/fhir/StructureDefinition/iso21090-ADXP-postBox'],
+              }],
+            } as ElementDefinition,
+            {
+              id: 'Patient.address:Postfach',
+              path: 'Patient.address',
+              sliceName: 'Postfach',
+            } as ElementDefinition,
+            {
+              id: 'Patient.address:Postfach.type',
+              path: 'Patient.address.type',
+              patternCode: 'postal',
+            } as ElementDefinition,
+            {
+              id: 'Patient.address:Postfach.line.extension:Strasse',
+              path: 'Patient.address.line.extension',
+              sliceName: 'Strasse',
+              min: 0,
+              max: '0',
+              type: [{
+                code: 'Extension',
+                profile: ['http://hl7.org/fhir/StructureDefinition/iso21090-ADXP-streetName'],
+              }],
+            } as ElementDefinition,
+            {
+              id: 'Patient.address:Postfach.line.extension:Postfach',
+              path: 'Patient.address.line.extension',
+              sliceName: 'Postfach',
+              min: 1,
+              max: '1',
+              type: [{
+                code: 'Extension',
+                profile: ['http://hl7.org/fhir/StructureDefinition/iso21090-ADXP-postBox'],
+              }],
+            } as ElementDefinition,
+          ],
+        },
+      };
+      const resource = {
+        resourceType: 'Patient',
+        address: [{
+          type: 'both',
+          line: ['Musterstr. 1'],
+          _line: [{
+            extension: [{
+              url: 'http://hl7.org/fhir/StructureDefinition/iso21090-ADXP-streetName',
+              valueString: 'Musterstr.',
+            }],
+          }],
+        }],
+      };
+
+      const issues = await validator.validateExtensions(
+        resource,
+        profileWithAddressSlices,
+        makeContext(resource, profileWithAddressSlices),
+      );
+
+      const addressCardinalityErrors = issues.filter(i =>
+        (i.code === 'profile-extension-min-cardinality' || i.code === 'profile-extension-max-cardinality') &&
+        i.path === 'Patient.address.line.extension'
+      );
+      expect(addressCardinalityErrors).toHaveLength(0);
+    });
   });
 
   // ==========================================================================
@@ -598,6 +704,36 @@ describe('ExtensionValidator', () => {
       expect(issues.filter(i => i.code === 'profile-extension-not-found')).toHaveLength(0);
     });
 
+    it('does not flag the R5 DiagnosticReport composition backport extension as not found', async () => {
+      const resource = {
+        resourceType: 'DiagnosticReport',
+        id: 'dr1',
+        extension: [
+          {
+            url: 'http://hl7.org/fhir/5.0/StructureDefinition/extension-DiagnosticReport.composition',
+            valueReference: {
+              reference: 'Composition/comp1',
+            },
+          },
+        ],
+      };
+      const diagnosticReportProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/DiagnosticReport',
+        name: 'DiagnosticReport',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'DiagnosticReport',
+        snapshot: { element: [{ id: 'DiagnosticReport', path: 'DiagnosticReport', min: 0, max: '*' } as ElementDefinition] },
+      };
+
+      const issues = await validator.validateExtensions(
+        resource, diagnosticReportProfile, makeContext(resource, diagnosticReportProfile),
+      );
+      expect(issues.filter(i => i.code === 'profile-extension-not-found')).toHaveLength(0);
+    });
+
     it('does not flag the R5 planned start date backport extension as not found', async () => {
       const resource = {
         resourceType: 'Encounter',
@@ -622,6 +758,44 @@ describe('ExtensionValidator', () => {
 
       const issues = await validator.validateExtensions(
         resource, encounterProfile, makeContext(resource, encounterProfile),
+      );
+      expect(issues.filter(i => i.code === 'profile-extension-not-found')).toHaveLength(0);
+    });
+
+    it('does not flag Firely R5 AuditEvent R4 compatibility extensions as not found', async () => {
+      const resource = {
+        resourceType: 'AuditEvent',
+        id: 'audit1',
+        agent: [
+          {
+            extension: [{
+              url: 'http://hl7.org/fhir/4.0/StructureDefinition/extension-AuditEvent.agent.network.type',
+              valueCoding: { code: '1' },
+            }],
+          },
+        ],
+        entity: [
+          {
+            extension: [{
+              url: 'http://hl7.org/fhir/4.0/StructureDefinition/extension-AuditEvent.entity.type',
+              valueCoding: { code: '2' },
+            }],
+          },
+        ],
+      };
+      const auditEventProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/AuditEvent',
+        name: 'AuditEvent',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'AuditEvent',
+        snapshot: { element: [{ id: 'AuditEvent', path: 'AuditEvent', min: 0, max: '*' } as ElementDefinition] },
+      };
+
+      const issues = await validator.validateExtensions(
+        resource, auditEventProfile, makeContext(resource, auditEventProfile, 'R5'),
       );
       expect(issues.filter(i => i.code === 'profile-extension-not-found')).toHaveLength(0);
     });

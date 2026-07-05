@@ -57,6 +57,7 @@ export function createRecordsValidatorComponents(config: RecordsValidatorConfig)
   const typeValidator = new TypeValidator();
   const valuesetValidator = new ValueSetValidator();
   const elementRulesValidator = new ElementRulesValidator();
+  const snapshotGenerator = new SnapshotGenerator(sdLoader);
   const extensionValidator = new ExtensionValidator(
     sdLoader,
     typeValidator,
@@ -64,9 +65,17 @@ export function createRecordsValidatorComponents(config: RecordsValidatorConfig)
     elementRulesValidator
   );
   const slicingValidator = new SlicingValidator();
-  slicingValidator.setTypeProfileResolver((url: string) => sdLoader.loadProfile(url));
+  slicingValidator.setTypeProfileResolver(async (url: string) => {
+    const structureDefinition = await sdLoader.loadProfile(url);
+    if (!structureDefinition) return null;
+    if (structureDefinition.snapshot?.element?.length) return structureDefinition;
+
+    const elements = await snapshotGenerator.generateSnapshot(structureDefinition);
+    return elements.length > 0
+      ? { ...structureDefinition, snapshot: { element: elements } }
+      : structureDefinition;
+  });
   const constraintValidator = new ConstraintValidator();
-  const snapshotGenerator = new SnapshotGenerator(sdLoader);
 
   return {
     profileCache,

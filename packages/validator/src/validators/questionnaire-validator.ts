@@ -36,6 +36,10 @@ export type {
     QuestionnaireResponseItem,
 } from './questionnaire-types';
 
+export interface QuestionnaireValidationOptions {
+    warnOnUnresolvedQuestionnaireReference?: boolean;
+}
+
 // ============================================================================
 // Questionnaire Validator
 // ============================================================================
@@ -53,7 +57,11 @@ export class QuestionnaireValidator {
      * validator also evaluates SDC extensions (minValue/maxValue/…) against
      * the response's answers.
      */
-    validateAnyResource(resource: any, contextQuestionnaire?: any): ValidationIssue[] {
+    validateAnyResource(
+        resource: any,
+        contextQuestionnaire?: any,
+        options: QuestionnaireValidationOptions = {},
+    ): ValidationIssue[] {
         if (!resource || typeof resource !== 'object') return [];
         const issues: ValidationIssue[] = [];
 
@@ -69,7 +77,7 @@ export class QuestionnaireValidator {
                 const contained = Array.isArray(resource.contained) ? resource.contained : [];
                 q = contained.find((c: any) => c?.id === id && c?.resourceType === 'Questionnaire');
             }
-            issues.push(...this.validateQuestionnaireResponse(resource, q));
+            issues.push(...this.validateQuestionnaireResponse(resource, q, options));
         }
 
         // Walk contained resources (max one level — contained resources
@@ -146,7 +154,8 @@ export class QuestionnaireValidator {
      */
     validateQuestionnaireResponse(
         response: any,
-        questionnaire?: any
+        questionnaire?: any,
+        options: QuestionnaireValidationOptions = {},
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
@@ -169,6 +178,19 @@ export class QuestionnaireValidator {
 
         // If no questionnaire provided, only do basic validation
         if (!questionnaire) {
+            if (options.warnOnUnresolvedQuestionnaireReference && typeof response.questionnaire === 'string' && response.questionnaire.trim()) {
+                issues.push(createValidationIssue({
+                    code: 'questionnaire-reference-not-resolved',
+                    path: 'QuestionnaireResponse.questionnaire',
+                    resourceType: 'QuestionnaireResponse',
+                    customMessage: `Questionnaire '${response.questionnaire}' could not be resolved; QuestionnaireResponse items were not validated against the questionnaire definition.`,
+                    severityOverride: 'warning',
+                    details: {
+                        questionnaire: response.questionnaire,
+                    },
+                }));
+            }
+
             if (response.item && Array.isArray(response.item)) {
                 issues.push(...this.validateResponseItemsBasic(response.item, 'QuestionnaireResponse.item'));
             }

@@ -518,6 +518,26 @@ describe('StructuralExecutor', () => {
       ]));
     });
 
+    it('can report unresolved QuestionnaireResponse.questionnaire references from the engine sanity path', () => {
+      const issues = executor.validateResourceIdAndArrays({
+        resourceType: 'QuestionnaireResponse',
+        id: 'qr-unresolved-questionnaire',
+        status: 'completed',
+        questionnaire: 'Questionnaire/5497895',
+        item: [{ linkId: 'q1', answer: [{ valueString: 'hello' }] }],
+      }, undefined, {
+        warnOnUnresolvedQuestionnaireReference: true,
+      });
+
+      expect(issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'questionnaire-reference-not-resolved',
+          path: 'QuestionnaireResponse.questionnaire',
+          severity: 'warning',
+        }),
+      ]));
+    });
+
     it('reports duplicate element-level ids within the same resource', () => {
       const issues = executor.validateResourceIdAndArrays({
         resourceType: 'Patient',

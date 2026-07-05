@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildSnapshotIndex,
   detectUnknownProperties,
@@ -88,6 +88,65 @@ describe('unknown-property-walker', () => {
     );
 
     expect(issues).toHaveLength(0);
+  });
+
+  it('uses the base resource snapshot when a profile snapshot omits inherited top-level elements', async () => {
+    const sparseObservationIndex = buildSnapshotIndex({
+      url: 'https://example.org/fhir/StructureDefinition/sparse-observation-profile',
+      snapshot: {
+        element: [
+          { path: 'Observation' },
+          { path: 'Observation.method', type: [{ code: 'CodeableConcept' }] },
+          { path: 'Observation.value[x]', type: [{ code: 'Quantity' }] },
+        ],
+      },
+    } as any);
+    const sdLoader = {
+      loadProfile: async (url: string) => {
+        if (url !== 'http://hl7.org/fhir/StructureDefinition/Observation') {
+          throw new Error(`Unexpected profile load: ${url}`);
+        }
+        return {
+          url,
+          snapshot: {
+            element: [
+              { path: 'Observation' },
+              { path: 'Observation.status', type: [{ code: 'code' }] },
+              { path: 'Observation.category', type: [{ code: 'CodeableConcept' }] },
+              { path: 'Observation.code', type: [{ code: 'CodeableConcept' }] },
+              { path: 'Observation.subject', type: [{ code: 'Reference' }] },
+              { path: 'Observation.effective[x]', type: [{ code: 'Period' }] },
+              { path: 'Observation.value[x]', type: [{ code: 'Quantity' }] },
+            ],
+          },
+        };
+      },
+    } as any;
+
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'Observation',
+        status: 'final',
+        category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/observation-category', code: 'vital-signs' }] }],
+        code: { coding: [{ system: 'http://loinc.org', code: '8310-5' }] },
+        subject: { reference: 'Patient/example' },
+        effectivePeriod: { start: '2026-07-03T07:30:00Z' },
+        method: { text: 'oral' },
+        valueQuantity: { value: 37, system: 'http://unitsofmeasure.org', code: 'Cel' },
+        statuz: 'typo',
+      },
+      sparseObservationIndex,
+      'Observation',
+      'https://example.org/fhir/StructureDefinition/sparse-observation-profile',
+      makeWalkerDeps(sdLoader),
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: 'structural-unknown-element',
+      path: 'Observation.statuz',
+      severity: 'error',
+    });
   });
 
   it('flags unknown top-level keys as error severity', async () => {
@@ -205,6 +264,81 @@ describe('unknown-property-walker', () => {
     expect(await detectUnknownProperties(
       { resourceType: 'TestRes', valueBogus: 'x' }, index, 'TestRes', sd.url,
     )).toHaveLength(1);
+  });
+
+  it('expands complex choice-type properties such as definitionDataRequirement', async () => {
+    const evidenceVariableIndex = buildSnapshotIndex({
+      url: 'http://hl7.org/fhir/StructureDefinition/EvidenceVariable',
+      snapshot: {
+        element: [
+          { path: 'EvidenceVariable' },
+          { path: 'EvidenceVariable.characteristic', type: [{ code: 'BackboneElement' }] },
+          {
+            path: 'EvidenceVariable.characteristic.definition[x]',
+            type: [{ code: 'DataRequirement' }, { code: 'Reference' }, { code: 'CodeableConcept' }],
+          },
+        ],
+      },
+    } as any);
+
+    expect(await detectUnknownProperties(
+      {
+        resourceType: 'EvidenceVariable',
+        characteristic: [{ definitionDataRequirement: { type: 'Coding' } }],
+      },
+      evidenceVariableIndex,
+      'EvidenceVariable',
+      'http://hl7.org/fhir/StructureDefinition/EvidenceVariable',
+    )).toHaveLength(0);
+
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'EvidenceVariable',
+        characteristic: [{ definitionBogus: { type: 'Coding' } }],
+      },
+      evidenceVariableIndex,
+      'EvidenceVariable',
+      'http://hl7.org/fhir/StructureDefinition/EvidenceVariable',
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: 'structural-unknown-element',
+      path: 'EvidenceVariable.characteristic.definitionBogus',
+      severity: 'warning',
+    });
+  });
+
+  it('does not load primitive choice suffixes as datatype StructureDefinitions', async () => {
+    const planDefinitionIndex = buildSnapshotIndex({
+      url: 'http://hl7.org/fhir/StructureDefinition/PlanDefinition',
+      snapshot: {
+        element: [
+          { path: 'PlanDefinition' },
+          { path: 'PlanDefinition.action', type: [{ code: 'BackboneElement' }] },
+          {
+            path: 'PlanDefinition.action.definition[x]',
+            type: [{ code: 'canonical' }, { code: 'uri' }],
+          },
+        ],
+      },
+    } as any);
+    const sdLoader = {
+      loadProfile: vi.fn(async () => null),
+    } as any;
+
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'PlanDefinition',
+        action: [{ definitionCanonical: 'ActivityDefinition/example' }],
+      },
+      planDefinitionIndex,
+      'PlanDefinition',
+      'http://hl7.org/fhir/StructureDefinition/PlanDefinition',
+      makeWalkerDeps(sdLoader, 'R4'),
+    );
+
+    expect(issues).toHaveLength(0);
+    expect(sdLoader.loadProfile).not.toHaveBeenCalled();
   });
 
   it('skips primitive-extension sidecar keys (underscore prefix)', async () => {

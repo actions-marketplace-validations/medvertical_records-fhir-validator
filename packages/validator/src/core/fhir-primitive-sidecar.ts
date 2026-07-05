@@ -6,7 +6,9 @@
  */
 
 const PRIMITIVE_SIDECAR_VALUE = Symbol.for('records.fhirPrimitiveSidecarValue');
+const PRIMITIVE_SIDECAR_TYPE = Symbol.for('records.fhirPrimitiveSidecarType');
 const primitiveSidecarValues = new WeakSet<object>();
+const primitiveSidecarTypes = new WeakMap<object, string>();
 
 export function isResolvedPrimitiveSidecarValue(value: unknown): boolean {
   return Boolean(
@@ -19,12 +21,19 @@ export function isResolvedPrimitiveSidecarValue(value: unknown): boolean {
   );
 }
 
+export function getResolvedPrimitiveSidecarType(value: unknown): string | undefined {
+  if (!isResolvedPrimitiveSidecarValue(value)) return undefined;
+  if (!value || typeof value !== 'object') return undefined;
+  return primitiveSidecarTypes.get(value) ||
+    ((value as Record<PropertyKey, unknown>)[PRIMITIVE_SIDECAR_TYPE] as string | undefined);
+}
+
 export function getPrimitiveSidecar(container: any, key: string): any | undefined {
   if (!container || typeof container !== 'object' || Array.isArray(container)) return undefined;
   if (!key || key.startsWith('_')) return undefined;
 
   const sidecar = container[`_${key}`];
-  return isMeaningfulPrimitiveSidecar(sidecar) ? markPrimitiveSidecarValue(sidecar) : undefined;
+  return buildMeaningfulPrimitiveSidecarValue(sidecar);
 }
 
 export function resolveFhirSegmentValue(container: any, segment: string): any {
@@ -52,7 +61,9 @@ function resolveChoiceSegmentValue(container: any, baseName: string): any {
   if (!sidecarChoiceKey) return undefined;
 
   const sidecar = container[sidecarChoiceKey];
-  return isMeaningfulPrimitiveSidecar(sidecar) ? markPrimitiveSidecarValue(sidecar) : undefined;
+  const concreteKey = sidecarChoiceKey.slice(1);
+  const primitiveType = primitiveTypeFromChoiceKey(concreteKey, baseName);
+  return isMeaningfulPrimitiveSidecar(sidecar) ? markPrimitiveSidecarValue(sidecar, primitiveType) : undefined;
 }
 
 function isMeaningfulPrimitiveSidecar(sidecar: any): boolean {
@@ -61,8 +72,26 @@ function isMeaningfulPrimitiveSidecar(sidecar: any): boolean {
   return Array.isArray(sidecar.extension) && sidecar.extension.length > 0;
 }
 
-function markPrimitiveSidecarValue(sidecar: any): any {
+function buildMeaningfulPrimitiveSidecarValue(sidecar: any): any | undefined {
+  if (Array.isArray(sidecar)) {
+    const meaningfulItems = sidecar
+      .filter(isMeaningfulPrimitiveSidecar)
+      .map(item => markPrimitiveSidecarValue(item));
+    return meaningfulItems.length > 0 ? markPrimitiveSidecarValue(meaningfulItems) : undefined;
+  }
+
+  return isMeaningfulPrimitiveSidecar(sidecar) ? markPrimitiveSidecarValue(sidecar) : undefined;
+}
+
+function primitiveTypeFromChoiceKey(concreteKey: string, baseName: string): string | undefined {
+  const suffix = concreteKey.slice(baseName.length);
+  if (!suffix) return undefined;
+  return suffix.charAt(0).toLowerCase() + suffix.slice(1);
+}
+
+function markPrimitiveSidecarValue(sidecar: any, primitiveType?: string): any {
   if (!sidecar || typeof sidecar !== 'object') return sidecar;
+  if (primitiveType) primitiveSidecarTypes.set(sidecar, primitiveType);
   if (isResolvedPrimitiveSidecarValue(sidecar)) return sidecar;
   primitiveSidecarValues.add(sidecar);
   if (!Object.isExtensible(sidecar)) return sidecar;
@@ -72,5 +101,12 @@ function markPrimitiveSidecarValue(sidecar: any): any {
     enumerable: false,
     configurable: false,
   });
+  if (primitiveType) {
+    Object.defineProperty(sidecar, PRIMITIVE_SIDECAR_TYPE, {
+      value: primitiveType,
+      enumerable: false,
+      configurable: false,
+    });
+  }
   return sidecar;
 }

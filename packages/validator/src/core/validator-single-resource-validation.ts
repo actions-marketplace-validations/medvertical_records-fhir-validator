@@ -22,6 +22,8 @@ import {
 } from './executors';
 import { createValidationErrorIssue } from './validation-utils';
 import { collectSingleResourceValidationIssues } from './single-resource-validation';
+import type { ReferenceResolver } from '../validators/slicing-validator';
+import { withIssuesSchemaVersion } from './issue-schema-version';
 
 interface RecordsSingleResourceValidationInput {
   resource: any;
@@ -29,6 +31,7 @@ interface RecordsSingleResourceValidationInput {
   fhirVersion: 'R4' | 'R5' | 'R6';
   settings?: ValidationSettings;
   fhirClient?: FhirClientLike;
+  referenceResolver?: ReferenceResolver | null;
 }
 
 interface RecordsSingleResourceValidationContext {
@@ -52,7 +55,7 @@ export async function validateRecordsResource(
   input: RecordsSingleResourceValidationInput,
   context: RecordsSingleResourceValidationContext,
 ): Promise<ValidationIssue[]> {
-  const { resource, profileUrl, fhirVersion, settings, fhirClient } = input;
+  const { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver } = input;
   const startTime = Date.now();
 
   try {
@@ -75,13 +78,13 @@ export async function validateRecordsResource(
     const structureDef = loadResult.structureDef;
 
     if (!structureDef) {
-      return [createValidationErrorIssue(
+      return withIssuesSchemaVersion([createValidationErrorIssue(
         'profile',
         'profile-not-found',
         `Profile ${declaredProfileUrl} not found and base StructureDefinition for ${resource.resourceType} could not be loaded`,
         { profile: declaredProfileUrl },
         'meta.profile',
-      )];
+      )], fhirVersion);
     }
 
     const profileFallbackIssue: ValidationIssue | null = loadResult.incompatibleProfileType
@@ -91,7 +94,7 @@ export async function validateRecordsResource(
         loadResult.incompatibleProfileType,
       )
       : loadResult.usedBaseFallback
-        ? createProfileFallbackIssue(declaredProfileUrl, resource.resourceType)
+        ? createProfileFallbackIssue(declaredProfileUrl, resource.resourceType, context.sdLoader)
         : null;
     const contextQuestionnaire = resource.resourceType === 'QuestionnaireResponse'
       ? context.questionnaireRegistry?.resolveForResponse(resource)
@@ -107,6 +110,7 @@ export async function validateRecordsResource(
         settings,
         profileFallbackIssue,
         contextQuestionnaire,
+        referenceResolver,
       },
       {
         structuralExecutor: context.structuralExecutor,
@@ -127,13 +131,13 @@ export async function validateRecordsResource(
       `(${issues.length} issues - extensions, slicing, bindings, constraints checked)`,
     );
 
-    return issues;
+    return withIssuesSchemaVersion(issues, fhirVersion);
   } catch (error) {
     logger.error('[RecordsValidator] Validation error:', error);
-    return [createValidationErrorIssue(
+    return withIssuesSchemaVersion([createValidationErrorIssue(
       'profile',
       'validation-error',
       `Validation failed: ${error instanceof Error ? error.message : String(error)}`,
-    )];
+    )], fhirVersion);
   }
 }

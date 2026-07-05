@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createProfileFallbackIssue,
   createProfileResourceTypeMismatchIssue,
   loadProfileOrBase,
+  suggestProfilesForUnresolvedCanonical,
 } from '../profile-loader-utils';
 
 describe('profile resource type compatibility', () => {
@@ -57,5 +59,32 @@ describe('profile resource type compatibility', () => {
       },
     });
     expect(issue.message).toContain('validated against base Practitioner instead');
+  });
+
+  it('suggests near-matching local profiles for unresolved canonicals', () => {
+    const unresolved = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-bilanz-abnahme-haemofiltration-einzelmesswerte';
+    const available = [
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-bilanz-ausfuhr-haemofiltration-einzelmesswerte',
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-muv-herzfrequenz',
+      'http://hl7.org/fhir/StructureDefinition/Observation',
+    ];
+
+    expect(suggestProfilesForUnresolvedCanonical(unresolved, available)).toEqual([
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-bilanz-ausfuhr-haemofiltration-einzelmesswerte',
+    ]);
+
+    const issue = createProfileFallbackIssue(unresolved, 'Observation', {
+      getAvailableProfiles: () => available,
+    });
+
+    expect(issue.details).toMatchObject({
+      profile: unresolved,
+      resourceType: 'Observation',
+      baseProfile: 'http://hl7.org/fhir/StructureDefinition/Observation',
+      validatedAgainstBase: true,
+      suggestedProfiles: [
+        'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-bilanz-ausfuhr-haemofiltration-einzelmesswerte',
+      ],
+    });
   });
 });

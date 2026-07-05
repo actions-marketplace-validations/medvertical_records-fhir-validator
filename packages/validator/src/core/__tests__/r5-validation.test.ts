@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { ConstraintValidator } from '../../validators/constraint-validator';
 import { TypeValidator } from '../../validators/type-validator';
 import { getFhirPathModel } from '../../validators/fhirpath-model-resolver';
+import { RecordsValidator } from '../validator-engine';
 
 describe('R5 Validation', () => {
 
@@ -210,5 +211,23 @@ describe('R5 Validation', () => {
 
       expect(issues.length).toBeGreaterThan(0);
     });
+  });
+
+  describe('RecordsValidator issue metadata', () => {
+    it('stamps R5 validation issues with the R5 schema version', async () => {
+      const validator = new RecordsValidator({ enableCaching: true, strictMode: false });
+
+      const issues = await validator.validate({
+        resourceType: 'QuestionnaireResponse',
+        status: 'completed',
+        questionnaire: 'Questionnaire/local',
+      }, undefined, 'R5');
+
+      const invalidCanonical = issues.find(issue => issue.code === 'structural-invalid-uri');
+      expect(invalidCanonical).toBeDefined();
+      expect(invalidCanonical?.path).toBe('QuestionnaireResponse.questionnaire');
+      expect(invalidCanonical?.schemaVersion).toBe('R5');
+      expect(issues.every(issue => issue.schemaVersion === 'R5')).toBe(true);
+    }, 30000);
   });
 });

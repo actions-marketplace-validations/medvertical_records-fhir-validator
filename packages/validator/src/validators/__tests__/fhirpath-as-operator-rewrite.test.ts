@@ -62,3 +62,25 @@ describe('rewriteCollectionTypeOperators — is', () => {
     expect(rewriteCollectionTypeOperators(expr)).toBe(expr);
   });
 });
+
+describe('rewriteCollectionTypeOperators — reserved FHIR member names', () => {
+  it('quotes XHTML narrative div member access before compile', () => {
+    expect(rewriteCollectionTypeOperators('text.div.exists()'))
+      .toBe('text.`div`.exists()');
+  });
+
+  it('does not rewrite already-delimited div identifiers', () => {
+    expect(rewriteCollectionTypeOperators('text.`div`.exists()'))
+      .toBe('text.`div`.exists()');
+  });
+
+  it('does not rewrite div text inside string literals', () => {
+    expect(rewriteCollectionTypeOperators("extension.where(url = 'http://example.org/text.div').exists()"))
+      .toBe("extension.where(url = 'http://example.org/text.div').exists()");
+  });
+
+  it('does not rewrite longer identifiers that start with div', () => {
+    expect(rewriteCollectionTypeOperators('text.diversity.exists()'))
+      .toBe('text.diversity.exists()');
+  });
+});

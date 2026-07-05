@@ -333,7 +333,12 @@ export class BundleReferenceResolver {
         (parseResult.resourceType && parseResult.resourceId &&
           fullUrlIndex.has(`${parseResult.resourceType}/${parseResult.resourceId}`));
 
-      if (!exists && (parseResult.referenceType as string) !== 'external') {
+      const shouldReportUnresolved =
+        isClosedBundle ||
+        reference.startsWith('urn:uuid:') ||
+        reference.startsWith('urn:oid:');
+
+      if (shouldReportUnresolved && !exists && (parseResult.referenceType as string) !== 'external') {
         issues.push({
           severity: isClosedBundle ? 'error' : 'warning',
           code: 'unresolved-bundle-reference',

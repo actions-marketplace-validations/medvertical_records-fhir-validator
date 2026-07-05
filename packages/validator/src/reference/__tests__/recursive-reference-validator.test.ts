@@ -69,4 +69,30 @@ describe('RecursiveReferenceValidator', () => {
     expect(result.unresolvedReferences).toEqual([]);
     expect(result.referencesFollowed).toBeGreaterThan(0);
   });
+
+  it('does not report a Bundle entry Provenance target pointing at the enclosing Bundle as circular', async () => {
+    const bundle = {
+      resourceType: 'Bundle',
+      id: 'bundle-1',
+      type: 'batch',
+      entry: [
+        {
+          fullUrl: 'urn:uuid:provenance-1',
+          resource: {
+            resourceType: 'Provenance',
+            id: 'provenance-1',
+            target: [{ reference: 'Bundle/bundle-1' }],
+          },
+        },
+      ],
+    };
+
+    const result = await new RecursiveReferenceValidator().validateRecursively(bundle, {
+      enabled: true,
+      maxDepth: 2,
+      maxReferencesPerResource: 10,
+    });
+
+    expect(result.circularReferences).toEqual([]);
+  });
 });

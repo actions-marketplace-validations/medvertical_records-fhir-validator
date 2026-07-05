@@ -28,6 +28,33 @@ describe('CardinalityValidator', () => {
     }));
   });
 
+  it('does not report mustSupport as missing on conformance resources', () => {
+    const validator = new CardinalityValidator();
+    const elementDef = {
+      path: 'ValueSet.extensible',
+      min: 1,
+      max: '1',
+      mustSupport: true,
+    } satisfies ElementDefinition;
+
+    const issues = validator.validate(
+      undefined,
+      elementDef,
+      'ValueSet.extensible',
+      'http://hl7.org/fhir/us/sdc/StructureDefinition/sdc-valueset',
+      {
+        resourceType: 'ValueSet',
+        compose: {
+          include: [{ system: 'http://loinc.org' }],
+        },
+      },
+    );
+
+    expect(issues).not.toContainEqual(expect.objectContaining({
+      code: 'profile-mustsupport-missing',
+    }));
+  });
+
   it('does not require Observation.component.dataAbsentReason when each component has a value[x]', () => {
     const validator = new CardinalityValidator();
     const elementDef = {
@@ -353,5 +380,40 @@ describe('CardinalityValidator', () => {
         fixHint: expect.stringContaining("Observation.value[x]"),
       }),
     }));
+  });
+
+  it('explains PlanDefinition relatedAction targetId when id carries the workflow reference', () => {
+    const validator = new CardinalityValidator();
+    const elementDef = {
+      path: 'PlanDefinition.action.relatedAction.targetId',
+      min: 1,
+      max: '1',
+    } satisfies ElementDefinition;
+
+    const issues = validator.validate(
+      undefined,
+      elementDef,
+      'PlanDefinition.action[0].relatedAction[0].targetId',
+      'http://hl7.org/fhir/StructureDefinition/PlanDefinition',
+      {
+        resourceType: 'PlanDefinition',
+        action: [{
+          id: 'StartEvent_1',
+          relatedAction: [{
+            id: 'Flow_1',
+            relationship: 'after',
+          }],
+        }],
+      },
+      { parentExists: true },
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'structural-cardinality-min',
+      details: expect.objectContaining({
+        fixHint: expect.stringContaining("Move the workflow reference from id to targetId"),
+      }),
+    }));
+    expect(issues[0]?.details?.fixHint).toContain('Flow_1');
   });
 });

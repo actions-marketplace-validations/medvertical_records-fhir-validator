@@ -1,5 +1,6 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
+import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
 
 /**
  * HL7-defined extensions that aren't shipped in the R4 core SD bundle but
@@ -16,6 +17,9 @@ const KNOWN_HL7_EXTENSION_URLS = new Set<string>([
   'http://hl7.org/fhir/StructureDefinition/individual-pronouns',
   'http://hl7.org/fhir/StructureDefinition/instance-name',
   'http://hl7.org/fhir/StructureDefinition/patient-occupation',
+  'http://hl7.org/fhir/4.0/StructureDefinition/extension-AuditEvent.agent.network.type',
+  'http://hl7.org/fhir/4.0/StructureDefinition/extension-AuditEvent.entity.type',
+  'http://hl7.org/fhir/5.0/StructureDefinition/extension-DiagnosticReport.composition',
   'http://hl7.org/fhir/5.0/StructureDefinition/extension-Encounter.plannedStartDate',
   'http://hl7.org/fhir/5.0/StructureDefinition/extension-MedicationRequest.renderedDosageInstruction',
   'http://hl7.org/fhir/5.0/StructureDefinition/extension-MedicationStatement.renderedDosageInstruction',
@@ -53,7 +57,8 @@ export function validateExtensionStructure(
   resourceType = 'Unknown',
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const hasValue = Object.keys(extension).some(key => key.startsWith('value'));
+  const hasValue = Object.keys(extension).some(key => key.startsWith('value')) ||
+    resolveFhirSegmentValue(extension, 'value[x]') !== undefined;
   const hasNestedExtension = extension.extension && extension.extension.length > 0;
 
   if (!hasValue && !hasNestedExtension) {

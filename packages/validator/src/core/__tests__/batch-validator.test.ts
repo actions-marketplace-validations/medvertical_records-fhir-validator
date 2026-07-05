@@ -12,7 +12,11 @@
  */
 
 import { describe, it, expect, vi, _beforeEach } from 'vitest';
-import { executeBatchValidation, type BatchValidationOptions, type BatchValidatorContext } from '../batch-validator';
+import {
+  executeBatchValidation,
+  type BatchValidationOptions,
+  type BatchValidatorContext,
+} from '../batch-validator';
 import type { ValidationIssue } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -165,6 +169,23 @@ describe('executeBatchValidation', () => {
       // Batch validator does NOT silently swallow errors — it re-throws
       await expect(executeBatchValidation([good, bad], BASE_OPTIONS, ctx))
         .rejects.toThrow('validation-crash');
+    });
+
+    it('aborts before validating additional resources when shouldStop is set', async () => {
+      let stopped = false;
+      const callTracker = vi.fn().mockImplementation(async () => {
+        stopped = true;
+        return [];
+      });
+      const ctx = makeContext(callTracker);
+
+      await expect(executeBatchValidation(
+        [patient('p1'), patient('p2', 'Jones')],
+        { ...BASE_OPTIONS, maxConcurrency: 1, shouldStop: () => stopped },
+        ctx,
+      )).rejects.toMatchObject({ name: 'BatchValidationAbortedError' });
+
+      expect(callTracker).toHaveBeenCalledTimes(1);
     });
   });
 

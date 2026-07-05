@@ -46,7 +46,7 @@ describe('SecurityValidator', () => {
       expect(invalidObjectIssue?.severity).toBe('error');
     });
 
-    it('should require system or code', () => {
+    it('should warn when system or code is missing', () => {
       const security = [{}];
       const issues = validator.validate(security, 'Patient');
 
@@ -54,7 +54,7 @@ describe('SecurityValidator', () => {
         i.code === 'metadata-security-missing-system' || i.code === 'metadata-security-missing-code'
       );
       expect(missingIssue).toBeDefined();
-      expect(missingIssue?.severity).toBe('error');
+      expect(missingIssue?.severity).toBe('warning');
     });
 
     it('should validate system URI format', () => {
@@ -110,7 +110,7 @@ describe('SecurityValidator', () => {
 
       const missingSystemIssue = issues.find(i => i.code === 'metadata-security-missing-system');
       expect(missingSystemIssue).toBeDefined();
-      expect(missingSystemIssue?.severity).toBe('error');
+      expect(missingSystemIssue?.severity).toBe('warning');
     });
 
     it('should validate known security systems', () => {

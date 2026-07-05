@@ -9,41 +9,50 @@ export const KNOWN_FHIR_RESOURCE_TYPES = new Set([
   'Patient', 'Practitioner', 'PractitionerRole', 'RelatedPerson', 'Person', 'Group',
   'Organization', 'OrganizationAffiliation', 'Location', 'HealthcareService', 'Endpoint',
   'Device', 'DeviceDefinition', 'DeviceMetric', 'DeviceRequest', 'DeviceUseStatement',
+  'DeviceAssociation', 'DeviceDispense', 'DeviceUsage',
   'Substance', 'SubstanceDefinition', 'SubstanceNucleicAcid', 'SubstancePolymer',
   'SubstanceProtein', 'SubstanceReferenceInformation', 'SubstanceSourceMaterial',
   'SubstanceSpecification', 'Medication', 'MedicationAdministration', 'MedicationDispense',
   'MedicationKnowledge', 'MedicationRequest', 'MedicationStatement', 'MedicationUsage',
+  'MedicinalProductDefinition', 'AdministrableProductDefinition', 'ManufacturedItemDefinition',
+  'PackagedProductDefinition', 'Ingredient', 'RegulatedAuthorization',
   'Immunization', 'ImmunizationEvaluation', 'ImmunizationRecommendation',
+  'BiologicallyDerivedProduct', 'BiologicallyDerivedProductDispense',
 
   // Diagnostics
   'Observation', 'DiagnosticReport', 'ServiceRequest', 'Specimen', 'SpecimenDefinition',
-  'BodyStructure', 'ImagingStudy', 'Media', 'QuestionnaireResponse',
+  'BodyStructure', 'ImagingStudy', 'ImagingSelection', 'Media', 'QuestionnaireResponse',
+  'ObservationDefinition', 'MolecularSequence', 'GenomicStudy',
 
   // Care Management
   'Condition', 'Procedure', 'AllergyIntolerance', 'AdverseEvent', 'DetectedIssue',
   'ClinicalImpression', 'RiskAssessment', 'FamilyMemberHistory', 'Goal', 'CarePlan',
-  'CareTeam', 'ServiceRequest', 'NutritionOrder', 'VisionPrescription',
+  'CareTeam', 'ServiceRequest', 'NutritionOrder', 'NutritionIntake', 'NutritionProduct',
+  'VisionPrescription', 'ClinicalUseDefinition', 'ConditionDefinition',
 
   // Request & Response
   'Task', 'Appointment', 'AppointmentResponse', 'Schedule', 'Slot', 'Encounter',
-  'EpisodeOfCare', 'Flag', 'List', 'Library', 'Measure', 'MeasureReport',
+  'EncounterHistory', 'EpisodeOfCare', 'Flag', 'List', 'Library', 'Measure', 'MeasureReport',
+  'Communication', 'CommunicationRequest', 'GuidanceResponse', 'RequestOrchestration',
+  'SupplyDelivery', 'SupplyRequest', 'Transport',
 
   // Foundation
   'Composition', 'DocumentManifest', 'DocumentReference', 'CatalogEntry',
   'Basic', 'Binary', 'Bundle', 'Linkage', 'MessageDefinition', 'MessageHeader',
   'OperationDefinition', 'OperationOutcome', 'Parameters', 'Subscription',
-  'SubscriptionStatus', 'SubscriptionTopic',
+  'SubscriptionStatus', 'SubscriptionTopic', 'ArtifactAssessment', 'EventDefinition',
+  'FormularyItem',
 
   // Conformance
   'CapabilityStatement', 'StructureDefinition', 'StructureMap', 'ImplementationGuide',
   'SearchParameter', 'CompartmentDefinition', 'ExampleScenario', 'GraphDefinition',
-  'TestReport', 'TestScript',
+  'TestPlan', 'TestReport', 'TestScript',
 
   // Terminology
   'CodeSystem', 'ValueSet', 'ConceptMap', 'NamingSystem', 'TerminologyCapabilities',
 
   // Security
-  'AuditEvent', 'Consent', 'Provenance', 'Signature',
+  'AuditEvent', 'Consent', 'Permission', 'Provenance', 'Signature',
 
   // Financial
   'Account', 'ChargeItem', 'ChargeItemDefinition', 'Contract', 'Coverage',
@@ -54,7 +63,8 @@ export const KNOWN_FHIR_RESOURCE_TYPES = new Set([
   // Specialized
   'Citation', 'Evidence', 'EvidenceReport', 'EvidenceVariable', 'ResearchDefinition',
   'ResearchElementDefinition', 'ResearchStudy', 'ResearchSubject', 'ActivityDefinition',
-  'PlanDefinition', 'Questionnaire', 'Requirements', 'ActorDefinition',
+  'PlanDefinition', 'Questionnaire', 'Requirements', 'ActorDefinition', 'InventoryItem',
+  'InventoryReport', 'VerificationResult',
 ]);
 
 export const KNOWN_FHIR_RESOURCE_TYPES_BY_LOWERCASE = new Map(

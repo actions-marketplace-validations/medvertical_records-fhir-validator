@@ -27,6 +27,35 @@ const CHOICE_BASES = [
   'rate', 'born', 'age',
 ];
 
+const CONFORMANCE_RESOURCE_TYPES = new Set([
+  'ActivityDefinition',
+  'CapabilityStatement',
+  'ChargeItemDefinition',
+  'CodeSystem',
+  'CompartmentDefinition',
+  'ConceptMap',
+  'EventDefinition',
+  'ExampleScenario',
+  'GraphDefinition',
+  'ImplementationGuide',
+  'Library',
+  'Measure',
+  'MessageDefinition',
+  'NamingSystem',
+  'OperationDefinition',
+  'PlanDefinition',
+  'Questionnaire',
+  'SearchParameter',
+  'StructureDefinition',
+  'StructureMap',
+  'TerminologyCapabilities',
+  'ValueSet',
+]);
+
+interface CardinalityValidationOptions {
+  parentExists?: boolean;
+}
+
 function hasChoiceValue(element: any, base: string): boolean {
   if (!element || typeof element !== 'object') return false;
   if (element[base] !== undefined && element[base] !== null) return true;
@@ -108,9 +137,55 @@ function shouldSkipContextualMustSupport(resource: any, path: string): boolean {
   return false;
 }
 
+function shouldSkipConformanceMustSupport(resource: any): boolean {
+  return CONFORMANCE_RESOURCE_TYPES.has(resource?.resourceType);
+}
+
 function resourceTypeFromPath(path: string): string {
   const firstSegment = path.split('.')[0]?.replace(/\[[^\]]+\]/g, '');
   return firstSegment || 'Unknown';
+}
+
+function buildMinCardinalityFixHint(path: string, min: number, resource?: any): string {
+  const contextualHint = buildPlanDefinitionRelatedActionTargetIdFixHint(path, resource);
+  if (contextualHint) return contextualHint;
+
+  return `Add '${path}' with at least ${min} value${min === 1 ? '' : 's'}.`;
+}
+
+function buildPlanDefinitionRelatedActionTargetIdFixHint(path: string, resource?: any): string | undefined {
+  if (resource?.resourceType !== 'PlanDefinition') return undefined;
+  if (!path.endsWith('.targetId') || !path.includes('.relatedAction[')) return undefined;
+
+  const relatedAction = resolveIndexedPathParent(resource, path);
+  const misplacedId = relatedAction?.id;
+  if (typeof misplacedId !== 'string' || misplacedId.trim().length === 0 || relatedAction?.targetId !== undefined) {
+    return undefined;
+  }
+
+  return `Add '${path}'. This relatedAction has element id '${misplacedId}' but no targetId; in FHIR R5, relatedAction.targetId is the required link to the related action. Move the workflow reference from id to targetId when '${misplacedId}' is meant to identify the target action.`;
+}
+
+function resolveIndexedPathParent(resource: any, path: string): any {
+  const segments = path.split('.').slice(1, -1);
+  let current = resource;
+
+  for (const segment of segments) {
+    if (current === undefined || current === null) return undefined;
+
+    const indexed = /^([A-Za-z][A-Za-z0-9]*)\[(\d+)\]$/.exec(segment);
+    if (indexed) {
+      const [, key, rawIndex] = indexed;
+      const value = current[key];
+      if (!Array.isArray(value)) return undefined;
+      current = value[Number(rawIndex)];
+      continue;
+    }
+
+    current = current[segment];
+  }
+
+  return current;
 }
 
 export class CardinalityValidator {
@@ -137,7 +212,8 @@ export class CardinalityValidator {
     elementDef: ElementDefinition,
     path: string,
     profileUrl?: string,
-    resource?: any
+    resource?: any,
+    options: CardinalityValidationOptions = {},
   ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
@@ -169,7 +245,7 @@ export class CardinalityValidator {
     // Only check if parent exists (conditional cardinality)
     if (count < min) {
       // Check if parent element exists before flagging as error
-      const shouldValidate = resource ? shouldValidateRequired(resource, path) : true;
+      const shouldValidate = options.parentExists ?? (resource ? shouldValidateRequired(resource, path) : true);
 
       if (shouldValidate) {
         issues.push(createValidationIssue({
@@ -179,7 +255,7 @@ export class CardinalityValidator {
           profile: profileUrl,
           messageParams: { element: path, actual: count, min },
           details: {
-            fixHint: `Add '${path}' with at least ${min} value${min === 1 ? '' : 's'}.`,
+            fixHint: buildMinCardinalityFixHint(path, min, resource),
           },
         }));
       } else {
@@ -208,16 +284,19 @@ export class CardinalityValidator {
     // Validate mustSupport
     if (elementDef.mustSupport === true) {
       // Only validate mustSupport if parent element exists (conditional mustSupport)
-      const shouldValidateMustSupport = resource ? shouldValidateRequired(resource, path) : true;
+      const shouldValidateMustSupport = options.parentExists ?? (resource ? shouldValidateRequired(resource, path) : true);
       const shouldSkipObservationAlternative =
         shouldSkipObservationAlternativeMustSupport(resource, path);
       const shouldSkipContextual =
         shouldSkipContextualMustSupport(resource, path);
+      const shouldSkipConformance =
+        shouldSkipConformanceMustSupport(resource);
 
       if (
         shouldValidateMustSupport &&
         !shouldSkipObservationAlternative &&
-        !shouldSkipContextual
+        !shouldSkipContextual &&
+        !shouldSkipConformance
       ) {
         // Double-check that element truly doesn't exist before reporting mustSupport-missing
         // The 'value' parameter might be undefined even if the element exists in the resource

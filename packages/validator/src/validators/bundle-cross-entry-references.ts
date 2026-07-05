@@ -6,14 +6,19 @@ interface BundleReferenceIndexes {
     fullUrlIndex: Set<string>;
     fullUrlToEntryIndexes: Map<string, number[]>;
     typeIdToFullUrls: Map<string, string[]>;
+    requestUrlToEntryIndexes: Map<string, number[]>;
     versionedIndex: Set<string>;
 }
 
 interface ResolvedReference {
     resolvable: boolean;
     hasTypeIdMatch: boolean;
+    hasRequestUrlMatch?: boolean;
     multipleMatches?: boolean;
     matchCount?: number;
+    matchedFullUrls?: string[];
+    matchedRequestUrls?: Array<{ entryIndex: number; requestUrl: string; fullUrl?: string }>;
+    logicalReference?: string;
 }
 
 interface ReferenceContext {
@@ -60,6 +65,7 @@ function buildReferenceIndexes(entries: any[]): BundleReferenceIndexes {
     const fullUrlIndex = new Set<string>();
     const fullUrlToEntryIndexes = new Map<string, number[]>();
     const typeIdToFullUrls = new Map<string, string[]>();
+    const requestUrlToEntryIndexes = new Map<string, number[]>();
     const versionedIndex = new Set<string>();
 
     for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
@@ -84,9 +90,15 @@ function buildReferenceIndexes(entries: any[]): BundleReferenceIndexes {
                 }
             }
         }
+        const requestUrl = typeof entry?.request?.url === 'string' ? entry.request.url : undefined;
+        if (requestUrl && isRelativeResourceReference(requestUrl)) {
+            const indexes = requestUrlToEntryIndexes.get(requestUrl) || [];
+            indexes.push(entryIndex);
+            requestUrlToEntryIndexes.set(requestUrl, indexes);
+        }
     }
 
-    return { fullUrlIndex, fullUrlToEntryIndexes, typeIdToFullUrls, versionedIndex };
+    return { fullUrlIndex, fullUrlToEntryIndexes, typeIdToFullUrls, requestUrlToEntryIndexes, versionedIndex };
 }
 
 function validateEntryReferences(
@@ -143,10 +155,7 @@ function createClosedBundleReferenceIssues(context: ReferenceContext): Validatio
         issues.push(...createVersionedTypeIdWarnings(context, issuePath));
     }
 
-    const detail = context.resolved.hasTypeIdMatch
-        ? ' Note that there is a resource in the bundle with the same type and id, ' +
-          'but it does not match because of the fullUrl based rules around matching relative references.'
-        : '';
+    const detail = buildTypeIdMismatchDetail(context);
 
     issues.push(createValidationIssue({
         code: 'bundle-cross-entry-reference-missing',
@@ -157,6 +166,7 @@ function createClosedBundleReferenceIssues(context: ReferenceContext): Validatio
             : `Can't find '${context.ref}' in the bundle ` +
                 `(${context.resource.resourceType ?? 'entry'}[${context.entryIndex}]).${detail}`,
         severityOverride: 'error',
+        details: buildReferenceMismatchDetails(context),
     }));
 
     return issues;
@@ -246,12 +256,20 @@ function resolveReferenceInBundle(
 
     const hasTypeIdMatch = indexes.typeIdToFullUrls.has(unversioned);
     const typeIdMatchCount = indexes.typeIdToFullUrls.get(unversioned)?.length || 0;
+    const matchedRequestUrls = findRequestUrlMatches(unversioned, indexes);
+    const requestUrlState = {
+        hasRequestUrlMatch: matchedRequestUrls.length > 0,
+        matchedRequestUrls,
+    };
 
     if (!sourceFullUrl) {
-        return resolveWithoutSourceFullUrl(ref, refIsVersioned, hasTypeIdMatch, typeIdMatchCount, indexes);
+        return {
+            ...resolveWithoutSourceFullUrl(ref, refIsVersioned, hasTypeIdMatch, typeIdMatchCount, indexes),
+            ...requestUrlState,
+        };
     }
     if (sourceFullUrl.startsWith('urn:')) {
-        return { resolvable: false, hasTypeIdMatch };
+        return { resolvable: false, hasTypeIdMatch, ...requestUrlState };
     }
 
     const base = deriveBundleBaseUrl(sourceFullUrl);
@@ -264,13 +282,17 @@ function resolveReferenceInBundle(
             typeIdMatchCount,
             indexes,
             base,
+            requestUrlState,
         );
     }
 
     if (strictRefs && !refIsVersioned) {
-        return { resolvable: false, hasTypeIdMatch, matchCount: typeIdMatchCount };
+        return { resolvable: false, hasTypeIdMatch, matchCount: typeIdMatchCount, ...requestUrlState };
     }
-    return resolveByTypeIdFallback(ref, refIsVersioned, hasTypeIdMatch, typeIdMatchCount, indexes);
+    return {
+        ...resolveByTypeIdFallback(ref, refIsVersioned, hasTypeIdMatch, typeIdMatchCount, indexes),
+        ...requestUrlState,
+    };
 }
 
 function resolveAbsoluteReference(
@@ -285,11 +307,15 @@ function resolveAbsoluteReference(
     const matchCount = indexes.fullUrlToEntryIndexes.get(ref)?.length
         || indexes.fullUrlToEntryIndexes.get(unversioned)?.length
         || 0;
+    const logicalReference = extractLogicalReference(unversioned);
+    const matchedFullUrls = logicalReference ? indexes.typeIdToFullUrls.get(logicalReference) || [] : [];
     return {
         resolvable: directMatch && matchCount <= 1,
-        hasTypeIdMatch: false,
+        hasTypeIdMatch: matchedFullUrls.length > 0,
         multipleMatches: !refIsVersioned && matchCount > 1,
         matchCount,
+        matchedFullUrls,
+        logicalReference: logicalReference ?? undefined,
     };
 }
 
@@ -319,6 +345,7 @@ function resolveRelativeWithBase(
     typeIdMatchCount: number,
     indexes: BundleReferenceIndexes,
     base: string,
+    requestUrlState: Pick<ResolvedReference, 'hasRequestUrlMatch' | 'matchedRequestUrls'>,
 ): ResolvedReference {
     const targetUrl = `${base}${refIsVersioned ? ref : unversioned}`;
     if (refIsVersioned) {
@@ -326,6 +353,7 @@ function resolveRelativeWithBase(
             resolvable: indexes.versionedIndex.has(targetUrl),
             hasTypeIdMatch,
             matchCount: typeIdMatchCount,
+            ...requestUrlState,
         };
     }
     if (indexes.fullUrlIndex.has(targetUrl)) {
@@ -335,9 +363,10 @@ function resolveRelativeWithBase(
             hasTypeIdMatch: false,
             multipleMatches: matchCount > 1,
             matchCount,
+            ...requestUrlState,
         };
     }
-    return { resolvable: false, hasTypeIdMatch };
+    return { resolvable: false, hasTypeIdMatch, ...requestUrlState };
 }
 
 function resolveByTypeIdFallback(
@@ -375,4 +404,81 @@ function findEntryFullUrlsByLogicalRef(entries: any[], logicalRef: string): stri
             entry?.resource?.resourceType === resourceType &&
             entry?.resource?.id === id)
         .map((entry: any) => entry?.fullUrl || '');
+}
+
+function buildTypeIdMismatchDetail(context: ReferenceContext): string {
+    if (!context.resolved.hasTypeIdMatch) {
+        if (context.resolved.hasRequestUrlMatch) {
+            return ' Note that an entry.request.url matches this reference, but request.url is not used ' +
+                'for document/message Bundle reference resolution.';
+        }
+        return '';
+    }
+    if (/^https?:\/\//.test(context.ref)) {
+        return ' Note that there is a resource in the bundle with the same type and id, ' +
+            'but its fullUrl uses a different absolute URL, so it does not match by Bundle resolution rules.';
+    }
+    return ' Note that there is a resource in the bundle with the same type and id, ' +
+        'but it does not match because of the fullUrl based rules around matching relative references.';
+}
+
+function buildReferenceMismatchDetails(context: ReferenceContext): Record<string, unknown> {
+    const logicalReference = context.resolved.logicalReference ?? extractLogicalReference(context.unversioned);
+    const matchedFullUrls = context.resolved.matchedFullUrls
+        ?? (logicalReference ? findEntryFullUrlsByLogicalRef(context.entries, logicalReference) : []);
+
+    const details: Record<string, unknown> = {
+        reference: context.ref,
+        unversionedReference: context.unversioned,
+        sourceFullUrl: context.sourceFullUrl,
+        sourceEntryIndex: context.entryIndex,
+        hasTypeIdMatch: context.resolved.hasTypeIdMatch,
+    };
+
+    if (logicalReference) {
+        details.logicalReference = logicalReference;
+    }
+    if (matchedFullUrls.length > 0) {
+        details.matchedFullUrls = matchedFullUrls;
+        details.fixHint = /^https?:\/\//.test(context.ref)
+            ? 'Use a reference that exactly matches the target entry fullUrl, or align the target entry fullUrl with the absolute reference.'
+            : 'Use a reference that resolves relative to the source entry fullUrl, or align the target entry fullUrl with that relative target.';
+    }
+    if (context.resolved.matchedRequestUrls?.length) {
+        details.matchedRequestUrls = context.resolved.matchedRequestUrls;
+        details.fixHint = 'For document/message bundles, use references that match entry.fullUrl exactly, or use absolute fullUrls with a common base. Do not rely on entry.request.url for internal reference resolution.';
+    }
+
+    return details;
+}
+
+function extractLogicalReference(reference: string): string | null {
+    const relativeMatch = reference.match(/^([A-Z][A-Za-z]+)\/([^/?#|]+)$/);
+    if (relativeMatch) {
+        return `${relativeMatch[1]}/${relativeMatch[2]}`;
+    }
+
+    const absoluteMatch = reference.match(/\/([A-Z][A-Za-z]+)\/([^/?#|]+)$/);
+    if (absoluteMatch) {
+        return `${absoluteMatch[1]}/${absoluteMatch[2]}`;
+    }
+
+    return null;
+}
+
+function isRelativeResourceReference(value: string): boolean {
+    return /^([A-Z][A-Za-z]+)\/([^/?#|]+)$/.test(value);
+}
+
+function findRequestUrlMatches(
+    unversioned: string,
+    indexes: BundleReferenceIndexes,
+): Array<{ entryIndex: number; requestUrl: string; fullUrl?: string }> {
+    const logicalReference = extractLogicalReference(unversioned) ?? unversioned;
+    if (!isRelativeResourceReference(logicalReference)) return [];
+    const entryIndexes = indexes.requestUrlToEntryIndexes.get(logicalReference) || [];
+    return entryIndexes.map(entryIndex => ({
+        entryIndex,
+        requestUrl: logicalReference,
+    }));
 }

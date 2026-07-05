@@ -2,7 +2,7 @@ import { logger } from '../logger';
 import type { TerminologyResolutionConfig } from './valueset-types';
 import { type FhirVersion } from './valueset-expansion-cache-key';
 import { getScopedExpansionCacheKey } from './valueset-server-routing';
-import { KNOWN_VALUE_SET_EXPANSIONS } from './valueset-known-expansions';
+import { getKnownValueSetExpansion } from './valueset-known-expansions';
 import type { ValueSetCache } from './valueset-cache';
 import type { TerminologyApiClient } from './terminology-api-client';
 import type { ValueSetPackageLoader } from './valueset-package-loader';
@@ -55,7 +55,7 @@ export async function expandValueSet(
     }
 
     // 1. Try known expansions
-    const knownExpansion = KNOWN_VALUE_SET_EXPANSIONS[baseUrl];
+    const knownExpansion = getKnownValueSetExpansion(baseUrl, fhirVersion);
     if (knownExpansion) {
       knownExpansion.forEach(code => expandedCodes.add(code));
       cache.setExpandedCodes(cacheKey, expandedCodes);

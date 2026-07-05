@@ -29,6 +29,7 @@ describe('mapToHl7IssueType', () => {
     // Java emits 'structure' for type mismatches (see bb-obs-value-is-not-quantity baseline)
     expect(mapToHl7IssueType('structural-type-mismatch')).toBe('structure');
     expect(mapToHl7IssueType('structural-unknown-element')).toBe('structure');
+    expect(mapToHl7IssueType('structural-invalid-format')).toBe('invalid');
     expect(mapToHl7IssueType('structural-invalid-id')).toBe('invalid');
     expect(mapToHl7IssueType('structural-empty-array')).toBe('invalid');
     expect(mapToHl7IssueType('structural-other-thing')).toBe('structure');
@@ -48,6 +49,10 @@ describe('mapToHl7IssueType', () => {
     expect(mapToHl7IssueType('terminology-binding-strength')).toBe('code-invalid');
     expect(mapToHl7IssueType('terminology-valueset-expansion')).toBe('code-invalid');
     expect(mapToHl7IssueType('terminology-unknown')).toBe('code-invalid');
+  });
+
+  it('maps unresolvable CodeSystem diagnostics to not-found', () => {
+    expect(mapToHl7IssueType('terminology-codesystem-unresolvable')).toBe('not-found');
   });
 
   it('maps reference codes to correct HL7 types', () => {

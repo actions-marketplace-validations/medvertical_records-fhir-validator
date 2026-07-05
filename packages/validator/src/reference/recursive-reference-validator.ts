@@ -237,6 +237,10 @@ export class RecursiveReferenceValidator {
       : ref.reference;
 
     if (this.circularDetector.wouldCreateCircularReference(currentChain, refIdentifier)) {
+      if (isEnclosingBundleProvenanceTarget(resource, ref, refIdentifier, currentChain)) {
+        return true;
+      }
+
       logger.warn(`[RecursiveReferenceValidator] Circular reference detected: ${refIdentifier}`);
       result.circularReferences.push([...currentChain, refIdentifier]);
       return true;
@@ -368,6 +372,23 @@ export class RecursiveReferenceValidator {
 
     return safeConfig;
   }
+}
+
+function isEnclosingBundleProvenanceTarget(
+  resource: any,
+  ref: ReferenceToValidate,
+  refIdentifier: string,
+  currentChain: string[],
+): boolean {
+  if (resource?.resourceType !== 'Bundle') return false;
+  if (refIdentifier !== currentChain[currentChain.length - 1]) return false;
+
+  const match = /^entry\[(\d+)\]\.resource\.target\[\d+\]$/.exec(ref.fieldPath);
+  if (!match) return false;
+
+  const entryIndex = Number(match[1]);
+  const entryResource = resource.entry?.[entryIndex]?.resource;
+  return entryResource?.resourceType === 'Provenance';
 }
 
 // ============================================================================

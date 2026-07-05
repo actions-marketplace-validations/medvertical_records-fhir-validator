@@ -66,6 +66,24 @@ describe('applyAdvisorRules', () => {
     expect(result.overriddenCount).toBe(0);
   });
 
+  it('matches messages by regex when configured', () => {
+    const rules: AdvisorRule[] = [{
+      id: 'r1',
+      action: 'override-message',
+      match: { messageRegex: 'http://example\\.org/fhir/($|\\s)' },
+      transform: { message: 'Canonical URL has trailing slash' },
+      enabled: true,
+    }];
+
+    const result = applyAdvisorRules([
+      issue({ message: 'Unknown system http://example.org/fhir/ for code 123' }),
+      issue({ message: 'Code is bound to http://example.org/fhir/ValueSet/foo' }),
+    ], rules);
+
+    expect(result.resultIssues[0].message).toBe('Canonical URL has trailing slash');
+    expect(result.resultIssues[1].message).toBe('Code is bound to http://example.org/fhir/ValueSet/foo');
+  });
+
   it('applies multiple rules in order', () => {
     const rules: AdvisorRule[] = [
       {

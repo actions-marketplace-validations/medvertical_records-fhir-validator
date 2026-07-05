@@ -63,16 +63,17 @@ describe('ValueSetValidator CodeSystem display fallback', () => {
     );
   });
 
-  it('keeps code-unknown results without fallback suppression', async () => {
+  it('keeps SNOMED code-unknown results when an enabled preferred SNOMED server was used', async () => {
     const validator = new ValueSetValidator();
     validator.setResolutionConfig({
       strategy: 'server-first',
       serverUrl: 'https://primary.example/fhir',
       servers: [{
-        id: 'secondary',
-        url: 'https://secondary.example/fhir',
+        id: 'snomed',
+        url: 'https://primary.example/fhir',
         enabled: true,
         fhirVersions: ['R4'],
+        preferredSystems: ['http://snomed.info/sct'],
       }],
     });
 
@@ -93,6 +94,143 @@ describe('ValueSetValidator CodeSystem display fallback', () => {
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('code-unknown');
     expect(validateCodeInCodeSystem).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back from a generic server code-unknown result when another enabled server validates the code', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://generic.example/fhir',
+      servers: [
+        {
+          id: 'generic',
+          url: 'https://generic.example/fhir',
+          enabled: true,
+          fhirVersions: ['R4'],
+        },
+        {
+          id: 'tx-fhir-org-r4',
+          url: 'https://tx.fhir.org/r4',
+          enabled: true,
+          fhirVersions: ['R4'],
+        },
+      ],
+    });
+
+    const validateCodeInCodeSystem = vi
+      .fn()
+      .mockResolvedValueOnce({
+        valid: false,
+        reason: 'code-unknown',
+        message: "Unknown code '34117-2' in the CodeSystem 'http://loinc.org'",
+      })
+      .mockResolvedValueOnce({
+        valid: true,
+        display: 'History and physical note',
+      });
+
+    (validator as any).apiClient.validateCodeInCodeSystem = validateCodeInCodeSystem;
+
+    const result = await validator.validateCodeInCodeSystem(
+      '34117-2',
+      'http://loinc.org',
+      'History and physical note',
+    );
+
+    expect(result.valid).toBe(true);
+    expect(validateCodeInCodeSystem).toHaveBeenCalledTimes(2);
+    expect(validateCodeInCodeSystem).toHaveBeenNthCalledWith(
+      1,
+      '34117-2',
+      'http://loinc.org',
+      'History and physical note',
+      undefined,
+    );
+    expect(validateCodeInCodeSystem).toHaveBeenNthCalledWith(
+      2,
+      '34117-2',
+      'http://loinc.org',
+      undefined,
+      { url: 'https://tx.fhir.org/r4', auth: undefined },
+    );
+  });
+
+  it('keeps preferred-server code-unknown results even when fallback servers are configured', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://generic.example/fhir',
+      servers: [
+        {
+          id: 'loinc-primary',
+          url: 'https://loinc.example/fhir',
+          enabled: true,
+          fhirVersions: ['R4'],
+          preferredSystems: ['http://loinc.org'],
+        },
+        {
+          id: 'fallback',
+          url: 'https://fallback.example/fhir',
+          enabled: true,
+          fhirVersions: ['R4'],
+        },
+      ],
+    });
+
+    const validateCodeInCodeSystem = vi.fn().mockResolvedValueOnce({
+      valid: false,
+      reason: 'code-unknown',
+      message: "Unknown code 'BAD' in CodeSystem 'http://loinc.org'",
+    });
+
+    (validator as any).apiClient.validateCodeInCodeSystem = validateCodeInCodeSystem;
+
+    const result = await validator.validateCodeInCodeSystem(
+      'BAD',
+      'http://loinc.org',
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('code-unknown');
+    expect(validateCodeInCodeSystem).toHaveBeenCalledTimes(1);
+    expect(validateCodeInCodeSystem).toHaveBeenCalledWith(
+      'BAD',
+      'http://loinc.org',
+      undefined,
+      { url: 'https://loinc.example/fhir', auth: undefined },
+    );
+  });
+
+  it('treats SNOMED code-unknown as unverifiable when no preferred SNOMED server is configured', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://generic.example/fhir',
+      servers: [{
+        id: 'generic',
+        url: 'https://generic.example/fhir',
+        enabled: true,
+        fhirVersions: ['R4'],
+      }],
+    });
+
+    const validateCodeInCodeSystem = vi.fn().mockResolvedValue({
+      valid: false,
+      reason: 'code-unknown',
+      message: "Unknown code '237600007' in CodeSystem 'http://snomed.info/sct'",
+    });
+
+    (validator as any).apiClient.validateCodeInCodeSystem = validateCodeInCodeSystem;
+
+    const result = await validator.validateCodeInCodeSystem(
+      '237600007',
+      'http://snomed.info/sct',
+      'Porphyria',
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('system-unresolvable');
+    expect(result.message).toContain('Could not verify SNOMED CT code');
   });
 
   it('suppresses CodeSystem display mismatches that differ only in case or whitespace', async () => {

@@ -103,6 +103,13 @@ export class ReferenceTypeExtractor {
       return this.parseAbsoluteReference(trimmedRef);
     }
 
+    // Handle conditional references (ResourceType?search-params). These are
+    // relative URLs used primarily in transaction bundles and still carry a
+    // target resource type for type-constraint checks.
+    if (this.isConditionalReference(trimmedRef)) {
+      return this.parseConditionalReference(trimmedRef);
+    }
+
     // Handle relative references (ResourceType/id)
     return this.parseRelativeReference(trimmedRef);
   }
@@ -160,7 +167,7 @@ export class ReferenceTypeExtractor {
           resourceType: isValidResourceType ? resourceType : null,
           resourceId: resourceId || null,
           referenceType: 'absolute',
-          isValid: isValidResourceType && !!resourceId,
+          isValid: true,
           originalReference: reference,
           baseUrl: `${url.origin}/${pathParts.slice(0, resourceTypeIndex).join('/')}`.replace(/\/$/, ''),
           version,
@@ -184,7 +191,7 @@ export class ReferenceTypeExtractor {
           resourceType: isValidResourceType ? resourceType : null,
           resourceId,
           referenceType: 'absolute',
-          isValid: isValidResourceType && !!resourceId,
+          isValid: true,
           originalReference: reference,
           baseUrl: `${url.origin}/${pathParts.slice(0, -4).join('/')}`.replace(/\/$/, ''),
           version,
@@ -205,16 +212,43 @@ export class ReferenceTypeExtractor {
           resourceType: isValidResourceType ? resourceType : null,
           resourceId,
           referenceType: 'absolute',
-          isValid: isValidResourceType,
+          isValid: true,
           originalReference: reference,
           baseUrl: url.origin,
         };
       }
 
-      return this.createInvalidResult(reference, 'Unable to extract resource type from absolute URL');
+      return {
+        resourceType: null,
+        resourceId: null,
+        referenceType: 'absolute',
+        isValid: true,
+        originalReference: reference,
+        baseUrl: url.origin,
+        metadata: {
+          isHistorical: false,
+          hasVersion: false,
+        },
+      };
     } catch (error) {
       return this.createInvalidResult(reference, `Invalid URL format: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  }
+
+  private parseConditionalReference(reference: string): ReferenceParseResult {
+    const [resourceType] = reference.split('?', 1);
+    const isValidResourceType = this.isValidResourceType(resourceType);
+
+    return {
+      resourceType: isValidResourceType ? resourceType : null,
+      resourceId: null,
+      referenceType: isValidResourceType ? 'relative' : 'invalid',
+      isValid: isValidResourceType,
+      originalReference: reference,
+      metadata: {
+        isBundle: true,
+      },
+    };
   }
 
   /**
@@ -344,6 +378,10 @@ export class ReferenceTypeExtractor {
     const matchesPattern = CANONICAL_PATTERNS.some(pattern => pattern.test(baseRef));
     
     return matchesPattern;
+  }
+
+  private isConditionalReference(reference: string): boolean {
+    return /^[A-Z][a-zA-Z]+\?.+$/.test(reference);
   }
 
   /**

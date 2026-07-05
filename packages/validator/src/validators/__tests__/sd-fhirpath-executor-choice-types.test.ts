@@ -120,6 +120,113 @@ describe('SD FHIRPath issue provenance', () => {
   });
 });
 
+describe('SD FHIRPath StructureDefinition core constraints', () => {
+  const structureDefinitionMetaProfile = {
+    resourceType: 'StructureDefinition',
+    url: 'http://hl7.org/fhir/StructureDefinition/StructureDefinition',
+    name: 'StructureDefinition',
+    status: 'active',
+    kind: 'resource',
+    abstract: false,
+    type: 'StructureDefinition',
+    snapshot: {
+      element: [
+        {
+          id: 'StructureDefinition',
+          path: 'StructureDefinition',
+          constraint: [{
+            key: 'sdf-19',
+            severity: 'error',
+            human: 'FHIR Specification models only use FHIR defined types',
+            expression:
+              "url.startsWith('http://hl7.org/fhir/StructureDefinition') implies " +
+              "(differential.element.type.code.all(matches('^[a-zA-Z0-9]+$') or matches('^http:\\\\/\\\\/hl7\\\\.org\\\\/fhirpath\\\\/System\\\\.[A-Z][A-Za-z]+$')) " +
+              "and snapshot.element.type.code.all(matches('^[a-zA-Z0-9\\\\.]+$') or matches('^http:\\\\/\\\\/hl7\\\\.org\\\\/fhirpath\\\\/System\\\\.[A-Z][A-Za-z]+$')))",
+          }],
+        },
+      ],
+    },
+  } satisfies StructureDefinition;
+
+  it('does not fail sdf-19 when ElementDefinition.type has only a primitive sidecar', async () => {
+    const issues = await sdFHIRPathExecutor.execute({
+      resource: {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/base64Binary',
+        type: 'base64Binary',
+        differential: {
+          element: [{
+            id: 'base64Binary.value',
+            path: 'base64Binary.value',
+            type: [{
+              _code: {
+                extension: [{
+                  url: 'http://hl7.org/fhir/StructureDefinition/structuredefinition-json-type',
+                  valueString: 'string',
+                }],
+              },
+            }],
+          }],
+        },
+        snapshot: {
+          element: [
+            { id: 'base64Binary.id', path: 'base64Binary.id', type: [{ code: 'string' }] },
+            {
+              id: 'base64Binary.value',
+              path: 'base64Binary.value',
+              type: [{
+                _code: {
+                  extension: [{
+                    url: 'http://hl7.org/fhir/StructureDefinition/structuredefinition-json-type',
+                    valueString: 'string',
+                  }],
+                },
+              }],
+            },
+          ],
+        },
+      },
+      resourceType: 'StructureDefinition',
+      structureDef: structureDefinitionMetaProfile,
+      fhirVersion: 'R4',
+    });
+
+    expect(issues.filter(issue => issue.code === 'constraint-violation-sdf-19')).toHaveLength(0);
+  });
+
+  it('still fails sdf-19 for a real invalid FHIR specification type code', async () => {
+    const issues = await sdFHIRPathExecutor.execute({
+      resource: {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/bad-core-type',
+        type: 'bad-core-type',
+        differential: {
+          element: [{
+            id: 'bad-core-type.value',
+            path: 'bad-core-type.value',
+            type: [{ code: 'bad-type' }],
+          }],
+        },
+        snapshot: {
+          element: [{
+            id: 'bad-core-type.value',
+            path: 'bad-core-type.value',
+            type: [{ code: 'bad-type' }],
+          }],
+        },
+      },
+      resourceType: 'StructureDefinition',
+      structureDef: structureDefinitionMetaProfile,
+      fhirVersion: 'R4',
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'constraint-violation-sdf-19',
+      ruleId: 'sdf-19',
+    }));
+  });
+});
+
 describe('SD FHIRPath evaluation diagnostics', () => {
   it('evaluates htmlChecks through the narrative XHTML validator', async () => {
     const profile: StructureDefinition = {
@@ -326,7 +433,7 @@ describe('SD FHIRPath array element constraint handling', () => {
           type: [{ code: 'BackboneElement' }],
           constraint: [
             {
-              key: 'cmp-2',
+              key: 'example-cmp-2',
               severity: 'error',
               human: 'A section can only have an emptyReason if it is empty',
               expression: 'emptyReason.empty() or entry.empty()',
@@ -337,7 +444,7 @@ describe('SD FHIRPath array element constraint handling', () => {
     },
   } satisfies StructureDefinition;
 
-  it('evaluates cmp-2 per section item, not on the aggregate section array', async () => {
+  it('evaluates section emptyReason constraints per section item, not on the aggregate section array', async () => {
     const issues = await sdFHIRPathExecutor.execute({
       resource: {
         resourceType: 'Composition',
@@ -360,10 +467,10 @@ describe('SD FHIRPath array element constraint handling', () => {
       fhirVersion: 'R4',
     });
 
-    expect(issues.filter(issue => issue.code === 'constraint-violation-cmp-2')).toHaveLength(0);
+    expect(issues.filter(issue => issue.code === 'constraint-violation-example-cmp-2')).toHaveLength(0);
   });
 
-  it('still reports cmp-2 when the same section has entries and emptyReason', async () => {
+  it('still reports section emptyReason constraints when the same section has entries and emptyReason', async () => {
     const issues = await sdFHIRPathExecutor.execute({
       resource: {
         resourceType: 'Composition',
@@ -387,7 +494,7 @@ describe('SD FHIRPath array element constraint handling', () => {
     });
 
     expect(issues).toContainEqual(expect.objectContaining({
-      code: 'constraint-violation-cmp-2',
+      code: 'constraint-violation-example-cmp-2',
       path: 'Composition.section[0]',
     }));
   });

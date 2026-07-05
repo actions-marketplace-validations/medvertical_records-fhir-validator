@@ -6,6 +6,7 @@ import type { ValueSet } from '../valueset-types';
 
 const VALUE_SET_URL = 'http://example.org/fhir/ValueSet/filtered-required';
 const UNSUPPORTED_FILTER_VALUE_SET_URL = 'http://example.org/fhir/ValueSet/loinc-filtered';
+const PARTIAL_VALUE_SET_URL = 'http://example.org/fhir/ValueSet/partial-lab';
 const SNOMED = 'http://snomed.info/sct';
 const LOINC = 'http://loinc.org';
 
@@ -59,6 +60,22 @@ function unsupportedFilteredValueSet(): ValueSet {
   };
 }
 
+function partialValueSet(): ValueSet {
+  return {
+    resourceType: 'ValueSet',
+    url: PARTIAL_VALUE_SET_URL,
+    status: 'active',
+    compose: {
+      include: [
+        {
+          system: LOINC,
+          concept: [{ code: 'explicit-code' }],
+        },
+      ],
+    },
+  };
+}
+
 describe('ValueSet filtered include server delegation', () => {
   let tempDir: string;
   let previousCachePath: string | undefined;
@@ -70,6 +87,7 @@ describe('ValueSet filtered include server delegation', () => {
     process.env.FHIR_PACKAGE_CACHE_PATH = tempDir;
     await writePackage(tempDir, filteredValueSet());
     await writePackage(tempDir, unsupportedFilteredValueSet());
+    await writePackage(tempDir, partialValueSet());
   });
 
   afterEach(async () => {
@@ -225,6 +243,46 @@ describe('ValueSet filtered include server delegation', () => {
     await expect(
       validator.isCodeValidForBinding('449411000124106', SNOMED, VALUE_SET_URL, 'extensible')
     ).resolves.toBe(true);
+  });
+
+  it('preserves default validate-code delegation when an update has undefined serverDelegation', async () => {
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        resourceType: 'Parameters',
+        parameter: [{ name: 'result', valueBoolean: true }],
+      },
+    });
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: { ...actual.default, get },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { ValueSetValidator } = await import('../valueset-validator');
+    const validator = new ValueSetValidator();
+    validator.clearCache();
+    validator.setResolutionConfig({
+      strategy: 'local-first',
+      serverUrl: 'https://tx.example/fhir',
+      serverDelegation: undefined,
+    } as any);
+
+    await expect(
+      validator.isCodeValidForBinding('787-2', LOINC, PARTIAL_VALUE_SET_URL, 'extensible')
+    ).resolves.toBe(true);
+    expect(get).toHaveBeenCalledWith(
+      'https://tx.example/fhir/ValueSet/$validate-code',
+      expect.objectContaining({
+        params: expect.objectContaining({
+          url: PARTIAL_VALUE_SET_URL,
+          system: LOINC,
+          code: '787-2',
+        }),
+      })
+    );
   });
 
   it('keeps required SNOMED national-extension bindings strict in filtered ValueSets', async () => {

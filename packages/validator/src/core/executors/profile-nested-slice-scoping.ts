@@ -1,3 +1,4 @@
+import { getPrimitiveSidecar, resolveFhirSegmentValue } from '../fhir-primitive-sidecar';
 import type { StructureDefinition } from '../structure-definition-types';
 
 type ElementDef = { id?: string; path?: string };
@@ -89,11 +90,12 @@ function scopeItemsToSlice(
   const expected = discriminator.type === 'pattern'
     ? extractPattern(constraintElement) ?? extractFixed(constraintElement)
     : extractFixed(constraintElement) ?? extractPattern(constraintElement);
-  if (expected === undefined) return null;
+  const effectiveExpected = expected ?? inferExtensionUrlFromSliceType(parentSlice, discriminatorPath);
+  if (effectiveExpected === undefined) return null;
 
   return parentItems.filter(item => valueContainsPattern(
     getPathValue(item, discriminatorPath),
-    expected,
+    effectiveExpected,
   ));
 }
 
@@ -111,7 +113,7 @@ function resolveRelativeParentItems(
   for (const part of relativeParentParts) {
     const nextItems: any[] = [];
     for (const item of currentItems) {
-      const next = getPathValue(item, part);
+      const next = getTraversalSegmentValue(item, part, true);
       if (Array.isArray(next)) {
         nextItems.push(...next.filter(value => value !== undefined && value !== null));
       } else if (next !== undefined && next !== null) {
@@ -179,8 +181,44 @@ function getPathValue(value: any, path: string): any {
   if (!path || path === '$this') return value;
   return path.split('.').reduce((current, segment) => {
     if (current == null) return undefined;
-    return current[segment];
+    return resolveFhirSegmentValue(current, segment);
   }, value);
+}
+
+function getTraversalSegmentValue(value: any, segment: string, hasRemainingPath: boolean): any {
+  if (value == null) return undefined;
+  if (
+    hasRemainingPath &&
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    isPrimitiveValueOrPrimitiveArray(value[segment])
+  ) {
+    const sidecar = getPrimitiveSidecar(value, segment);
+    if (sidecar !== undefined) return sidecar;
+  }
+  return resolveFhirSegmentValue(value, segment);
+}
+
+function inferExtensionUrlFromSliceType(parentSlice: any, discriminatorPath: string): string | undefined {
+  if (discriminatorPath !== 'url') return undefined;
+  const extensionType = parentSlice.type?.find((typeSpec: any) =>
+    typeSpec?.code === 'Extension' &&
+    Array.isArray(typeSpec.profile) &&
+    typeSpec.profile.length > 0,
+  );
+  return extensionType?.profile?.[0]?.split('|')[0];
+}
+
+function isPrimitiveValue(value: unknown): boolean {
+  return value === null ||
+    ['string', 'number', 'boolean'].includes(typeof value);
+}
+
+function isPrimitiveValueOrPrimitiveArray(value: unknown): boolean {
+  return Array.isArray(value)
+    ? value.every(isPrimitiveValue)
+    : isPrimitiveValue(value);
 }
 
 function valueContainsPattern(actual: any, expected: any): boolean {

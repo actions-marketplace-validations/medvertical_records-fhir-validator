@@ -303,6 +303,16 @@ export class ReferenceTypeConstraintValidator {
     // Check if the extracted resource type matches allowed types
     const actualType = parseResult.resourceType;
     if (!actualType) {
+      if (parseResult.referenceType === 'absolute') {
+        return {
+          isValid: true,
+          message: `Absolute reference target type cannot be inferred for ${resourceType}.${fieldPath}`,
+          severity: 'info',
+          code: 'absolute-reference-type-unknown',
+          parseResult,
+        };
+      }
+
       return {
         isValid: false,
         message: `Could not extract resource type from reference: ${reference}`,
@@ -434,5 +444,4 @@ export function getReferenceTypeConstraintValidator(): ReferenceTypeConstraintVa
 export function resetReferenceTypeConstraintValidator(): void {
   validatorInstance = null;
 }
-
 

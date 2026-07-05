@@ -72,6 +72,9 @@ export async function validateRecordsBatch(
         options.aspects,
         options.settings,
         options.organizationId,
+        options.shouldStop,
+        options.onEmbeddedResourceValidated,
+        options.referenceResolver,
       ),
     });
   }
