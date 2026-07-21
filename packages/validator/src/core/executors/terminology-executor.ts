@@ -51,6 +51,7 @@ export interface TerminologyValidationContext {
 
 export class TerminologyExecutor {
   private valuesetValidator: ValueSetValidator;
+  private terminologyElements = new WeakMap<StructureDefinition, ElementDefinition[]>();
 
   constructor() {
     this.valuesetValidator = new ValueSetValidator();
@@ -94,7 +95,7 @@ export class TerminologyExecutor {
       const fhirVersion = context.fhirVersion ?? 'R4';
 
       if (structureDef.snapshot?.element) {
-        for (const elementDef of expandContentReferenceElements(structureDef.snapshot.element)) {
+        for (const elementDef of this.getTerminologyElements(structureDef)) {
           issues.push(...await this.validateElementDefinition({
             resource,
             elementDef,
@@ -122,6 +123,22 @@ export class TerminologyExecutor {
         customMessage: `Terminology validation failed: ${error instanceof Error ? error.message : String(error)}`,
       })];
     }
+  }
+
+  private getTerminologyElements(structureDef: StructureDefinition): ElementDefinition[] {
+    const cached = this.terminologyElements.get(structureDef);
+    if (cached) return cached;
+
+    const relevant = expandContentReferenceElements(structureDef.snapshot?.element ?? [])
+      .filter(elementDef => {
+        if (elementDef.binding) return true;
+        const elementTypes = elementDef.type?.map(type => type.code) ?? [];
+        return elementTypes.includes('CodeableConcept') ||
+          elementTypes.includes('Coding') ||
+          elementTypes.some(type => UCUM_BEARING_TYPES.has(type));
+      });
+    this.terminologyElements.set(structureDef, relevant);
+    return relevant;
   }
 
   private async validateElementDefinition(params: {

@@ -50,6 +50,14 @@ describe('PackageRegistryClient package detection', () => {
     ).resolves.toBe('hl7.fhir.uv.ips');
   });
 
+  it('rejects an unsafe package id derived from an untrusted profile URL', async () => {
+    const client = new PackageRegistryClient();
+
+    await expect(
+      client.detectPackageForProfile('http://hl7.org/fhir/uv/private%0Aforged/StructureDefinition/example'),
+    ).resolves.toBeNull();
+  });
+
   it('resolves short canonical package versions to published SemVer package versions', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       name: 'hl7.fhir.uv.sdc',
@@ -171,5 +179,51 @@ describe('PackageRegistryClient manifest cache', () => {
     await client.fetchPackageManifest('package-b');
 
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('PackageRegistryClient download boundary', () => {
+  it('rejects untrusted tarball origins before issuing the tarball request', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      name: 'hl7.fhir.test',
+      'dist-tags': { latest: '1.0.0' },
+      versions: {
+        '1.0.0': {
+          name: 'hl7.fhir.test',
+          version: '1.0.0',
+          dist: { tarball: 'https://127.0.0.1/private.tgz' },
+        },
+      },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PackageRegistryClient();
+
+    await expect(client.downloadPackageTarball('hl7.fhir.test', '1.0.0')).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables redirects and bounds streamed tarball responses', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(init?.redirect).toBe('error');
+      if (url === 'https://packages.fhir.org/hl7.fhir.test') {
+        return new Response(JSON.stringify({
+          name: 'hl7.fhir.test',
+          'dist-tags': { latest: '1.0.0' },
+          versions: {
+            '1.0.0': {
+              name: 'hl7.fhir.test',
+              version: '1.0.0',
+              dist: { tarball: 'https://packages.fhir.org/hl7.fhir.test/1.0.0' },
+            },
+          },
+        }), { status: 200 });
+      }
+      return new Response(new Uint8Array([1, 2, 3, 4, 5]), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PackageRegistryClient();
+
+    await expect(client.downloadPackageTarball('hl7.fhir.test', '1.0.0', 4)).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

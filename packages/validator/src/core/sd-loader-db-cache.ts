@@ -13,7 +13,7 @@
 
 import type { StructureDefinition } from './structure-definition-types';
 import { logger } from '../logger';
-import { getProfileSource } from '../persistence';
+import { getProfileSource, type ProfileSourceContext } from '../persistence';
 
 function matchesFhirVersion(sd: StructureDefinition, fhirVersion: 'R4' | 'R5' | 'R6'): boolean {
   const sdFhirVersion = (sd as { fhirVersion?: string }).fhirVersion;
@@ -45,10 +45,14 @@ function matchesExplicitCanonicalVersion(sd: StructureDefinition, url: string): 
 export async function checkDatabaseCache(
   url: string,
   dbCacheNotFound: Set<string>,
-  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
+  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+  context?: ProfileSourceContext,
 ): Promise<StructureDefinition | null> {
   // Create a version-specific cache key for negative cache
-  const cacheKey = `${url}:${fhirVersion}`;
+  const scopeSuffix = context?.organizationId !== undefined
+    ? `:org:${context.organizationId}:server:${context.serverId ?? 'any'}`
+    : '';
+  const cacheKey = `${url}:${fhirVersion}${scopeSuffix}`;
 
   // Skip lookup if we already know it's not there (negative cache)
   if (dbCacheNotFound.has(cacheKey)) {
@@ -63,7 +67,7 @@ export async function checkDatabaseCache(
 
   logger.debug(`[SDLoader] Checking ProfileSource for: ${url} (${fhirVersion})`);
   try {
-    const sd = await source.findByUrl(url, fhirVersion);
+    const sd = await source.findByUrl(url, fhirVersion, context);
     if (sd) {
       if (!matchesFhirVersion(sd, fhirVersion)) {
         logger.debug(`[SDLoader] Found in ProfileSource but wrong FHIR version for ${url}`);

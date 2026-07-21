@@ -403,10 +403,10 @@ headline support scope unless called out by a dedicated conformance lane.
 ## Conformance
 
 Current HL7 `FHIR/fhir-test-cases` status: 100.0% of executable comparison
-tests passing. The latest local report was generated on 2026-06-30 from pinned
-upstream commit `431b37cd06cac878bc23b4a8b457c2f2397fdcdc`. The local artifact
+tests passing. The latest local report was generated on 2026-07-21 from pinned
+upstream commit `8923095fc5e3750025f7dd71988c9e89083b1487`. The local artifact
 used for this update was
-`conformance-results/report-2026-06-30.json`.
+`conformance-results/report-2026-07-21.json`.
 
 The upstream manifest contains more than 900 entries. Records does not claim
 that all manifest entries are executable in the current TypeScript validator
@@ -415,12 +415,13 @@ can be compared against the Java validator's expected `OperationOutcome`.
 
 | Stage | Count | Meaning |
 |---|---:|---|
-| Upstream manifest entries | 974 | All entries in `FHIR/fhir-test-cases/validator/manifest.json` at commit `431b37c`. |
-| Pre-filtered out | 438 | Not executable by this harness: the current comparison runner measures JSON FHIR resource validation against Java `OperationOutcome` baselines, not XML, non-resource formats, disabled upstream cases, unsupported modules, logical models, or cases without a Java baseline. |
-| Candidate comparison set | 536 | R4/R5/R6 or unversioned JSON-oriented entries with a declared Java baseline. |
-| Runtime skipped | 40 | Candidate entries kept outside the headline JSON score because their Java baseline output is not available locally. |
-| Executed and compared | 496 | Records result was normalized to `OperationOutcome` and diffed against Java. |
-| Passed | 496 | All executable comparisons passed. |
+| Upstream manifest entries | 969 | All entries in `FHIR/fhir-test-cases/validator/manifest.json` at commit `8923095`. |
+| Pre-filtered out | 433 | Outside this lane before execution, including one entry where the upstream manifest does not declare a `java` baseline. |
+| Candidate comparison set | 536 | R4/R5/R6 or unversioned JSON-oriented entries where the upstream manifest declares a `java` baseline. |
+| Runtime skipped | 0 | Every candidate's declared Java `OperationOutcome` artifact resolves locally. |
+| Executed and compared | 536 | Records result was normalized to `OperationOutcome` and diffed against Java. |
+| Passed | 536 | Comparisons matching the normalized Java result. |
+| Failed | 0 | No executable comparison differs from the normalized Java result. |
 
 Reproduce the headline lane locally with:
 
@@ -432,29 +433,22 @@ Pre-filter exclusions:
 
 | Reason | Count |
 |---|---:|
-| XML resources (Records validator is JSON-only) | 296 |
+| XML resources (Records validator is JSON-only) | 299 |
 | Non-R4/R5/R6 FHIR versions (`3.0`, `3.0.1`, `1.4`) | 47 |
-| Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 74 |
+| Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 68 |
 | Disabled by upstream manifest (`use-test: false`) | 17 |
-| No Java baseline declared in the manifest | 3 |
+| No `java` baseline declared in the upstream manifest | 1 |
 | Logical model test | 1 |
 
-Runtime skips inside the 536 candidate set for the headline lane:
+The only undeclared-baseline entry is `(default)/zzz`, an upstream close-up
+helper rather than a normal comparison case. The upstream manifest now declares
+and resolves Java outcomes for the full 536-case candidate set, so the former
+baseline-resolution workarounds are no longer used. All executable comparisons
+now match the normalized Java result.
 
-| Reason | Count |
-|---|---:|
-| Java baseline output not found | 40 |
-
-The Java baseline backlog is measured separately with the explicit
-`--include-baseline-backlog` discovery flag. The 2026-05-03 discovery run
-resolves known upstream Java baseline path drift, includes explicit FML/NDJSON
-parser-baseline fixtures, synthesizes the missing empty Java outcome for
-`cw-slice-compatible`, admits JSON5 and DSIG JSON harness cases, and includes
-two hidden Java-outcome fixtures. It runs the launch-discovery set:
-547/547 passing, 0 skips, 0 failures. The report's `passRate` is 100.0%;
-`similarityScore` may read 99.7% because it averages semantic diff similarity
-for six approximate-but-passing Java parity cases. The backward-compatible
-`overallScore` field remains an alias for `similarityScore`.
+The historical 2026-05-03 `--include-baseline-backlog` discovery artifact is
+retained for provenance, but it was measured against an older upstream manifest
+and is not the current headline result.
 
 Excluded tests are tracked separately so the headline score does not imply XML,
 HL7 v2, CDA, CDS Hooks, DSIG, JSON5, SHC, or logical-model support.
@@ -479,7 +473,7 @@ product scope with actual JSON resource validation correctness.
 
 For that reason, the headline number should be read as:
 
-> Records matches the Java validator on 496/496 currently executable FHIR JSON
+> Records matches the Java validator on all 536 currently in-scope FHIR JSON
 > resource validation comparisons.
 
 It should not be read as:
@@ -494,7 +488,7 @@ constraints measured by `quality:spec-coverage`.
 
 MII conformance is measured in a separate lane from the HL7
 `FHIR/fhir-test-cases` score. The current scoped MII-2026 reference run was
-generated on 2026-07-01 against the official MII FHIR Validator container
+generated on 2026-07-21 against the official MII FHIR Validator container
 `mii-fhir-validator:0.0.1-alpha.7` at `http://localhost:8081`. It matches the
 reference validator on 231/231 measured resources from the refreshed MII 2026
 corpus under the `mii-2026-reference` profile scope and `mii-local-blaze`
@@ -502,7 +496,7 @@ terminology mode, with 22 classified skips: 12 corpus/profile-drift skips and
 10 reference-terminology-incomplete skips. The run prewarmed 128/128
 reference-scope profiles before executing the cases. The
 source-repository report is
-`conformance-results/mii-triangulation-2026-07-01.json`.
+`conformance-results/mii-triangulation-2026-07-21.json`.
 
 This is a scoped parity claim for the measured package-example corpus. It is
 not an MII certification claim and does not imply full site-level MII

@@ -1,33 +1,3 @@
-/**
- * Cross-Resource Anomaly Detector
- * --------------------------------
- *
- * Phase C differentiator: analyses a BATCH of resources after per-
- * resource validation and surfaces cohort-level data-quality anomalies
- * that no single-resource validator can detect.
- *
- * HAPI, Firely, and every other FHIR validator operate per-resource.
- * Records sees the batch. This module is why.
- *
- * Anomaly types (Phase C.1):
- *
- *   1. **Missing-field anomaly** — a field that is technically optional
- *      but present in ≥N% of resources of the same type. Resources
- *      where it's absent are flagged as outliers. Threshold is
- *      configurable (default 80%).
- *
- *   2. **Duplicate detection** — resources of the same type with
- *      identical (code + effective date + value) tuples for the same
- *      subject. Probable import duplicates.
- *
- *   3. **Orphan reference detection** — references inside the batch
- *      that point at resources not present in the batch. Useful for
- *      Bundle and bulk-import scenarios.
- *
- * Integration: called from `validator-engine.ts` `batchValidate()`
- * after all per-resource validation is complete. Receives the full
- * resource array and returns `AnomalyFinding[]`.
- */
 import {
   detectDuplicates,
   detectMissingFields,
@@ -39,15 +9,7 @@ import {
   type AnomalyFinding,
 } from './anomaly-types';
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export type { AnomalyDetectorConfig, AnomalyFinding, AnomalyType } from './anomaly-types';
-
-// ============================================================================
-// Anomaly Detector
-// ============================================================================
 
 export class AnomalyDetector {
   private config: AnomalyDetectorConfig;
@@ -56,12 +18,6 @@ export class AnomalyDetector {
     this.config = { ...DEFAULT_ANOMALY_DETECTOR_CONFIG, ...config };
   }
 
-  /**
-   * Run all enabled detectors on a batch of resources.
-   *
-   * @param resources — the full batch (same array passed to batchValidate)
-   * @returns anomaly findings, sorted by confidence descending
-   */
   detect(resources: any[]): AnomalyFinding[] {
     if (!resources || resources.length < this.config.minBatchSize) {
       return [];
@@ -88,26 +44,11 @@ export class AnomalyDetector {
       findings.push(...this.detectCodingInconsistencies(resources));
     }
 
-    // Sort by confidence descending, then by outlier count descending
     findings.sort((a, b) => b.confidence - a.confidence || (b.outlierCount ?? 0) - (a.outlierCount ?? 0));
 
     return findings;
   }
 
-  // --------------------------------------------------------------------------
-  // Detector 4: Value-range outlier detection
-  // --------------------------------------------------------------------------
-
-  /**
-   * Known clinical plausibility ranges for common LOINC-coded
-   * Observation quantities. Values outside these ranges are almost
-   * certainly data-entry errors or unit-conversion bugs.
-   *
-   * Each entry: [LOINC code, display name, min, max, expected UCUM unit].
-   * Ranges are deliberately wide ("physiologically possible") not
-   * narrow ("normal lab range") to avoid false positives on unusual
-   * but real clinical values.
-   */
   private static readonly PLAUSIBILITY_RANGES: Array<{
     loincCode: string;
     display: string;
@@ -148,11 +89,6 @@ export class AnomalyDetector {
     return AnomalyDetector.plausibilityMap;
   }
 
-  /**
-   * Check Observation Quantities against known clinical plausibility
-   * ranges. A systolic BP of 500 mmHg or a body weight of 9999 kg is
-   * almost certainly a bug, even though it's structurally valid FHIR.
-   */
   private detectValueRangeOutliers(resources: any[]): AnomalyFinding[] {
     const findings: AnomalyFinding[] = [];
     const rangeMap = this.getPlausibilityMap();
@@ -161,10 +97,8 @@ export class AnomalyDetector {
       const r = resources[i];
       if (r?.resourceType !== 'Observation') continue;
 
-      // Check top-level value
       this.checkQuantityRange(r, r.valueQuantity, `Observation.valueQuantity`, i, rangeMap, findings);
 
-      // Check components (blood pressure panel, etc.)
       if (Array.isArray(r.component)) {
         for (let c = 0; c < r.component.length; c++) {
           const comp = r.component[c];
@@ -186,15 +120,10 @@ export class AnomalyDetector {
   ): void {
     if (!quantity || typeof quantity.value !== 'number') return;
 
-    // Find the LOINC code — could be on the observation or in the
-    // component that contains this quantity.
     const codings = [
       ...(observation.code?.coding || []),
-      // Component-level code is in the parent component (caller
-      // already navigated there).
     ];
 
-    // Also check the component code if the path contains 'component'
     if (path.includes('component')) {
       const compIdx = path.match(/component\[(\d+)\]/)?.[1];
       if (compIdx !== undefined) {
@@ -261,22 +190,10 @@ export class AnomalyDetector {
     return unit?.trim().toLowerCase();
   }
 
-  // --------------------------------------------------------------------------
-  // Detector 5: Temporal gap detection
-  // --------------------------------------------------------------------------
-
-  /**
-   * For each subject (patient), collect all dated events (Encounters,
-   * Observations, Conditions, Procedures) and find gaps exceeding the
-   * configured threshold. A patient with encounters on Jan 1 and Dec 31
-   * but nothing in between has an 11-month care gap that likely
-   * indicates missing imports rather than a real treatment pause.
-   */
   private detectTemporalGaps(resources: any[]): AnomalyFinding[] {
     const findings: AnomalyFinding[] = [];
     const gapMs = this.config.temporalGapDays * 24 * 60 * 60 * 1000;
 
-    // Collect comparable events per subject, resource type, and clinical code.
     const subjectTimelines = new Map<string, Array<{ date: Date; index: number; rt: string; id: string; subject: string }>>();
 
     for (let i = 0; i < resources.length; i++) {
@@ -314,7 +231,6 @@ export class AnomalyDetector {
       subjectTimelines.get(timelineKey)!.push({ date, index: i, rt: r.resourceType, id: r.id || `[${i}]`, subject });
     }
 
-    // Find gaps per subject
     for (const events of subjectTimelines.values()) {
       if (events.length < 2) continue;
       events.sort((a, b) => a.date.getTime() - b.date.getTime());
@@ -357,22 +273,9 @@ export class AnomalyDetector {
     return resource.code?.text;
   }
 
-  // --------------------------------------------------------------------------
-  // Detector 6: Coding consistency
-  // --------------------------------------------------------------------------
-
-  /**
-   * For Conditions in the batch: group by normalized code display. If
-   * the same clinical concept is coded differently (different systems
-   * or different codes but same display text), flag it as an
-   * inconsistency. This catches "Diabetes mellitus" coded as SNOMED
-   * 73211009 in some records and ICD-10 E11.9 in others within the
-   * same batch — a sign of inconsistent coding practice.
-   */
   private detectCodingInconsistencies(resources: any[]): AnomalyFinding[] {
     const findings: AnomalyFinding[] = [];
 
-    // Group conditions by normalized display text
     const byDisplay = new Map<string, Array<{ index: number; id: string; system: string; code: string }>>();
 
     for (let i = 0; i < resources.length; i++) {
@@ -382,7 +285,7 @@ export class AnomalyDetector {
       for (const coding of codings) {
         if (!coding.display) continue;
         const normDisplay = coding.display.toLowerCase().trim();
-        if (normDisplay.length < 3) continue; // Skip very short displays
+        if (normDisplay.length < 3) continue;
         if (!byDisplay.has(normDisplay)) byDisplay.set(normDisplay, []);
         byDisplay.get(normDisplay)!.push({
           index: i,
@@ -393,7 +296,6 @@ export class AnomalyDetector {
       }
     }
 
-    // Find displays with multiple different system+code pairs
     for (const [display, entries] of byDisplay) {
       const uniqueCodes = new Set(entries.map(e => `${e.system}|${e.code}`));
       if (uniqueCodes.size < 2) continue;

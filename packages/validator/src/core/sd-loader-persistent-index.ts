@@ -5,29 +5,34 @@
  * startups don't need to rescan all packages (saves 2-4 seconds).
  * 
  * The index is invalidated when:
- * - Any package directory timestamp changes
+ * - Any package manifest changes
  * - The index file is missing
  * - The index file version doesn't match
+ *
+ * Package directory mtimes are deliberately not used here. Container image
+ * COPY operations may rewrite them even though the immutable package content
+ * is unchanged, which would make a build-time index unusable at runtime.
  */
 
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { logger } from '../logger';
 
-const INDEX_VERSION = 4; // Bumped: v3 validated deduped scans against only scanned packages
+const INDEX_VERSION = 5; // Bumped: v5 uses stable package-manifest fingerprints
 const INDEX_FILENAME = 'sdloader-profile-index.json';
 
 interface PackageIndexEntry {
     name: string;
     profileCount: number;
-    /** Modification time of the package directory */
-    mtime: number;
+    /** SHA-256 of package/package.json. */
+    manifestHash: string | null;
 }
 
 interface SourcePackageIndexEntry {
     name: string;
-    /** Modification time of the package directory */
-    mtime: number;
+    /** SHA-256 of package/package.json. */
+    manifestHash: string | null;
 }
 
 interface ProfileIndex {
@@ -56,22 +61,27 @@ function getIndexPath(sourcePath: string): string {
 }
 
 /**
- * Get modification times for all package directories
+ * Get stable identities for all package directories.
+ *
+ * FHIR packages are immutable and versioned by their package manifest. A
+ * missing manifest is retained as a null identity so that the index is never
+ * trusted for malformed or incomplete package directories.
  */
-async function getPackageModTimes(sourcePath: string): Promise<Map<string, number>> {
-    const modTimes = new Map<string, number>();
+async function getPackageManifestHashes(sourcePath: string): Promise<Map<string, string | null>> {
+    const manifestHashes = new Map<string, string | null>();
 
     try {
         const entries = await fs.readdir(sourcePath, { withFileTypes: true });
 
         for (const entry of entries) {
             if (entry.isDirectory() && entry.name !== 'node_modules') {
-                const packagePath = path.join(sourcePath, entry.name);
+                const manifestPath = path.join(sourcePath, entry.name, 'package', 'package.json');
                 try {
-                    const stat = await fs.stat(packagePath);
-                    modTimes.set(entry.name, Math.floor(stat.mtimeMs));
+                    const manifest = await fs.readFile(manifestPath);
+                    const manifestHash = createHash('sha256').update(manifest).digest('hex');
+                    manifestHashes.set(entry.name, manifestHash);
                 } catch {
-                    // Skip if we can't stat the directory
+                    manifestHashes.set(entry.name, null);
                 }
             }
         }
@@ -79,7 +89,7 @@ async function getPackageModTimes(sourcePath: string): Promise<Map<string, numbe
         logger.debug(`[SDLoaderIndex] Could not read source path: ${sourcePath}`);
     }
 
-    return modTimes;
+    return manifestHashes;
 }
 
 /**
@@ -97,33 +107,34 @@ async function isIndexValid(index: ProfileIndex, sourcePath: string, options: Pe
         return false;
     }
 
-    // Get current package modification times
-    const currentModTimes = await getPackageModTimes(sourcePath);
+    const currentManifestHashes = await getPackageManifestHashes(sourcePath);
 
-    // Build a map of indexed package names -> mtime
     const indexedSourcePackages = index.sourcePackages ?? index.packages;
-    const indexedModTimes = new Map(
-        indexedSourcePackages.map(p => [p.name, p.mtime])
+    const indexedManifestHashes = new Map(
+        indexedSourcePackages.map(p => [p.name, p.manifestHash])
     );
 
     // Check if any packages were added
-    for (const [name] of currentModTimes) {
-        if (!indexedModTimes.has(name)) {
+    for (const [name] of currentManifestHashes) {
+        if (!indexedManifestHashes.has(name)) {
             logger.debug(`[SDLoaderIndex] New package detected: ${name}, will rescan`);
             return false;
         }
     }
 
     // Check if any packages were removed or modified
-    for (const [name, indexedMtime] of indexedModTimes) {
-        const currentMtime = currentModTimes.get(name);
-        if (currentMtime === undefined) {
+    for (const [name, indexedManifestHash] of indexedManifestHashes) {
+        const currentManifestHash = currentManifestHashes.get(name);
+        if (currentManifestHash === undefined) {
             logger.debug(`[SDLoaderIndex] Package removed: ${name}, will rescan`);
             return false;
         }
-        // Allow 1 second tolerance for mtime comparison
-        if (Math.abs(currentMtime - indexedMtime) > 1000) {
-            logger.debug(`[SDLoaderIndex] Package modified: ${name} (${indexedMtime} -> ${currentMtime}), will rescan`);
+        if (currentManifestHash === null || indexedManifestHash === null) {
+            logger.debug(`[SDLoaderIndex] Package manifest missing: ${name}, will rescan`);
+            return false;
+        }
+        if (currentManifestHash !== indexedManifestHash) {
+            logger.debug(`[SDLoaderIndex] Package manifest changed: ${name}, will rescan`);
             return false;
         }
     }
@@ -177,17 +188,16 @@ export async function saveToPersistentIndex(
     const indexPath = getIndexPath(sourcePath);
 
     try {
-        // Get modification times for all packages
-        const modTimes = await getPackageModTimes(sourcePath);
+        const manifestHashes = await getPackageManifestHashes(sourcePath);
 
         // Build package entries
         const packages: PackageIndexEntry[] = packageDetails.map(p => ({
             name: p.name,
             profileCount: p.profileCount,
-            mtime: modTimes.get(p.name) || 0
+            manifestHash: manifestHashes.get(p.name) ?? null
         }));
-        const sourcePackages: SourcePackageIndexEntry[] = Array.from(modTimes.entries())
-            .map(([name, mtime]) => ({ name, mtime }))
+        const sourcePackages: SourcePackageIndexEntry[] = Array.from(manifestHashes.entries())
+            .map(([name, manifestHash]) => ({ name, manifestHash }))
             .sort((a, b) => a.name.localeCompare(b.name));
 
         const index: ProfileIndex = {

@@ -37,6 +37,8 @@ interface RecordsBatchValidationContext {
     fhirVersion: 'R4' | 'R5' | 'R6',
     settings?: ValidationSettings,
     fhirClient?: FhirClientLike,
+    organizationId?: number,
+    serverId?: number,
   ) => Promise<ValidationIssue[]>;
 }
 
@@ -75,6 +77,7 @@ export async function validateRecordsBatch(
         options.shouldStop,
         options.onEmbeddedResourceValidated,
         options.referenceResolver,
+        options.serverId,
       ),
     });
   }
@@ -89,6 +92,8 @@ export async function validateRecordsBatch(
       fhirVersion,
       options.settings,
       options.fhirClient,
+      options.organizationId,
+      options.serverId,
     ),
   });
 }

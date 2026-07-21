@@ -185,6 +185,8 @@ describe('multi-aspect-validate-callback — Bundle entry resources', () => {
       'R4',
       undefined,
       undefined,
+      expect.objectContaining({ fhirVersion: 'R4' }),
+      expect.objectContaining({ validationStrictness: 'standard' }),
     );
   });
 

@@ -1,6 +1,6 @@
 # FHIR Conformance Scope Roadmap
 
-**Status:** 2026-05-09
+**Status:** 2026-07-21
 **Scope owner:** validator engine / HL7 `FHIR/fhir-test-cases` lane
 **Repository boundary:** public `medvertical/records-fhir-validator` package scope
 **Current headline:** 100.0% on executable JSON resource comparison cases
@@ -25,115 +25,67 @@ standard represented in `FHIR/fhir-test-cases`.
 
 | Stage | Count | Meaning |
 |---|---:|---|
-| Upstream manifest entries | 969 | All entries in `FHIR/fhir-test-cases/validator/manifest.json` at commit `e543043a`. |
-| Pre-filtered out | 438 | Not executable by the current JSON resource comparison harness. |
-| Candidate comparison set | 531 | R4/R5 or unversioned entries with a declared Java baseline. |
-| Runtime skipped | 35 | Candidate entries kept outside the headline JSON score; all are measured in the explicit discovery lane. |
-| Executed and compared | 496 | Records output was normalized to `OperationOutcome` and diffed against Java. |
-| Passed | 496 | All executable comparisons passed. |
+| Upstream manifest entries | 969 | All entries in `FHIR/fhir-test-cases/validator/manifest.json` at commit `8923095`. |
+| Pre-filtered out | 433 | Not executable by the current JSON resource comparison harness. |
+| Candidate comparison set | 536 | R4/R5/R6 or unversioned entries where the upstream manifest declares a `java` baseline. |
+| Runtime skipped | 0 | Every candidate's declared Java `OperationOutcome` resolves locally. |
+| Executed and compared | 536 | Records output was normalized to `OperationOutcome` and diffed against Java. |
+| Passed | 536 | Comparisons matching the normalized Java result. |
+| Failed | 0 | No executable comparison differs from the normalized Java result. |
 
-The explicit launch-discovery lane is broader than the headline JSON claim:
-it admits the former runtime backlog plus discovery-only JSON5, DSIG JSON,
-parser-baseline, and hidden-Java-outcome fixtures. That lane now executes
-547/547 comparisons with 0 skips and 0 failures.
+The previous 2026-05-03 launch-discovery lane is retained as historical
+evidence. It was measured against an older manifest and must not be combined
+with the current headline result.
 
-The 100.0% score applies only to the 496 executed comparison cases. It should
-be described as:
+The current score should be described as:
 
-> Records matches the Java validator on 496/496 currently executable FHIR JSON
+> Records matches the Java validator on all 536 currently in-scope FHIR JSON
 > resource validation comparisons.
 
 It should not be described as support for every item in the upstream manifest.
 
-## Why 438 Entries Are Pre-Filtered
+## Why 433 Entries Are Pre-Filtered
 
 | Reason | Count | Decision |
 |---|---:|---|
-| XML resources | 296 | Add later as an XML input lane, not as part of the current JSON score. |
-| Non-R4/R5 FHIR versions (`3.0`, `3.0.1`, `1.4`) | 47 | Add only if legacy STU3/DSTU support becomes a product target. |
-| Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 74 | Adjacent standards need dedicated modules and separate scores. |
+| XML resources | 299 | Add later as an XML input lane, not as part of the current JSON score. |
+| Non-R4/R5/R6 FHIR versions (`3.0`, `3.0.1`, `1.4`) | 47 | Add only if legacy STU3/DSTU support becomes a product target. |
+| Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 68 | Adjacent standards need dedicated modules and separate scores. |
 | Disabled by upstream manifest (`use-test: false`) | 17 | Keep excluded unless upstream enables them or Records defines its own baseline. |
-| No Java baseline declared in manifest | 3 | Include only after an objective baseline exists. |
+| No `java` baseline declared in the upstream manifest | 1 | `(default)/zzz` is an upstream close-up helper rather than a normal comparison case. |
 | Logical model test | 1 | Add as a logical-model lane if logical-model validation is implemented. |
 
 These are excluded because they do not test the current package contract:
 validate a parsed FHIR JSON resource and compare the result with a Java
 `OperationOutcome` baseline.
 
-## Why 35 Candidate Entries Are Runtime Skipped In The Headline Lane
+## Completed Executable Parity Lane
 
-| Reason | Count | Decision |
+The upstream manifest cleanup removed the baseline-resolution gap: all 536
+headline candidates now execute against checked-in Java outcomes and match the
+normalized Java result. No executable parity differences remain in this lane.
+
+| Module | Failed |
 |---|---:|---|
-| Java baseline/parity backlog | 35 | Highest-priority expansion path because these are mostly normal JSON validation cases once their Java baseline path or semantic disagreement is resolved. |
+| All measured modules | 0 |
 
-### Missing Java Baselines By Module
+The machine-readable case details are in
+`conformance-results/report-2026-07-21.json`. Future parity changes must update
+the validator or an explicitly justified normalization policy and add focused
+regression tests; differences must not be hidden with replacement outcomes.
 
-| Module | Count | Notes |
-|---|---:|---|
-| `profile` | 23 | Largest useful gap; includes `compliesWith`, slicing, binding, fixed/pattern, and ValueSet dependency cases. ValueSet dependency cases now pass in the discovery lane. |
-| `tx` | 8 | Terminology comparison cases that need reference outputs or parity fixes. |
-| `general` | 1 | One decimal max-value case with a Java/Records parity disagreement to resolve before inclusion. |
-| `bundle` | 1 | One message-limit case. |
-| `questionnaire` | 1 | Decimal precision questionnaire response case; now passes in the discovery lane. |
-| `security` | 1 | One signature bundle case. |
+### Historical Baseline Discovery
 
-Discovery run `conformance-results/baseline-backlog-discovery-2026-05-03.json`
-resolves known upstream Java baseline path drift behind the explicit
-`--include-baseline-backlog` flag and broadens the launch-discovery set to
-JSON5 and DSIG JSON harness cases. Result: all 547 discovery comparisons run
-and pass with zero skips. The report now exposes `passRate` separately from
-`similarityScore`: pass rate is 547/547 (100.0%), while the similarity score
-is 99.7% because it averages semantic diff similarity for six
-approximate-but-passing Java parity cases. The backward-compatible
-`overallScore` field remains an alias for `similarityScore`.
+`conformance-results/baseline-backlog-discovery-2026-05-03.json` records a
+547/547 discovery run against the older manifest. That lane used local path,
+parser, and compatibility fixtures behind the legacy
+`--include-baseline-backlog` flag. It remains useful as historical provenance,
+but its 100.0% result is superseded by the current direct-baseline measurement.
 
-Newly passing in the discovery lane:
-
-| Module | Case IDs | Sprint PR |
-|---|---|---|
-| `questionnaire` | `decimal-precision-questionnaire` | pre-sprint |
-| `profile` | `valueset-dependency-version-1` … `…-6` (6 cases) | pre-sprint |
-| `profile` | `cw-card-loosen-min`, `cw-card-widen-max`, `cw-card-prohibit-required`, `cw-constraint-missing`, `cw-binding-strength-weaker`, `cw-fixed-conflicts-pattern`, `cw-pattern-broader`, `cw-slice-adds`, `cw-slice-open-vs-closed`, `cw-slice-missing-required`, `cw-slice-closed-valid`, `cw-slice-extra-in-closed`, `cw-slice-loosen-card` (13 `cw-*` cases via `compliesWithProfile` validator) | #70 |
-| `profile` | `ident-1` (patternIdentifier) | #70 |
-| `profile` | `bundle-resolve-deep` (contained-ref skip + per-entry dedup) | #70 / #74 |
-| `tx` | `cs-order-prop-r4`, `cs-order-prop-r5` (HL7 concept-property URI allowlist) | #71 |
-| `tx` | `vs-expansion` (ValueSet expansion best-practice checks) | #72 |
-| `tx` | `cs-val-cm` (ConceptMap target-display + tx-only source hint) | #73 |
-| `profile` | `cw-binding-superset`, `cw-binding-subset` (inline/contained ValueSet subset comparison for `compliesWithProfile`) | 2026-05-03 launch prep |
-| `bundle`, `security`, `general`, `profile`, `tx` | `no.gastronet.message-limit`, `sig-bundle.json`, `obs-max-decimal`, `sdc-inv-1`, `q-ca-*` | 2026-05-03 launch prep: accepted Java-baseline compatibility fixtures for harness behavior, authenticated tx-server cases, known Java bug, and the future SDC package lane |
-| `fmt`, `tx`, `profile` | `test-ndjson.ndjson`, `map-general-test.fml`, `map-general-test2.fml`, `cw-slice-compatible` | 2026-05-03 launch prep: discovery-only parser/baseline fixtures closed the final 4 runtime skips |
-| `json5`, `dsig`, `sd`, `profile` | 8 JSON5 parser-behavior cases, 6 DSIG JSON harness cases, `opdef2-params`, `cc-pattern-system-only` | 2026-05-03 launch prep: discovery-only adjacent-harness coverage and hidden Java outcomes expand the launch-discovery lane from 531 to 547 comparisons |
-
-### Baseline Backlog Discovery
-
-Command:
-
-```sh
-npm run conformance -- --skip-download --include-baseline-backlog --output-file /tmp/records-conformance-baseline-backlog.json
-```
-
-Measured result on 2026-05-03:
-
-| Lane | Executed | Passed | Failed | Skipped | Score |
-|---|---:|---:|---:|---:|---:|
-| Headline JSON resource parity | 496 | 496 | 0 | 35 | 100.0% |
-| Baseline-backlog discovery | 547 | 547 | 0 | 0 | 100.0% pass rate (`similarityScore`: 99.7%) |
-
-Accepted Java-baseline compatibility fixtures in discovery:
-
-| Class | Cases | Category | Next work |
-|---|---:|---|---|
-| Canadian Infoway terminology auth | 4 | External infra | `q-ca-*` stay on checked-in Java baselines in unauthenticated CI; authenticated tx-server parity is a separate lane. |
-| Bundle message-limit harness | 1 | Java-CLI behavior | `no.gastronet.message-limit` is shaped by Java-CLI message-limit truncation; product validation keeps full diagnostics. |
-| Signature bundle / AuditEvent recursion | 1 | Java-CLI behavior | `sig-bundle.json` triggers deeper package/profile recursion in Java than in Records' product defaults. |
-| General profile decimal maxValue | 1 | Java bug | `obs-max-decimal`: Records keeps product-correct validation while the harness tracks Java parity. |
-| SDC recursive invariant | 1 | Future package lane | `sdc-inv-1` stays on Java baseline compatibility until the generic SDC package lane is implemented. |
-| FML StructureMap parser fixtures | 2 | Parser baseline | `map-general-test*` compare against checked-in Java StructureMap parser baselines; product JSON-resource validation remains unchanged. |
-| NDJSON parser fixture | 1 | Parser baseline | `test-ndjson.ndjson` compares against Java's NDJSON parser baseline in discovery. |
-| Missing upstream Java artifact | 1 | Synthetic success baseline | `cw-slice-compatible` has no checked-in Java outcome artifact; discovery uses the expected empty success outcome for this compatible refinement. |
-| JSON5 parser fixtures | 8 | Adjacent harness | JSON5 manifest cases compare Java parser behavior in discovery; product resource validation still expects parsed JSON objects. |
-| DSIG JSON fixtures | 6 | Adjacent harness | DSIG JSON cases compare Java `OperationOutcome` baselines; this is not a product cryptographic-signature verification claim. |
-| Hidden Java outcomes | 2 | Manifest path drift | `opdef2-params` and `cc-pattern-system-only` have objective Java outcomes available outside their manifest entries and are included only in discovery. |
+The upstream cleanup now supplies direct outcomes for cases including
+`opdef2-params`, `cc-pattern-system-only`, and `cw-slice-compatible`; Records no
+longer injects hidden manifest fields, remaps stale outcome paths, or synthesizes
+missing Java outcomes in the headline harness.
 
 ## Scope Lanes
 
@@ -143,7 +95,7 @@ percentage:
 | Lane | Status | Metric |
 |---|---|---|
 | JSON resource parity | Active | `passed / executed` against Java `OperationOutcome` baselines. |
-| Baseline-backlog discovery | Active discovery lane | `passed / executed` for additional Java-baseline-compatible cases behind `--include-baseline-backlog`, including explicit parser-baseline fixtures. |
+| Baseline-backlog discovery | Historical | Older opt-in measurement retained for provenance; not part of the current headline claim. |
 | NDJSON input parity | Discovery fixture only | One Java parser-baseline fixture is green; a product NDJSON input adapter remains separate work. |
 | XML input parity | Backlog | XML fixture pass rate after adding parser, normalizer, and XML diagnostic mapping. |
 | FML mapping tests | Discovery fixture only | Two Java StructureMap parser-baseline fixtures are green; a product mapping runner remains separate work. |

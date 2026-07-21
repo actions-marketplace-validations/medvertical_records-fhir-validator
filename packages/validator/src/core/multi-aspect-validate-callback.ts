@@ -1,12 +1,4 @@
 /* eslint-disable max-lines-per-function */
-/**
- * Multi-Aspect Validate Callback
- *
- * Extracted from validator-engine.ts to keep that file within size limits.
- * Builds the per-resource validation callback used by executeBatchValidation
- * when multiple aspects are requested simultaneously.
- */
-
 import type { ValidationIssue, ValidationSettings } from '../types';
 import type { StructureDefinitionLoader } from './structure-definition-loader';
 import type { SnapshotGenerator } from './snapshot-generator';
@@ -23,11 +15,8 @@ import type {
 } from './executors';
 import type { BestPracticeValidator } from '../validators/best-practice-validator';
 import {
-  aggregateRemoteCodeSystemBudgetIssues,
   createValidationErrorIssue,
-  dedupeIssues,
   getValueAtPath,
-  suppressRedundantBindingWarnings,
 } from './validation-utils';
 import {
   createProfileFallbackIssue,
@@ -51,6 +40,8 @@ import type { AspectResult, MultiAspectValidateResult, ValidateOneFn } from './m
 import { shouldValidateBundleEntryResources } from './single-resource-validation';
 import { BatchValidationAbortedError } from './batch-validator';
 import { withIssuesSchemaVersion } from './issue-schema-version';
+import { normalizeIssuesByAspect } from './multi-aspect-issue-normalization';
+import { computeValidationIssueId } from '@records-fhir/validation-types';
 
 interface MultiAspectDeps {
   sdLoader: StructureDefinitionLoader;
@@ -70,7 +61,6 @@ interface MultiAspectDeps {
 
 const BUNDLE_ENTRY_MAX_DEPTH = 3;
 
-// Stateless enumerator for the opt-in target-profile-conformance pass.
 const targetProfileConformanceEnumerator = new ReferenceTargetValidator();
 
 function combineReferenceResolvers(
@@ -83,11 +73,6 @@ function combineReferenceResolvers(
   return reference => primary(reference) ?? fallback(reference);
 }
 
-/**
- * Builds the validateResource callback for multi-aspect batch validation.
- * Each invocation validates a single resource across all enabled aspects
- * and returns a structured breakdown per aspect.
- */
 export function buildMultiAspectValidateCallback(
   deps: MultiAspectDeps,
   aspects: string[],
@@ -96,9 +81,8 @@ export function buildMultiAspectValidateCallback(
   shouldStop?: () => boolean,
   onEmbeddedResourceValidated?: (resource: Record<string, unknown>, result: MultiAspectValidateResult) => void | Promise<void>,
   externalReferenceResolver?: ReferenceResolver,
+  serverId?: number,
 ): (resource: unknown, profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6') => Promise<MultiAspectValidateResult> {
-  // Resolve once per batch, not per resource — strictness, aspect
-  // severity caps, and advisor rules don't change between resources.
   const typedSettings = settings as ValidationSettings | undefined;
   const { strictness, aspectSeverityFor } = resolveStrictnessConfig(
     typedSettings,
@@ -132,7 +116,7 @@ export function buildMultiAspectValidateCallback(
       const aspectStart = Date.now();
       try {
         throwIfStopped();
-        const rawIssues = await fn();
+        const rawIssues = (await fn()).map(issue => attachAppliedProfile(issue, profileUrl));
         throwIfStopped();
         const afterStrictness = applyStrictnessSeverity(rawIssues, strictness, aspectSeverityFor(name));
         const { resultIssues: afterAdvisor } = applyAdvisorRules(afterStrictness, advisorRules);
@@ -179,7 +163,9 @@ export function buildMultiAspectValidateCallback(
         resourceType,
         fhirVersion,
         deps.profileCache,
-        deps.fhirClient
+        deps.fhirClient,
+        { organizationId, serverId, fhirVersion },
+        typedSettings,
       );
       profileLoadCache.set(profileLoadKey, profileLoadPromise);
     }
@@ -206,9 +192,6 @@ export function buildMultiAspectValidateCallback(
       };
     }
 
-    // Declared profile was unresolvable but base SD loaded — surface a warning
-    // and keep running all other aspects. Without this, callers got back a
-    // single info issue and no structural/invariant/reference feedback.
     const profileFallbackIssue: ValidationIssue | null = loadResult.incompatibleProfileType
       ? createProfileResourceTypeMismatchIssue(
         profileUrl,
@@ -235,7 +218,6 @@ export function buildMultiAspectValidateCallback(
       referenceResolver: combineReferenceResolvers(bundleReferenceResolver, externalReferenceResolver),
     };
 
-    // 1. Structural (runs first — validates basic structure)
     if (aspects.includes('structural')) {
       await runAspect('structural', async () => {
         const structuralIssues = await deps.structuralExecutor.validate(ctx.resource, {
@@ -251,8 +233,6 @@ export function buildMultiAspectValidateCallback(
       });
     }
 
-    // Profile and terminology run before invariants when the invariant
-    // aspect is requested, matching validate()'s existingIssues context.
     const needsInvariantContext = aspects.includes('invariant');
     const preInvariantAspects: Promise<void>[] = [];
     const parallelAspects: Promise<void>[] = [];
@@ -292,8 +272,6 @@ export function buildMultiAspectValidateCallback(
         ];
       }), true);
     } else if (profileFallbackIssue) {
-      // Even without the profile aspect requested, the fallback warning must
-      // still reach the caller — otherwise the unresolvable profile is silent.
       scheduleAspect(runAspect('profile', async () => [profileFallbackIssue]), false);
     }
 
@@ -408,6 +386,10 @@ export function buildMultiAspectValidateCallback(
     }
 
     const processedAspects = normalizeIssuesByAspect(collectedAspects);
+    if (profileFallbackIssue) {
+      const profileAspect = processedAspects.find(aspect => aspect.aspect === 'profile');
+      if (profileAspect) profileAspect.isValid = false;
+    }
 
     return {
       isValid: processedAspects.every(a => a.isValid),
@@ -419,48 +401,21 @@ export function buildMultiAspectValidateCallback(
   return (resource, profileUrl, fhirVersion) => validateOne(resource, profileUrl, fhirVersion, 0);
 }
 
-function normalizeIssuesByAspect(aspects: AspectResult[]): AspectResult[] {
-  const suppressedIssues = suppressRedundantBindingWarnings(
-    dedupeIssues(aspects.flatMap(aspect => aspect.issues)),
-  );
-  const keepIssues = new Set(suppressedIssues);
-
-  const normalizedByAspect = new Map<string, AspectResult>();
-  const ensureAspect = (aspect: AspectResult): AspectResult => {
-    const existing = normalizedByAspect.get(aspect.aspect);
-    if (existing) return existing;
-    const next = { ...aspect, issues: [], isValid: true };
-    normalizedByAspect.set(aspect.aspect, next);
-    return next;
+function attachAppliedProfile(issue: ValidationIssue, appliedProfile: string): ValidationIssue {
+  if (issue.profile || !appliedProfile) return issue;
+  return {
+    ...issue,
+    profile: appliedProfile,
+    id: computeValidationIssueId({
+      aspect: issue.aspect,
+      severity: issue.severity,
+      code: issue.code,
+      path: issue.path,
+      resourceType: issue.resourceType,
+      message: issue.message,
+      profile: appliedProfile,
+      ruleId: issue.ruleId,
+      details: issue.details,
+    }),
   };
-
-  for (const aspect of aspects) {
-    ensureAspect(aspect);
-  }
-
-  for (const aspect of aspects) {
-    for (const issue of aspect.issues) {
-      if (!keepIssues.has(issue)) continue;
-      const targetAspectName = typeof issue.aspect === 'string' && issue.aspect.length > 0
-        ? issue.aspect
-        : aspect.aspect;
-      const targetAspect = normalizedByAspect.get(targetAspectName)
-        ?? ensureAspect({
-          aspect: targetAspectName,
-          issues: [],
-          validationTime: 0,
-          isValid: true,
-        });
-      targetAspect.issues.push(issue);
-    }
-  }
-
-  return Array.from(normalizedByAspect.values()).map(aspect => {
-    const issues = aggregateRemoteCodeSystemBudgetIssues(aspect.issues);
-    return {
-      ...aspect,
-      issues,
-      isValid: issues.every(issue => issue.severity !== 'error' && issue.severity !== 'fatal'),
-    };
-  });
 }

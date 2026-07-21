@@ -1,15 +1,5 @@
 /**
- * Validation Issue Factory
- *
- * Factory function to standardize the creation of ValidationIssue objects.
- * Replaces inline object literals across validators with a single,
- * consistent creation pattern.
- *
- * Benefits:
- * - Consistent field population (id, timestamp, schemaVersion)
- * - Automatic code resolution via aliases
- * - Template-based message formatting
- * - Type safety for code values
+ * Factory helpers for standardized ValidationIssue creation.
  */
 
 import {
@@ -22,71 +12,19 @@ import { ValidationCodes as _ValidationCodes, getCodeMetadata, resolveCode, type
 import { formatMessage, getHumanReadableMessage } from './message-templates';
 import { normalizeResourceType } from './resource-type-normalizer';
 
-// ============================================================================
-// Factory Parameters
-// ============================================================================
-
 export interface CreateIssueParams {
-    /**
-     * The validation code. Can be a canonical code or a legacy alias.
-     */
     code: ValidationCode | string;
-
-    /**
-     * FHIRPath to the element with the issue.
-     */
     path: string;
-
-    /**
-     * Resource type being validated.
-     */
     resourceType: string;
-
-    /**
-     * Parameters for message template interpolation.
-     * These will be substituted into the message template.
-     */
     messageParams?: Record<string, unknown>;
-
-    /**
-     * Optional custom message to override the template.
-     */
     customMessage?: string;
-
-    /**
-     * Profile URL if this issue is related to profile validation.
-     */
     profile?: string;
-
-    /**
-     * Additional details to include in the issue.
-     */
     details?: Record<string, unknown>;
-
-    /**
-     * Override the default severity for this code.
-     */
     severityOverride?: ValidationSeverity;
-
-    /**
-     * Override the default aspect for this code.
-     */
     aspectOverride?: ValidationAspect;
-
-    /**
-     * Rule identifier for signature grouping (e.g., constraint key like 'ext-1', 'enc-1').
-     * This is used to distinguish between different rules that share the same code.
-     */
     ruleId?: string;
 }
 
-// ============================================================================
-// ID Generation
-// ============================================================================
-
-/**
- * Generate a deterministic issue ID from the issue identity fields.
- */
 function generateIssueId(params: {
     aspect: string;
     severity: ValidationSeverity;
@@ -108,27 +46,6 @@ function generateIssueId(params: {
 export function resetIssueCounter(): void {
 }
 
-// ============================================================================
-// Factory Function
-// ============================================================================
-
-/**
- * Create a standardized ValidationIssue object.
- *
- * @example
- * ```typescript
- * const issue = createValidationIssue({
- *   code: 'terminology-binding-required',
- *   path: 'Patient.gender',
- *   resourceType: 'Patient',
- *   messageParams: {
- *     code: 'invalid-code',
- *     system: 'http://example.org',
- *     valueSet: 'http://hl7.org/fhir/ValueSet/administrative-gender',
- *   },
- * });
- * ```
- */
 export function createValidationIssue(params: CreateIssueParams): ValidationIssue {
     const {
         code,
@@ -144,19 +61,15 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
     } = params;
     const resourceType = normalizeResourceType(rawResourceType, path);
 
-    // Resolve any aliases to canonical codes
     const resolvedCode = resolveCode(code);
     const metadata = getCodeMetadata(code);
 
-    // Determine aspect and severity (with overrides)
     const aspect: ValidationAspect = aspectOverride || metadata?.aspect || 'structural';
     const severity: ValidationSeverity = severityOverride || metadata?.severity || 'warning';
 
-    // Generate message
     const message = customMessage || formatMessage(resolvedCode, messageParams);
     const humanReadable = getHumanReadableMessage(resolvedCode, messageParams);
 
-    // Build details object
     const issueDetails: Record<string, unknown> = {
         ...details,
         fieldPath: path,
@@ -164,7 +77,6 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
         validationType: `${aspect}-validation`,
     };
 
-    // Add message params to details for potential hydration
     for (const [key, value] of Object.entries(messageParams)) {
         if (!(key in issueDetails)) {
             issueDetails[key] = value;
@@ -198,10 +110,6 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
         ruleId,
     };
 }
-
-// ============================================================================
-// Convenience Factories
-// ============================================================================
 
 const CANONICAL_SYSTEM_SUGGESTIONS: Record<string, string> = {
     'http://terminology.hl7.org/CodeSystem/condition-verstatus':
@@ -254,10 +162,8 @@ export function createBindingViolation(params: {
     resourceType: string;
     profile?: string;
 }): ValidationIssue {
-    // Detect if this is a primitive code type (no system) or a Coding type (with system)
     const hasSystem = params.system !== undefined && params.system !== '';
 
-    // Use -code variants for primitive code types (without system)
     const codeMap = hasSystem ? {
         required: 'terminology-binding-required',
         extensible: 'terminology-binding-extensible',
@@ -322,9 +228,6 @@ export function createBindingUnverified(params: {
     });
 }
 
-/**
- * Create a required element missing issue.
- */
 export function createRequiredElementMissing(params: {
     element: string;
     path: string;
@@ -342,9 +245,6 @@ export function createRequiredElementMissing(params: {
     });
 }
 
-/**
- * Create a reference type mismatch issue.
- */
 export function createReferenceTypeMismatch(params: {
     actual: string;
     allowed: string[];
@@ -362,9 +262,6 @@ export function createReferenceTypeMismatch(params: {
     });
 }
 
-/**
- * Create a constraint violation issue.
- */
 export function createConstraintViolation(params: {
     key: string;
     message: string;
@@ -386,9 +283,6 @@ export function createConstraintViolation(params: {
     });
 }
 
-/**
- * Create a generic validation error issue.
- */
 export function createValidationError(params: {
     message: string;
     path: string;

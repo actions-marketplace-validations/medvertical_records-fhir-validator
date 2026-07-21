@@ -64,12 +64,12 @@ export interface GematikTransformation {
 function matchesRule(issue: ValidationIssue, match: AdvisorRuleMatch): boolean {
   if (match.code) {
     const codes = Array.isArray(match.code) ? match.code : [match.code];
-    if (!codes.some(c => issue.code === c || issue.code?.startsWith(c))) return false;
+    if (!codes.some((code: string) => issue.code === code || issue.code?.startsWith(code))) return false;
   }
 
   if (match.path) {
     const paths = Array.isArray(match.path) ? match.path : [match.path];
-    if (!paths.some(p => issue.path === p || issue.path?.includes(p))) return false;
+    if (!paths.some((path: string) => issue.path === path || issue.path?.includes(path))) return false;
   }
 
   if (match.message) {
@@ -78,12 +78,12 @@ function matchesRule(issue: ValidationIssue, match: AdvisorRuleMatch): boolean {
 
   if (match.messageRegex) {
     const patterns = Array.isArray(match.messageRegex) ? match.messageRegex : [match.messageRegex];
-    if (!patterns.some(pattern => matchesRegex(issue.message, pattern))) return false;
+    if (!patterns.some((pattern: string) => matchesRegex(issue.message, pattern))) return false;
   }
 
   if (match.aspect) {
     const aspects = Array.isArray(match.aspect) ? match.aspect : [match.aspect];
-    if (!aspects.some(a => (issue as any).aspect === a)) return false;
+    if (!aspects.some((aspect: string) => issue.aspect === aspect)) return false;
   }
 
   if (match.severity) {
@@ -96,7 +96,7 @@ function matchesRule(issue: ValidationIssue, match: AdvisorRuleMatch): boolean {
 
   if (match.resourceType) {
     const types = Array.isArray(match.resourceType) ? match.resourceType : [match.resourceType];
-    if (!types.some(t => issue.path?.startsWith(t))) return false;
+    if (!types.some((resourceType: string) => issue.path?.startsWith(resourceType))) return false;
   }
 
   return true;

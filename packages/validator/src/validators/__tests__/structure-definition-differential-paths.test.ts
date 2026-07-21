@@ -38,4 +38,41 @@ describe('StructureDefinitionValidator differential path checks', () => {
       code: 'sd-snapshot-error-bad-choice',
     }));
   });
+
+  it('reports invalid concrete Observation.value[x] paths without a snapshot', () => {
+    const issues = validator.validate({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.com/Observation',
+      type: 'Observation',
+      differential: {
+        element: [{ path: 'Observation.valueBla' }],
+      },
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'sd-snapshot-error-bad-choice',
+      severity: 'error',
+    }));
+  });
+
+  it('warns when a CodeableConcept pattern declares a system without a code', () => {
+    const issues = validator.validate({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.com/Encounter',
+      type: 'Encounter',
+      differential: {
+        element: [{
+          path: 'Encounter.type',
+          patternCodeableConcept: {
+            coding: [{ system: 'https://example.com/CodeSystem/test' }],
+          },
+        }],
+      },
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'sd-pattern-coding-missing-code',
+      severity: 'warning',
+    }));
+  });
 });

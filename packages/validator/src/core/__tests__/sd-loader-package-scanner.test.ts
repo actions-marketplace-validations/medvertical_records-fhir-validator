@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -67,6 +67,9 @@ describe('sd-loader-package-scanner', () => {
       'example.fhir.package#1.0.0',
       'example.fhir.package#2.0.0',
     ]);
+    expect(index.sourcePackages.every((pkg: { manifestHash: string }) => (
+      /^[a-f0-9]{64}$/.test(pkg.manifestHash)
+    ))).toBe(true);
     expect(index.profileUrls).toContain(latestProfile);
     expect(index.profileUrls).not.toContain(externalProfile);
 
@@ -78,6 +81,62 @@ describe('sd-loader-package-scanner', () => {
     expect(secondProfiles.has(latestProfile)).toBe(true);
     expect(secondProfiles.has(oldProfile)).toBe(false);
   });
+
+  it('keeps a build-time index valid after packages are copied with new mtimes', async () => {
+    const buildRoot = await mkdtemp(path.join(tmpdir(), 'sd-loader-build-cache-'));
+    const runtimeRoot = await mkdtemp(path.join(tmpdir(), 'sd-loader-runtime-cache-'));
+    tempDirs.push(buildRoot, runtimeRoot);
+
+    const profile = 'http://example.org/fhir/StructureDefinition/copied-profile';
+    await writeStructureDefinition(
+      buildRoot,
+      'example.fhir.package#1.0.0',
+      'StructureDefinition-copied.json',
+      profile,
+    );
+    await scanCacheDirectory(buildRoot, new Set<string>());
+    await cp(buildRoot, runtimeRoot, { recursive: true });
+
+    const runtimePackageDir = path.join(runtimeRoot, 'example.fhir.package#1.0.0');
+    await utimes(runtimePackageDir, new Date('2030-01-01'), new Date('2030-01-01'));
+    const indexPath = path.join(runtimeRoot, 'sdloader-profile-index.json');
+    const index = JSON.parse(await readFile(indexPath, 'utf-8'));
+    await writeFile(indexPath, JSON.stringify({ ...index, generatedAt: 123 }, null, 2));
+
+    const runtimeProfiles = new Set<string>();
+    await scanCacheDirectory(runtimeRoot, runtimeProfiles);
+
+    const unchangedIndex = JSON.parse(await readFile(indexPath, 'utf-8'));
+    expect(unchangedIndex.generatedAt).toBe(123);
+    expect(runtimeProfiles.has(profile)).toBe(true);
+  });
+
+  it('invalidates the persistent index when a package manifest changes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'sd-loader-manifest-cache-'));
+    tempDirs.push(root);
+
+    await writeStructureDefinition(
+      root,
+      'example.fhir.package#1.0.0',
+      'StructureDefinition-first.json',
+      'http://example.org/fhir/StructureDefinition/first-profile',
+    );
+    await scanCacheDirectory(root, new Set<string>());
+
+    const secondProfile = 'http://example.org/fhir/StructureDefinition/second-profile';
+    await writeStructureDefinition(
+      root,
+      'example.fhir.package#1.0.0',
+      'StructureDefinition-second.json',
+      secondProfile,
+    );
+    await writePackageManifest(root, 'example.fhir.package#1.0.0', 'updated package metadata');
+
+    const rescannedProfiles = new Set<string>();
+    await scanCacheDirectory(root, rescannedProfiles);
+
+    expect(rescannedProfiles.has(secondProfile)).toBe(true);
+  });
 });
 
 async function writeStructureDefinition(
@@ -88,6 +147,7 @@ async function writeStructureDefinition(
 ): Promise<string> {
   const packageDir = path.join(root, packageName, 'package');
   await mkdir(packageDir, { recursive: true });
+  await writePackageManifest(root, packageName);
   const filePath = path.join(packageDir, fileName);
   await writeFile(
     filePath,
@@ -100,4 +160,18 @@ async function writeStructureDefinition(
     }),
   );
   return filePath;
+}
+
+async function writePackageManifest(
+  root: string,
+  packageName: string,
+  description = 'test package',
+): Promise<void> {
+  const packageDir = path.join(root, packageName, 'package');
+  const [name, version = '0.0.0'] = packageName.split('#');
+  await mkdir(packageDir, { recursive: true });
+  await writeFile(
+    path.join(packageDir, 'package.json'),
+    JSON.stringify({ name, version, description }),
+  );
 }

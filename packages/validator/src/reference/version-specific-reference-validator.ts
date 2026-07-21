@@ -1,12 +1,3 @@
-/**
- * Version-Specific Reference Validator
- * 
- * Validates references that include version information (e.g., Patient/123/_history/2).
- * Checks integrity, consistency, and availability of versioned references.
- * 
- * Task 6.8: Create reference integrity checking for version-specific references
- */
-
 import { parseReference } from './reference-type-extractor';
 import type {
   VersionedReferenceInfo,
@@ -22,21 +13,13 @@ export type {
   VersionAvailabilityCheckResult,
 } from './version-specific-reference-types';
 
-// ============================================================================
-// Version-Specific Reference Validator Class
-// ============================================================================
-
 export class VersionSpecificReferenceValidator {
-  private versionedReferencePattern = /^(.+)\/_history\/([^\/]+)$/; // Match version ID (no slashes)
-  private versionIdPattern = /^[0-9]+$/; // Simple numeric version IDs for validation
+  private versionedReferencePattern = /^(.+)\/_history\/([^\/]+)$/;
+  private versionIdPattern = /^[0-9]+$/;
 
-  /**
-   * Parse version information from a reference
-   */
   parseVersionedReference(reference: string): VersionedReferenceInfo {
     const trimmed = reference.trim();
     
-    // Check for version in canonical URL (e.g., http://example.com/Patient/123|2.0.0)
     if (trimmed.includes('|')) {
       const [baseUrl, version] = trimmed.split('|');
       const parseResult = parseReference(baseUrl);
@@ -47,18 +30,15 @@ export class VersionSpecificReferenceValidator {
         resourceId: parseResult.resourceId ?? undefined,
         versionId: version,
         isVersioned: true,
-        isValidVersionFormat: true, // Canonical versions can be semantic
+        isValidVersionFormat: true,
       };
     }
 
-    // Check for _history pattern
     const historyMatch = trimmed.match(this.versionedReferencePattern);
     
     if (historyMatch) {
       const baseRef = historyMatch[1];
       const versionId = historyMatch[2];
-      
-      // Parse the base reference to get resource type and ID
       const baseParseResult = parseReference(baseRef);
       
       return {
@@ -71,7 +51,6 @@ export class VersionSpecificReferenceValidator {
       };
     }
 
-    // Not a versioned reference
     const parseResult = parseReference(trimmed);
     return {
       reference: trimmed,
@@ -82,13 +61,9 @@ export class VersionSpecificReferenceValidator {
     };
   }
 
-  /**
-   * Validate a versioned reference for integrity
-   */
   validateVersionedReference(reference: string): VersionIntegrityCheckResult {
     const versionInfo = this.parseVersionedReference(reference);
 
-    // Check if it's a versioned reference
     if (!versionInfo.isVersioned) {
       return {
         isValid: true,
@@ -98,7 +73,6 @@ export class VersionSpecificReferenceValidator {
       };
     }
 
-    // Check version format
     if (!versionInfo.isValidVersionFormat) {
       return {
         isValid: false,
@@ -111,7 +85,6 @@ export class VersionSpecificReferenceValidator {
       };
     }
 
-    // Check resource type and ID presence
     if (!versionInfo.resourceType || !versionInfo.resourceId) {
       return {
         isValid: false,
@@ -129,14 +102,10 @@ export class VersionSpecificReferenceValidator {
     };
   }
 
-  /**
-   * Check consistency between multiple references to the same resource
-   */
   checkVersionConsistency(references: string[]): VersionConsistencyCheckResult {
     const issues: VersionConsistencyCheckResult['issues'] = [];
     const referenceMap = new Map<string, VersionedReferenceInfo[]>();
 
-    // Group references by resource
     references.forEach(ref => {
       const versionInfo = this.parseVersionedReference(ref);
       if (versionInfo.resourceType && versionInfo.resourceId) {
@@ -148,9 +117,7 @@ export class VersionSpecificReferenceValidator {
       }
     });
 
-    // Check for inconsistencies
     referenceMap.forEach((refInfos, resourceKey) => {
-      // Find mixed versioned and non-versioned references
       const versioned = refInfos.filter(r => r.isVersioned);
       const nonVersioned = refInfos.filter(r => !r.isVersioned);
 
@@ -163,7 +130,6 @@ export class VersionSpecificReferenceValidator {
         });
       }
 
-      // Find different versions of the same resource
       const versionIds = new Set(versioned.map(r => r.versionId).filter(Boolean));
       if (versionIds.size > 1) {
         const versions = Array.from(versionIds);
@@ -182,9 +148,6 @@ export class VersionSpecificReferenceValidator {
     };
   }
 
-  /**
-   * Check if a versioned resource is available (requires HTTP client)
-   */
   async checkVersionAvailability(
     reference: string,
     httpClient?: (url: string) => Promise<{ status: number; data?: any }>
@@ -206,13 +169,11 @@ export class VersionSpecificReferenceValidator {
     }
 
     try {
-      // Construct version-specific URL (FHIR standard)
       const url = `${versionInfo.resourceType}/${versionInfo.resourceId}/_history/${versionInfo.versionId}`;
       
       const response = await httpClient(url);
 
       if (response.status === 200) {
-        // Check if returned version matches requested version
         const actualVersion = response.data?.meta?.versionId;
         
         if (actualVersion && actualVersion !== versionInfo.versionId) {
@@ -250,9 +211,6 @@ export class VersionSpecificReferenceValidator {
     }
   }
 
-  /**
-   * Extract all versioned references from a resource
-   */
   extractVersionedReferences(resource: any): VersionedReferenceInfo[] {
     const versionedRefs: VersionedReferenceInfo[] = [];
 
@@ -261,7 +219,6 @@ export class VersionSpecificReferenceValidator {
         return;
       }
 
-      // Check if this is a reference object
       if (obj.reference && typeof obj.reference === 'string') {
         const versionInfo = this.parseVersionedReference(obj.reference);
         if (versionInfo.isVersioned) {
@@ -269,7 +226,6 @@ export class VersionSpecificReferenceValidator {
         }
       }
 
-      // Recursively check properties
       for (const value of Object.values(obj)) {
         if (Array.isArray(value)) {
           value.forEach(item => extractFromObject(item));
@@ -283,9 +239,6 @@ export class VersionSpecificReferenceValidator {
     return versionedRefs;
   }
 
-  /**
-   * Validate all versioned references in a resource
-   */
   validateResourceVersionedReferences(resource: any): VersionIntegrityCheckResult[] {
     const versionedRefs = this.extractVersionedReferences(resource);
     return versionedRefs.map(versionInfo => 
@@ -293,33 +246,21 @@ export class VersionSpecificReferenceValidator {
     );
   }
 
-  /**
-   * Check if version ID is valid
-   */
   private isValidVersionId(versionId: string): boolean {
-    // For _history references, version IDs should be numeric
     return this.versionIdPattern.test(versionId);
   }
 
-  /**
-   * Compare two version IDs
-   */
   compareVersions(version1: string, version2: string): number {
-    // Simple numeric comparison for _history versions
     const v1 = parseInt(version1, 10);
     const v2 = parseInt(version2, 10);
 
     if (isNaN(v1) || isNaN(v2)) {
-      // Fallback to string comparison for semantic versions
       return version1.localeCompare(version2);
     }
 
     return v1 - v2;
   }
 
-  /**
-   * Get the latest version from a list of versioned references
-   */
   getLatestVersion(references: string[]): VersionedReferenceInfo | null {
     const versionedRefs = references
       .map(ref => this.parseVersionedReference(ref))
@@ -337,9 +278,6 @@ export class VersionSpecificReferenceValidator {
     });
   }
 
-  /**
-   * Check if a reference points to the latest version
-   */
   isLatestVersion(reference: string, allReferences: string[]): boolean {
     const versionInfo = this.parseVersionedReference(reference);
     if (!versionInfo.isVersioned || !versionInfo.versionId) {
@@ -354,24 +292,17 @@ export class VersionSpecificReferenceValidator {
     return versionInfo.versionId === latest.versionId;
   }
 
-  /**
-   * Convert a regular reference to a versioned reference
-   */
   toVersionedReference(reference: string, versionId: string): string {
     const parseResult = parseReference(reference);
     
-    // Check if it's a canonical URL (contains http/https and looks like a FHIR canonical)
     if (reference.startsWith('http://') || reference.startsWith('https://')) {
-      // Determine if it's a canonical URL (conformance resource) or absolute reference (instance)
       const isCanonical = /\/(StructureDefinition|ValueSet|CodeSystem|ConceptMap|SearchParameter|CapabilityStatement|OperationDefinition|NamingSystem|ImplementationGuide|Questionnaire|PlanDefinition|Measure|Library|ActivityDefinition|MessageDefinition|CompartmentDefinition|GraphDefinition|ExampleScenario|ObservationDefinition|SpecimenDefinition)\//.test(reference);
       
       if (isCanonical) {
-        // For canonical URLs, use pipe notation
         const [base] = reference.split('|');
         return `${base}|${versionId}`;
       } else {
-        // For absolute instance URLs, append _history
-        const baseUrl = reference.split('?')[0]; // Remove query params
+        const baseUrl = reference.split('?')[0];
         return `${baseUrl}/_history/${versionId}`;
       }
     }
@@ -380,12 +311,9 @@ export class VersionSpecificReferenceValidator {
       return `${parseResult.resourceType}/${parseResult.resourceId}/_history/${versionId}`;
     }
 
-    return reference; // Cannot convert
+    return reference;
   }
 
-  /**
-   * Strip version from a versioned reference
-   */
   stripVersion(reference: string): string {
     const versionInfo = this.parseVersionedReference(reference);
     
@@ -397,13 +325,9 @@ export class VersionSpecificReferenceValidator {
       return `${versionInfo.resourceType}/${versionInfo.resourceId}`;
     }
 
-    // Fallback: use regex to strip _history
     return reference.replace(this.versionedReferencePattern, '$1');
   }
 
-  /**
-   * Validate version integrity across a Bundle
-   */
   validateBundleVersionIntegrity(bundle: any): {
     isValid: boolean;
     issues: VersionIntegrityCheckResult[];
@@ -412,7 +336,6 @@ export class VersionSpecificReferenceValidator {
     const issues: VersionIntegrityCheckResult[] = [];
     const allReferences: string[] = [];
 
-    // Extract all references from Bundle entries
     if (bundle.entry && Array.isArray(bundle.entry)) {
       bundle.entry.forEach((entry: any) => {
         if (entry.resource) {
@@ -428,7 +351,6 @@ export class VersionSpecificReferenceValidator {
       });
     }
 
-    // Check consistency across all references
     const consistencyCheck = this.checkVersionConsistency(allReferences);
 
     return {
@@ -438,10 +360,6 @@ export class VersionSpecificReferenceValidator {
     };
   }
 }
-
-// ============================================================================
-// Singleton Instance
-// ============================================================================
 
 let validatorInstance: VersionSpecificReferenceValidator | null = null;
 
@@ -455,4 +373,3 @@ export function getVersionSpecificReferenceValidator(): VersionSpecificReference
 export function resetVersionSpecificReferenceValidator(): void {
   validatorInstance = null;
 }
-

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setProfileSource } from '../../persistence';
 import { loadProfile, type LoadProfileContext } from '../sd-loader-load';
 import type { StructureDefinition } from '../structure-definition-types';
@@ -13,6 +13,65 @@ describe('sd-loader loadProfile fallback behavior', () => {
     setProfileSource({});
     await Promise.all(tempDirs.map(dir => rm(dir, { recursive: true, force: true })));
     tempDirs.length = 0;
+  });
+
+  it('resolves tenant profiles before trusting a shared in-memory cache hit', async () => {
+    const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
+    const globalProfile = {
+      resourceType: 'StructureDefinition',
+      id: 'global-v8',
+      url: canonical,
+      version: '8.0.0',
+      type: 'Observation',
+      fhirVersion: '4.0.1',
+    } as StructureDefinition;
+    const tenantProfile = { ...globalProfile, id: 'tenant-v7', version: '7.0.0' };
+    const resolveProfile = vi.fn().mockResolvedValue(tenantProfile);
+    setProfileSource({ resolveProfile });
+    const ctx = makeScopedContext(canonical, globalProfile);
+
+    await expect(loadProfile(ctx, canonical, 'R4')).resolves.toMatchObject({
+      id: 'tenant-v7',
+      version: '7.0.0',
+    });
+    expect(resolveProfile).toHaveBeenCalledWith(
+      canonical,
+      undefined,
+      ctx.profileResolutionSettings,
+      { organizationId: 17, serverId: 23, fhirVersion: 'R4' },
+    );
+  });
+
+  it('fails the tenant lookup closed when only a shared cached profile exists', async () => {
+    const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
+    const globalProfile = {
+      resourceType: 'StructureDefinition',
+      id: 'global-v8',
+      url: canonical,
+      version: '8.0.0',
+      type: 'Observation',
+      fhirVersion: '4.0.1',
+    } as StructureDefinition;
+    setProfileSource({ resolveProfile: vi.fn().mockResolvedValue(null) });
+
+    await expect(loadProfile(makeScopedContext(canonical, globalProfile), canonical, 'R4'))
+      .resolves.toBeNull();
+  });
+
+  it('rejects a centrally resolved tenant profile from the wrong FHIR family', async () => {
+    const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
+    const r5Profile = {
+      resourceType: 'StructureDefinition',
+      id: 'wrong-r5',
+      url: canonical,
+      version: '8.0.0',
+      type: 'Observation',
+      fhirVersion: '5.0.0',
+    } as StructureDefinition;
+    setProfileSource({ resolveProfile: vi.fn().mockResolvedValue(r5Profile) });
+
+    await expect(loadProfile(makeScopedContext(canonical, r5Profile), canonical, 'R4'))
+      .resolves.toBeNull();
   });
 
   it('continues to auto-download when an availableProfiles filesystem hit cannot be loaded', async () => {
@@ -128,3 +187,26 @@ describe('sd-loader loadProfile fallback behavior', () => {
     expect(ctx.profileNotFound.has(`${requestedUrl}:R4`)).toBe(false);
   });
 });
+
+function makeScopedContext(
+  canonical: string,
+  globalProfile: StructureDefinition,
+): LoadProfileContext {
+  return {
+    availableProfiles: new Set([canonical]),
+    packageSources: [],
+    cache: new Map([[`${canonical}:R4`, globalProfile]]),
+    profileNotFound: new Set(),
+    dbCacheNotFound: new Set(),
+    profileLoadPromises: new Map(),
+    autoDownload: true,
+    registryClient: {} as any,
+    packageDownloader: {} as any,
+    allowedPackages: [],
+    packageVersionPins: {},
+    profileSourcesConfig: { simplifier: true, packageRegistry: true },
+    profileSourceContext: { organizationId: 17, serverId: 23, fhirVersion: 'R4' },
+    profileResolutionSettings: { packageDownload: { autoDownload: true } } as any,
+    resolvePinnedCanonical: url => url,
+  };
+}

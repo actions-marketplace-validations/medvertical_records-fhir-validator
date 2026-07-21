@@ -4,6 +4,7 @@ import {
   validateContainedResourcesReferenced,
   validateNoEmptyArrays,
   validateOrphanPrimitiveSidecars,
+  validatePrimitiveSidecarArrayAlignment,
   validateResourceId,
   validateUniqueContainedResourceIds,
   validateUniqueElementIds,
@@ -60,6 +61,7 @@ export function validateResourceSanity(
     ...validators.narrative.validateNarrative(resource, resourceType),
     ...validateWhitespaceOnlyPrimitives(resource, resourceType),
     ...validateOrphanPrimitiveSidecars(resource, resourceType),
+    ...validatePrimitiveSidecarArrayAlignment(resource, resourceType),
   ];
 
   if (resourceType === 'Questionnaire' || resourceType === 'QuestionnaireResponse') {

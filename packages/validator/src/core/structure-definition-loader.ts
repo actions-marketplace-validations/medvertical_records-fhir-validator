@@ -1,17 +1,11 @@
-/**
- * StructureDefinition Loader
- * 
- * Loads and caches FHIR StructureDefinitions from various sources:
- * - Local package cache
- * - Bundled base profiles
- * - Remote sources (packages.fhir.org, Simplifier)
- */
+/** Loads and caches FHIR StructureDefinitions from bundled, local, and remote sources. */
 
 import { PackageDownloader } from '../package/package-downloader.js';
 import { PackageRegistryClient, packageRegistryClient } from '../package/package-registry-client.js';
 import { logger } from '../logger';
 import type { StructureDefinition } from './structure-definition-types';
-import type { ProfileSourcesConfig } from '../types';
+import type { ProfileSourcesConfig, ValidationSettings } from '../types';
+import type { ProfileSourceContext } from '../persistence';
 import { normalizeProfileSourcesConfig } from '@records-fhir/validation-types';
 import { isRelevantPackage as _isRelevantPackage } from './sd-loader-filesystem';
 import { parseAllowedPackages, isPackageAllowed as _isPackageAllowed } from './sd-loader-package-config';
@@ -27,7 +21,6 @@ import { scanProfileSources, warmUpProfilesFromDatabase } from './sd-loader-init
 import { loadProfile, type LoadProfileContext } from './sd-loader-load';
 export { normalizeKnownStructureDefinitionCanonicalUrl } from './sd-loader-version-utils';
 
-// Re-export types from separate file to break circular dependencies
 export type {
   StructureDefinition,
   ElementDefinition,
@@ -35,10 +28,6 @@ export type {
   Constraint,
   Binding
 } from './structure-definition-types';
-
-// ============================================================================
-// StructureDefinition Loader
-// ============================================================================
 
 export class StructureDefinitionLoader {
   private cachePath: string;
@@ -58,6 +47,12 @@ export class StructureDefinitionLoader {
   private profileLoadPromises = new Map<string, Promise<StructureDefinition | null>>();
   private initializationComplete: boolean = false; // Guard against re-initialization
   private pinnedCanonicals: Map<string, string> | null = null; // url → url|version
+  private readonly maxCacheEntries: number;
+  // External registrations have no durable reload source. The cache budget
+  // therefore applies only to entries the loader can reconstruct.
+  private readonly externalProfileCacheKeys = new Set<string>();
+  private profileSourceContext?: ProfileSourceContext;
+  private profileResolutionSettings?: ValidationSettings;
 
   constructor(
     cachePath: string,
@@ -69,6 +64,7 @@ export class StructureDefinitionLoader {
       packageVersionPins?: Record<string, string>;
       packageDownloader?: PackageDownloader;
       registryClient?: PackageRegistryClient;
+      maxCacheEntries?: number;
     }
   ) {
     this.cachePath = cachePath;
@@ -79,12 +75,8 @@ export class StructureDefinitionLoader {
     this.registryClient = options?.registryClient ?? packageRegistryClient;
     this.packageVersionPins = { ...(options?.packageVersionPins ?? {}) };
     this.packageDownloader = options?.packageDownloader ?? new PackageDownloader(this.cachePath, this.registryClient);
+    this.maxCacheEntries = Math.max(1, Math.trunc(options?.maxCacheEntries ?? 192));
 
-    // Priority order for package sources:
-    // 1. Bundled profiles (shipped with app) - highest priority. Skipped
-    //    when @records-fhir/bundled-profiles isn't installed and no env
-    //    override is set, so the engine still works online-only.
-    // 2. User cache (downloaded by HAPI or other tools)
     this.packageSources = [
       ...(this.bundledPath ? [this.bundledPath] : []),
       this.cachePath
@@ -96,13 +88,9 @@ export class StructureDefinitionLoader {
       logger.debug(`[SDLoader] Allowed packages: ${this.allowedPackages.join(', ')}`);
     }
 
-    // Start initialization but don't block constructor
     this.initializationPromise = this.initializeCache();
   }
 
-  /**
-   * Wait for initialization to complete
-   */
   async waitForInitialization(): Promise<void> {
     await this.initializationPromise;
   }
@@ -117,18 +105,11 @@ export class StructureDefinitionLoader {
     logger.info(`[SDLoader] Pinned ${pinned.size} canonical(s) — runtime resolution is now deterministic`);
   }
 
-  /**
-   * Get pinned canonical count for evidence reports.
-   */
   getPinnedCanonicalCount(): number {
     return this.pinnedCanonicals?.size ?? 0;
   }
 
-  /**
-   * Initialize cache with available profiles from all sources
-   */
   private async initializeCache(): Promise<void> {
-    // Guard against re-initialization
     if (this.initializationComplete) {
       logger.debug('[SDLoader] Already initialized, skipping');
       return;
@@ -147,11 +128,11 @@ export class StructureDefinitionLoader {
         cache: this.cache,
         availableProfiles: this.availableProfiles,
       });
+      this.pruneProfileCache();
 
       const elapsed = Date.now() - startTime;
       logger.info(`[SDLoader] ✅ Initialization complete in ${elapsed}ms (bundled: ${this.availableProfiles.size}, cached: ${this.cache.size})`);
 
-      // Mark initialization as complete
       this.initializationComplete = true;
 
     } catch (error) {
@@ -159,37 +140,73 @@ export class StructureDefinitionLoader {
     }
   }
 
-  // Package scanning methods extracted to sd-loader-package-scanner.ts
-
   /**
    * Load multiple StructureDefinitions in batch (optimized)
    * This is 3-5x faster than calling loadProfile() repeatedly
-   * 
-   * @param urls - Array of profile URLs to load
-   * @param fhirVersion - FHIR version
-   * @returns Map of URL to StructureDefinition (missing profiles will not be in map)
    */
   async loadProfilesBatch(
     urls: string[],
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
   ): Promise<Map<string, StructureDefinition>> {
-    return loadProfilesBatchWithCache({
+    if (this.profileSourceContext?.organizationId !== undefined) {
+      const scopedProfiles = new Map<string, StructureDefinition>();
+      await Promise.all(urls.map(async url => {
+        const profile = await this.loadProfile(url, fhirVersion);
+        if (profile) scopedProfiles.set(url, profile);
+      }));
+      return scopedProfiles;
+    }
+    const profiles = await loadProfilesBatchWithCache({
       urls,
       fhirVersion,
       cache: this.cache,
       resolvePinnedCanonical: url => this.resolvePinnedCanonical(url),
       loadProfile: (url, version) => this.loadProfile(url, version),
     });
+    this.pruneProfileCache();
+    return profiles;
   }
 
   /**
-   * Load a StructureDefinition by URL
+   * Bind subsequent profile loads to the current validation request. Scoped
+   * validator instances make this stable for the duration of a tenant run.
    */
+  setProfileResolutionContext(
+    context?: ProfileSourceContext,
+    settings?: ValidationSettings,
+  ): void {
+    this.profileSourceContext = context;
+    this.profileResolutionSettings = settings;
+  }
+
+  getProfileResolutionContext(): ProfileSourceContext | undefined {
+    return this.profileSourceContext
+      ? { ...this.profileSourceContext }
+      : undefined;
+  }
+
   loadProfile(
     url: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
   ): Promise<StructureDefinition | null> {
-    return loadProfile(this.loadContext(), url, fhirVersion);
+    return loadProfile(this.loadContext(), url, fhirVersion).finally(() => {
+      this.pruneProfileCache();
+    });
+  }
+
+  private pruneProfileCache(): void {
+    while (this.cache.size > this.maxCacheEntries) {
+      const oldestEvictableKey = this.oldestEvictableCacheKey();
+      if (oldestEvictableKey === undefined) break;
+      this.cache.delete(oldestEvictableKey);
+    }
+  }
+
+  private oldestEvictableCacheKey(): string | undefined {
+    for (const cacheKey of this.cache.keys()) {
+      if (!this.externalProfileCacheKeys.has(cacheKey)) return cacheKey;
+    }
+    return undefined;
   }
 
   private loadContext(): LoadProfileContext {
@@ -206,17 +223,13 @@ export class StructureDefinitionLoader {
       allowedPackages: this.allowedPackages,
       packageVersionPins: this.packageVersionPins,
       profileSourcesConfig: this.profileSourcesConfig,
+      profileSourceContext: this.profileSourceContext,
+      profileResolutionSettings: this.profileResolutionSettings,
       resolvePinnedCanonical: (candidateUrl: string) => this.resolvePinnedCanonical(candidateUrl),
     };
   }
 
-  // Filesystem loading methods extracted to sd-loader-filesystem.ts
-
-  /**
-   * Check if base profiles are available
-   */
   async hasBaseProfiles(): Promise<boolean> {
-    // Check for common base profiles
     const baseProfiles = [
       'http://hl7.org/fhir/StructureDefinition/Patient',
       'http://hl7.org/fhir/StructureDefinition/Observation',
@@ -245,23 +258,14 @@ export class StructureDefinitionLoader {
     return null;
   }
 
-  /**
-   * Check if a specific profile is available
-   */
   isProfileAvailable(url: string): boolean {
     return this.availableProfiles.has(url) || this.cache.has(url);
   }
 
-  /**
-   * Get list of all available profiles
-   */
   getAvailableProfiles(): string[] {
     return Array.from(this.availableProfiles);
   }
 
-  /**
-   * Load an entire IG package
-   */
   async loadIGPackage(
     packageId: string,
     version?: string
@@ -269,11 +273,6 @@ export class StructureDefinitionLoader {
     return loadIGPackageIntoAvailableProfiles(this.cachePath, this.availableProfiles, packageId, version);
   }
 
-  // Package configuration methods extracted to sd-loader-package-config.ts
-
-  /**
-   * Enable or disable auto-download
-   */
   setAutoDownload(enabled: boolean): void {
     this.autoDownload = enabled;
     logger.info(`[SDLoader] Auto-download ${enabled ? 'enabled' : 'disabled'}`);
@@ -290,31 +289,19 @@ export class StructureDefinitionLoader {
     );
   }
 
-  /**
-   * Get current remote profile source configuration.
-   */
   getProfileSourcesConfig(): ProfileSourcesConfig {
     return { ...this.profileSourcesConfig };
   }
 
-  /**
-   * Get auto-download status
-   */
   isAutoDownloadEnabled(): boolean {
     return this.autoDownload;
   }
 
-  /**
-   * Set allowed packages
-   */
   setAllowedPackages(packages: string[]): void {
     this.allowedPackages = packages;
     logger.info(`[SDLoader] Allowed packages updated: ${packages.join(', ')}`);
   }
 
-  /**
-   * Get allowed packages
-   */
   getAllowedPackages(): string[] {
     return [...this.allowedPackages];
   }
@@ -327,9 +314,6 @@ export class StructureDefinitionLoader {
     logger.info(`[SDLoader] Package version pins updated: ${Object.keys(pins).length} package(s)`);
   }
 
-  /**
-   * Get package version pins used by auto-download.
-   */
   getPackageVersionPins(): Record<string, string> {
     return { ...this.packageVersionPins };
   }
@@ -344,6 +328,7 @@ export class StructureDefinitionLoader {
     const family = fhirVersionFamily(profile) ?? fhirVersion ?? 'R4';
     const cacheKey = cacheKeyForProfile(url, family);
     this.cache.set(cacheKey, profile);
+    this.externalProfileCacheKeys.add(cacheKey);
     this.availableProfiles.add(url);
     this.profileNotFound.delete(cacheKey);
     this.profileLoadPromises.delete(cacheKey);
@@ -385,8 +370,8 @@ export class StructureDefinitionLoader {
     const cacheKey = `${sd.url}:${fhirVersion}`;
 
     this.cache.set(cacheKey, sanitized);
+    this.externalProfileCacheKeys.add(cacheKey);
     this.availableProfiles.add(sd.url);
-    // Clear any prior "not-found" marker so subsequent lookups hit the cache
     this.dbCacheNotFound.delete(sd.url);
     this.dbCacheNotFound.delete(cacheKey);
     this.profileNotFound.delete(cacheKey);
@@ -396,11 +381,9 @@ export class StructureDefinitionLoader {
     return true;
   }
 
-  /**
-   * Clear cache
-   */
   clearCache(): void {
     this.cache.clear();
+    this.externalProfileCacheKeys.clear();
     this.profileNotFound.clear();
     this.profileLoadPromises.clear();
     logger.info('[SDLoader] Cache cleared');

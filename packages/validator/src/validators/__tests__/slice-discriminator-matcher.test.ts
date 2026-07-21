@@ -1,7 +1,52 @@
 import { describe, expect, it } from 'vitest';
 import { matchDiscriminator } from '../slice-discriminator-matcher';
-import { codingMatchesBindingCodes, matchesPattern } from '../slice-utils';
+import { codingMatchesBindingCodes, getValueAtPath, matchesPattern } from '../slice-utils';
 import type { SliceDefinition } from '../slice-types';
+
+describe('getValueAtPath', () => {
+  it('continues resolving after array and choice-type segments', () => {
+    const extension = {
+      extension: [
+        {
+          url: 'fieldStrength',
+          valueQuantity: {
+            value: 3,
+            unit: 'tesla',
+            system: 'http://unitsofmeasure.org',
+            code: 'T',
+          },
+        },
+      ],
+    };
+
+    expect(getValueAtPath(extension, 'extension.value[x].unit')).toBe('tesla');
+    expect(getValueAtPath(extension, 'extension.value[x].system')).toBe('http://unitsofmeasure.org');
+    expect(getValueAtPath(extension, 'extension.value[x].code')).toBe('T');
+  });
+
+  it('uses the first array element that resolves the complete path', () => {
+    const extension = {
+      extension: [
+        {
+          url: 'withoutSystem',
+          valueQuantity: {
+            value: 3,
+            unit: 'tesla',
+          },
+        },
+        {
+          url: 'withSystem',
+          valueQuantity: {
+            value: 5,
+            system: 'http://unitsofmeasure.org',
+          },
+        },
+      ],
+    };
+
+    expect(getValueAtPath(extension, 'extension.value[x].system')).toBe('http://unitsofmeasure.org');
+  });
+});
 
 describe('matchDiscriminator', () => {
   it('matches value $this slices by binding codes', () => {

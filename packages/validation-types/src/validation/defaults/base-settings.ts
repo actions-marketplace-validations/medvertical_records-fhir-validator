@@ -177,9 +177,6 @@ export const DEFAULT_VALIDATION_SETTINGS_R4: ValidationSettings = {
     enabled: false,
     timeout: 30000,
     igPackages: [],
-    useProcessPool: true,
-    poolSize: 3,
-    cachePath: '/tmp/fhir-packages',
     enableBestPractice: true
   },
   validationStrictness: 'standard'
@@ -276,9 +273,6 @@ export const DEFAULT_VALIDATION_SETTINGS_R5: ValidationSettings = {
     enabled: false,
     timeout: 30000,
     igPackages: [],
-    useProcessPool: true,
-    poolSize: 3,
-    cachePath: '/tmp/fhir-packages',
     enableBestPractice: true
   }
 };

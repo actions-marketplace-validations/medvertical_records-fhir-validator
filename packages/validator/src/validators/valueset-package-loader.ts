@@ -9,12 +9,10 @@ import * as os from 'os';
 import type {
     ValueSet,
     CodeSystem,
-    ValueSetComposeInclude,
-    ValueSetComposeExclude,
 } from './valueset-types';
 import { ValueSetCache, valueSetCache } from './valueset-cache';
 import { logger } from '../logger';
-import { applyConceptFilter, extractCodesFromCodeSystem } from './valueset-concept-utils';
+import { extractCodesFromCodeSystem } from './valueset-concept-utils';
 import {
     type FhirVersion,
     preferredMajorFor,
@@ -24,13 +22,13 @@ import {
     findResourceByCanonicalScan,
     findResourceInPackages,
 } from './valueset-package-search';
-export interface ValueSetConceptFilter {
-    system: string;
-    property: string;
-    op: string;
-    value: string;
-    version?: string;
-}
+import {
+    collectCodesFromValueSet,
+    collectIncludeConceptFilters,
+    type ValueSetConceptFilter,
+} from './valueset-package-expansion';
+
+export type { ValueSetConceptFilter };
 
 // ============================================================================
 // Package Loader
@@ -38,6 +36,8 @@ export interface ValueSetConceptFilter {
 
 export class ValueSetPackageLoader {
     private packageDirectories: string[];
+    private missingCodeSystemKeys = new Set<string>();
+    private pendingCodeSystemLoads = new Map<string, Promise<CodeSystem | null>>();
 
     constructor(private cache: ValueSetCache = valueSetCache) {
         this.packageDirectories = this.computePackageDirectories();
@@ -79,6 +79,12 @@ export class ValueSetPackageLoader {
      */
     getPackageDirectories(): string[] {
         return [...this.packageDirectories];
+    }
+
+    /** Clear loader-local negative/single-flight state after packages change. */
+    clearLookupState(): void {
+        this.missingCodeSystemKeys.clear();
+        this.pendingCodeSystemLoads.clear();
     }
 
     /**
@@ -161,7 +167,7 @@ export class ValueSetPackageLoader {
         const valueSet = await this.loadValueSetResource(valueSetUrl, fhirVersion);
         if (!valueSet) return [];
 
-        return this.collectIncludeConceptFilters(valueSet, new Set(), 0, preferredMajorFor(fhirVersion));
+        return collectIncludeConceptFilters(valueSet, this, new Set(), 0, preferredMajorFor(fhirVersion));
     }
 
     /**
@@ -180,10 +186,41 @@ export class ValueSetPackageLoader {
         if (this.cache.hasCodeSystemFile(cacheKey)) {
             const cached = this.cache.getCodeSystemFile(cacheKey);
             if (cached) return cached;
+            // A null in the shared cache may predate this loader and a package
+            // install. Only trust misses observed by this loader; cache resets
+            // explicitly clear this local set.
+            if (this.missingCodeSystemKeys.has(cacheKey)) return null;
         }
+        const pending = this.pendingCodeSystemLoads.get(cacheKey);
+        if (pending) return pending;
+
+        const load = this.loadCodeSystemUncached(
+            systemUrl,
+            cacheKey,
+            preferredFhirMajor,
+            requestedVersion,
+        );
+        this.pendingCodeSystemLoads.set(cacheKey, load);
+        try {
+            return await load;
+        } finally {
+            this.pendingCodeSystemLoads.delete(cacheKey);
+        }
+    }
+
+    private async loadCodeSystemUncached(
+        systemUrl: string,
+        cacheKey: string,
+        preferredFhirMajor?: string,
+        requestedVersion?: string,
+    ): Promise<CodeSystem | null> {
         const canonical = systemUrl.split('|')[0];
         const lastSegment = canonical.split('/').pop();
-        if (!lastSegment) { this.cache.setCodeSystemFile(cacheKey, null); return null; }
+        if (!lastSegment) {
+            this.cache.setCodeSystemFile(cacheKey, null);
+            this.missingCodeSystemKeys.add(cacheKey);
+            return null;
+        }
         const bestMatch = await this.findInPackages<CodeSystem>(
             canonical,
             [`CodeSystem-${lastSegment}.json`, `${lastSegment}.json`],
@@ -196,6 +233,7 @@ export class ValueSetPackageLoader {
             requestedVersion,
         );
         if (bestMatch) {
+            this.missingCodeSystemKeys.delete(cacheKey);
             this.cache.setCodeSystemFile(cacheKey, bestMatch);
             this.cache.setCodeSystem(cacheKey, bestMatch);
             this.cache.setCodeSystemFile(canonical, bestMatch);
@@ -203,6 +241,7 @@ export class ValueSetPackageLoader {
             return bestMatch;
         }
         this.cache.setCodeSystemFile(cacheKey, null);
+        this.missingCodeSystemKeys.add(cacheKey);
         return null;
     }
 
@@ -230,177 +269,10 @@ export class ValueSetPackageLoader {
         // Derive preferred FHIR major version from the ValueSet's own version
         // (e.g. "5.0.0" → "5") so CodeSystem lookups prefer the correct package.
         const vsMajor = valueSet.version?.split('.')[0];
-        const codes = await this.collectCodesFromValueSet(valueSet, visited, 0, vsMajor);
+        const codes = await collectCodesFromValueSet(valueSet, this, visited, 0, vsMajor);
         logger.debug(
             `[ValueSetPackageLoader] extractCodesFromValueSet returning ${codes.length} codes`,
         );
-        return codes;
-    }
-
-    /**
-     * Hard ceiling on `compose.include.valueSet` recursion depth. Real
-     * ValueSet composition trees never exceed a handful of levels; anything
-     * beyond this limit is almost certainly a configuration error.
-     */
-    private static readonly MAX_COMPOSITION_DEPTH = 20;
-
-    /**
-     * Internal: recursive collector used by `extractCodesFromValueSet`.
-     *
-     * Returns a deduplicated array containing both the prefixed (`system|code`)
-     * and bare (`code`) form of every matching code, mirroring the behaviour
-     * of the caller.
-     */
-    private async collectCodesFromValueSet(
-        valueSet: ValueSet,
-        visited: Set<string>,
-        depth: number,
-        preferredFhirMajor?: string,
-    ): Promise<string[]> {
-        if (depth >= ValueSetPackageLoader.MAX_COMPOSITION_DEPTH) {
-            logger.warn(
-                `[ValueSetPackageLoader] Composition depth limit ` +
-                `(${ValueSetPackageLoader.MAX_COMPOSITION_DEPTH}) reached at ` +
-                `${valueSet.url ?? '<anonymous>'} — stopping recursion`,
-            );
-            return [];
-        }
-        if (valueSet.url && visited.has(valueSet.url)) {
-            logger.warn(
-                `[ValueSetPackageLoader] Cycle detected at ${valueSet.url} — skipping`,
-            );
-            return [];
-        }
-        if (valueSet.url) visited.add(valueSet.url);
-
-        const accumulator = new Set<string>();
-
-        // 1. Pre-expanded expansion (flat + nested)
-        if (valueSet.expansion?.contains) {
-            const flatten = (
-                entries: Array<{ system?: string; code?: string; contains?: any[] }>,
-            ): void => {
-                for (const entry of entries) {
-                    if (entry.code) {
-                        if (entry.system) {
-                            accumulator.add(`${entry.system}|${entry.code}`);
-                        }
-                        accumulator.add(entry.code);
-                    }
-                    if (Array.isArray(entry.contains) && entry.contains.length > 0) {
-                        flatten(entry.contains);
-                    }
-                }
-            };
-            flatten(valueSet.expansion.contains);
-        }
-
-        // 2. compose.include
-        if (valueSet.compose?.include) {
-            for (const include of valueSet.compose.include) {
-                const included = await this.resolveIncludeOrExclude(
-                    include,
-                    visited,
-                    depth,
-                    preferredFhirMajor,
-                );
-                included.forEach(code => accumulator.add(code));
-            }
-        }
-
-        // 3. compose.exclude — remove matching codes from the accumulator
-        if (valueSet.compose?.exclude) {
-            for (const exclude of valueSet.compose.exclude) {
-                const excluded = await this.resolveIncludeOrExclude(
-                    exclude,
-                    visited,
-                    depth,
-                    preferredFhirMajor,
-                );
-                excluded.forEach(code => accumulator.delete(code));
-            }
-        }
-
-        return Array.from(accumulator);
-    }
-
-    /**
-     * Resolve a `compose.include` / `compose.exclude` entry to a set of
-     * `system|code` + `code` strings.
-     */
-    private async resolveIncludeOrExclude(
-        entry: ValueSetComposeInclude | ValueSetComposeExclude,
-        visited: Set<string>,
-        depth: number,
-        preferredFhirMajor?: string,
-    ): Promise<string[]> {
-        const codes: string[] = [];
-        const system = entry.system;
-
-        // 3a. Explicit concepts
-        if (entry.concept && entry.concept.length > 0) {
-            for (const concept of entry.concept) {
-                if (!concept.code) continue;
-                if (system) codes.push(`${system}|${concept.code}`);
-                codes.push(concept.code);
-            }
-        }
-
-        // 3b. Referenced ValueSets (recursive composition)
-        if (entry.valueSet && entry.valueSet.length > 0) {
-            for (const vsUrl of entry.valueSet) {
-                const nestedRaw = await this.loadValueSetResource(vsUrl);
-                if (nestedRaw) {
-                    const nestedCodes = await this.collectCodesFromValueSet(
-                        nestedRaw,
-                        visited,
-                        depth + 1,
-                        preferredFhirMajor,
-                    );
-                    codes.push(...nestedCodes);
-                }
-            }
-        }
-
-        // 3c. System without explicit concepts and without filters →
-        //     include every code from the system
-        const hasConcepts = entry.concept && entry.concept.length > 0;
-        const hasFilters =
-            'filter' in entry && Array.isArray(entry.filter) && entry.filter.length > 0;
-        const hasValueSets = entry.valueSet && entry.valueSet.length > 0;
-
-        if (system && !hasConcepts && !hasFilters && !hasValueSets) {
-            const codeSystem = await this.loadCodeSystem(system, preferredFhirMajor, entry.version);
-            if (codeSystem) {
-                const csCodes = this.extractCodesFromCodeSystem(codeSystem);
-                for (const code of csCodes) {
-                    codes.push(`${system}|${code}`);
-                    codes.push(code);
-                }
-            } else {
-                logger.warn(
-                    `[ValueSetPackageLoader] CodeSystem not found for ${system}`,
-                );
-            }
-        }
-
-        // 3d. System + filter → apply the filter to the CodeSystem's concept
-        //     tree. Supports the two most common filter operations:
-        //       - `concept is-a <code>`  : include the code and all descendants
-        //       - `concept = <code>`     : include just the code
-        if (system && hasFilters) {
-            const codeSystem = await this.loadCodeSystem(system, preferredFhirMajor, entry.version);
-            if (codeSystem) {
-                for (const filter of (entry as ValueSetComposeInclude).filter ?? []) {
-                    const filtered = applyConceptFilter(codeSystem, filter);
-                    for (const code of filtered) {
-                        codes.push(`${system}|${code}`);
-                        codes.push(code);
-                    }
-                }
-            }
-        }
-
         return codes;
     }
 
@@ -433,44 +305,6 @@ export class ValueSetPackageLoader {
         );
         this.cache.setValueSetFile(cacheKey, result ?? null);
         return result;
-    }
-
-    private async collectIncludeConceptFilters(
-        valueSet: ValueSet,
-        visited: Set<string>,
-        depth: number,
-        preferredFhirMajor?: string,
-    ): Promise<ValueSetConceptFilter[]> {
-        if (depth >= ValueSetPackageLoader.MAX_COMPOSITION_DEPTH) return [];
-        if (valueSet.url && visited.has(valueSet.url)) return [];
-        if (valueSet.url) visited.add(valueSet.url);
-
-        const filters: ValueSetConceptFilter[] = [];
-        for (const include of valueSet.compose?.include ?? []) {
-            if (include.system && Array.isArray(include.filter)) {
-                for (const filter of include.filter) {
-                    filters.push({
-                        system: include.system,
-                        version: include.version,
-                        property: filter.property,
-                        op: filter.op,
-                        value: filter.value,
-                    });
-                }
-            }
-
-            for (const nestedUrl of include.valueSet ?? []) {
-                const nested = await this.loadValueSetResource(
-                    nestedUrl,
-                    preferredFhirMajor === '4' ? 'R4' : preferredFhirMajor === '5' ? 'R5' : preferredFhirMajor === '6' ? 'R6' : undefined,
-                );
-                if (nested) {
-                    filters.push(...await this.collectIncludeConceptFilters(nested, visited, depth + 1, preferredFhirMajor));
-                }
-            }
-        }
-
-        return filters;
     }
 
     /**

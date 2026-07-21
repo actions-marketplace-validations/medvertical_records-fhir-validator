@@ -17,6 +17,51 @@ export function getTerminologyDisplayMismatchKey(issue: ValidationIssue): string
   ].join(':');
 }
 
+export function getTerminologyCodeInvalidKey(issue: ValidationIssue): string | null {
+  if (issue.code !== 'terminology-code-invalid' && issue.code !== 'invalid-code') return null;
+  const details = getDetailsRecord(issue);
+  const system = typeof details?.system === 'string' ? details.system.trim().toLowerCase() : '';
+  const code = typeof details?.code === 'string' ? details.code.trim().toLowerCase() : '';
+  if (!system || !code) return null;
+  const normalizedPath = normalizeIssuePathForTerminologyCode(issue);
+  return [normalizedPath, system, code].join(':');
+}
+
+export function compareTerminologyCodeInvalidSpecificity(
+  candidate: ValidationIssue,
+  existing: ValidationIssue,
+): number {
+  const candidateScore = getTerminologyCodeInvalidSpecificity(candidate);
+  const existingScore = getTerminologyCodeInvalidSpecificity(existing);
+  if (candidateScore !== existingScore) return candidateScore - existingScore;
+  return candidate.message.length - existing.message.length;
+}
+
+function normalizeIssuePathForTerminologyCode(issue: ValidationIssue): string {
+  const resourceType = getIssueResourceType(issue);
+  const rawPath = getIssuePath(issue).trim().toLowerCase();
+  const prefix = `${resourceType}.`.toLowerCase();
+  const relativePath = resourceType && rawPath.startsWith(prefix)
+    ? rawPath.slice(prefix.length)
+    : rawPath;
+  const normalizedPath = normalizeChoiceTypePath(relativePath, { stripIndices: false });
+  if (normalizedPath.endsWith('.coding.code')) return normalizedPath.slice(0, -'.code'.length);
+  if (normalizedPath.endsWith('.code')) return normalizedPath.slice(0, -'.code'.length);
+  return normalizedPath;
+}
+
+function getTerminologyCodeInvalidSpecificity(issue: ValidationIssue): number {
+  const details = getDetailsRecord(issue);
+  let score = getSeverityRank(issue.severity) * 1_000;
+  if (details?.loincCheckDigitStatus === 'invalid' || typeof details?.expectedCheckDigit === 'string') {
+    score += 200;
+  }
+  if (issue.message.toLowerCase().includes('check digit')) score += 100;
+  if (issue.code === 'terminology-code-invalid') score += 25;
+  if (details?.provenance && typeof details.provenance === 'object') score += 50;
+  return score;
+}
+
 export function compareDisplayMismatchSpecificity(candidate: ValidationIssue, existing: ValidationIssue): number {
   const candidateScore = getDisplayMismatchSpecificity(candidate);
   const existingScore = getDisplayMismatchSpecificity(existing);

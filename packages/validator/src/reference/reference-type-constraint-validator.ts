@@ -1,56 +1,23 @@
-/**
- * Reference Type Constraint Validator
- * 
- * Validates that FHIR references match the expected resource types defined in StructureDefinition constraints.
- * Checks reference.type and targetProfile constraints for correctness.
- * 
- * Task 6.2: Implement reference type validation against StructureDefinition constraints
- */
-
 import { extractResourceType as _extractResourceType, parseReference, type ReferenceParseResult } from './reference-type-extractor';
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export interface ReferenceTypeConstraint {
-  /** Allowed target resource types for this reference */
   targetTypes: string[];
-  /** Allowed target profiles (canonical URLs) */
   targetProfiles?: string[];
-  /** Whether the reference type must be specified */
   requireType?: boolean;
-  /** Field path for the reference */
   fieldPath: string;
-  /** Whether this reference is required */
   required?: boolean;
 }
 
 export interface ReferenceTypeValidationResult {
-  /** Whether the reference type is valid */
   isValid: boolean;
-  /** Validation message */
   message: string;
-  /** Severity level */
   severity: 'error' | 'warning' | 'info';
-  /** Error code if invalid */
   code?: string;
-  /** Expected resource types */
   expectedTypes?: string[];
-  /** Actual resource type found */
   actualType?: string | null;
-  /** Parse result details */
   parseResult?: ReferenceParseResult;
 }
 
-// ============================================================================
-// Reference Type Constraints by Resource Type
-// ============================================================================
-
-/**
- * Common reference type constraints from FHIR specification
- * Based on StructureDefinition element definitions
- */
 export const REFERENCE_TYPE_CONSTRAINTS: Record<string, Record<string, ReferenceTypeConstraint>> = {
   Patient: {
     'generalPractitioner': {
@@ -108,7 +75,7 @@ export const REFERENCE_TYPE_CONSTRAINTS: Record<string, Record<string, Reference
     },
     'focus': {
       fieldPath: 'focus',
-      targetTypes: ['Resource'], // Can reference any resource
+      targetTypes: ['Resource'],
       required: false,
     },
   },
@@ -141,7 +108,7 @@ export const REFERENCE_TYPE_CONSTRAINTS: Record<string, Record<string, Reference
     },
     'evidence.detail': {
       fieldPath: 'evidence.detail',
-      targetTypes: ['Resource'], // Can reference any resource
+      targetTypes: ['Resource'],
       required: false,
     },
   },
@@ -238,10 +205,6 @@ export const REFERENCE_TYPE_CONSTRAINTS: Record<string, Record<string, Reference
   },
 };
 
-// ============================================================================
-// Reference Type Constraint Validator Class
-// ============================================================================
-
 export class ReferenceTypeConstraintValidator {
   private constraints: Record<string, Record<string, ReferenceTypeConstraint>>;
 
@@ -249,15 +212,11 @@ export class ReferenceTypeConstraintValidator {
     this.constraints = customConstraints || REFERENCE_TYPE_CONSTRAINTS;
   }
 
-  /**
-   * Validate that a reference matches the type constraints for a field
-   */
   validateReferenceType(
     reference: string,
     resourceType: string,
     fieldPath: string
   ): ReferenceTypeValidationResult {
-    // Get constraints for this resource type and field
     const resourceConstraints = this.constraints[resourceType];
     if (!resourceConstraints) {
       return {
@@ -276,7 +235,6 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // Parse the reference to extract the resource type
     const parseResult = parseReference(reference);
     
     if (!parseResult.isValid) {
@@ -289,7 +247,6 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // For contained references, we can't validate type without resolving
     if (parseResult.referenceType === 'contained') {
       return {
         isValid: true,
@@ -300,7 +257,6 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // Check if the extracted resource type matches allowed types
     const actualType = parseResult.resourceType;
     if (!actualType) {
       if (parseResult.referenceType === 'absolute') {
@@ -322,9 +278,8 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // Check if actual type is in allowed types
     const isTypeAllowed = fieldConstraints.targetTypes.includes(actualType) ||
-                          fieldConstraints.targetTypes.includes('Resource'); // 'Resource' means any type allowed
+                          fieldConstraints.targetTypes.includes('Resource');
 
     if (!isTypeAllowed) {
       return {
@@ -348,9 +303,6 @@ export class ReferenceTypeConstraintValidator {
     };
   }
 
-  /**
-   * Validate reference object with type property
-   */
   validateReferenceObject(
     referenceObject: { reference: string; type?: string; display?: string },
     resourceType: string,
@@ -358,14 +310,12 @@ export class ReferenceTypeConstraintValidator {
   ): ReferenceTypeValidationResult {
     const { reference, type: declaredType } = referenceObject;
 
-    // First validate the reference string itself
     const referenceValidation = this.validateReferenceType(reference, resourceType, fieldPath);
     
     if (!referenceValidation.isValid) {
       return referenceValidation;
     }
 
-    // If reference.type is provided, validate it matches the extracted type
     if (declaredType && referenceValidation.actualType) {
       if (declaredType !== referenceValidation.actualType) {
         return {
@@ -383,31 +333,19 @@ export class ReferenceTypeConstraintValidator {
     return referenceValidation;
   }
 
-  /**
-   * Get type constraints for a specific field
-   */
   getConstraintsForField(resourceType: string, fieldPath: string): ReferenceTypeConstraint | null {
     return this.constraints[resourceType]?.[fieldPath] || null;
   }
 
-  /**
-   * Check if a field has type constraints
-   */
   hasConstraints(resourceType: string, fieldPath: string): boolean {
     return !!this.constraints[resourceType]?.[fieldPath];
   }
 
-  /**
-   * Get all constrained fields for a resource type
-   */
   getConstrainedFields(resourceType: string): string[] {
     const resourceConstraints = this.constraints[resourceType];
     return resourceConstraints ? Object.keys(resourceConstraints) : [];
   }
 
-  /**
-   * Add or update constraints for a field
-   */
   setConstraints(resourceType: string, fieldPath: string, constraints: ReferenceTypeConstraint): void {
     if (!this.constraints[resourceType]) {
       this.constraints[resourceType] = {};
@@ -415,9 +353,6 @@ export class ReferenceTypeConstraintValidator {
     this.constraints[resourceType][fieldPath] = constraints;
   }
 
-  /**
-   * Batch validate multiple references
-   */
   validateMultipleReferences(
     references: Array<{ reference: string; fieldPath: string }>,
     resourceType: string
@@ -427,10 +362,6 @@ export class ReferenceTypeConstraintValidator {
     );
   }
 }
-
-// ============================================================================
-// Singleton Instance
-// ============================================================================
 
 let validatorInstance: ReferenceTypeConstraintValidator | null = null;
 
@@ -444,4 +375,3 @@ export function getReferenceTypeConstraintValidator(): ReferenceTypeConstraintVa
 export function resetReferenceTypeConstraintValidator(): void {
   validatorInstance = null;
 }
-

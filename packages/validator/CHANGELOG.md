@@ -10,7 +10,43 @@ ship together; package-only changes are noted under each release.
 
 ## [Unreleased]
 
-No unreleased changes yet.
+## [0.4.3] — 2026-07-21
+
+Patch release completing the executable HL7 JSON and scoped MII 2026 parity
+lanes while hardening version-aware validation behavior.
+
+### Changed
+
+- Completed all 536 executable HL7 JSON comparisons against the pinned Java
+  `OperationOutcome` baselines with zero runtime skips or parity differences.
+- Revalidated the full MII 2026 reference corpus at 231/231 measured matches,
+  with the existing 22 explicitly classified out-of-scope/reference skips.
+- Kept tenant-hosted custom rules outside the standalone MII reference lane so
+  infrastructure availability cannot be misclassified as a clinical delta.
+- Updated the pinned HL7 `FHIR/fhir-test-cases` manifest to
+  `8923095fc5e3750025f7dd71988c9e89083b1487` and removed obsolete Java-outcome
+  path and synthetic-baseline workarounds.
+
+### Fixed
+
+- Preserved the requested FHIR version for nested complex-type terminology
+  bindings, preventing R5/R6 package content from contaminating R4 validation.
+- Fixed versioned snapshot eviction and legacy id-less slice scoping so cached
+  validation remains deterministic regardless of case order.
+- Aligned structural validation for primitive sidecars, repeating elements,
+  invalid StructureDefinition paths, QuestionnaireResponse reference types,
+  CodeSystem metadata, XHTML language attributes, and rendering XHTML.
+- Normalized reference-harness parser and legacy fixture behavior only where
+  the Java baseline represents harness/runtime behavior rather than a FHIR
+  resource rule.
+
+### Verification
+
+- HL7 JSON parity: 536/536 (100.0%), 0 failed, 0 skipped, 0 errors.
+- MII 2026 reference parity: 231/231 measured (100.0%), 22 classified skips,
+  128/128 profiles prewarmed, and 0 FHIRPath constraint skips.
+- Verified with focused regression tests, validator typecheck/build, package
+  dry-run, parity gates, and standalone public-export checks.
 
 ## [0.4.2] — 2026-07-05
 
@@ -713,7 +749,10 @@ extracted from the Records DataOps Control Plane.
   are explicitly out of scope for this package and are not blended
   into the headline conformance score.
 
-[Unreleased]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.0...HEAD
+[Unreleased]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.3...HEAD
+[0.4.3]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.2...validator-v0.4.3
+[0.4.2]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.1...validator-v0.4.2
+[0.4.1]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.0...validator-v0.4.1
 [0.4.0]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.3.0...validator-v0.4.0
 [0.3.0]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.2.0...validator-v0.3.0
 [0.2.0]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.1.14...validator-v0.2.0

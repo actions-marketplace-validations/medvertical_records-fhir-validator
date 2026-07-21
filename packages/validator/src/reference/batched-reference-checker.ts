@@ -1,12 +1,3 @@
-/**
- * Batched Reference Checker
- *
- * Efficiently checks existence of multiple referenced resources using parallel
- * HTTP HEAD requests, with an automatic fallback to GET `?_summary=count` for
- * servers that don't support HEAD, and a per-host circuit breaker that
- * degrades gracefully when a FHIR server is unreachable.
- */
-
 import type { AxiosInstance } from 'axios';
 import { parseReference, type ReferenceParseResult } from './reference-type-extractor';
 import { extractReferencesFromBundle, extractReferencesFromResource } from './reference-extraction';
@@ -24,53 +15,31 @@ import { logger } from '../logger';
 
 export type { BatchCheckConfig } from './reference-http-client';
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export interface ReferenceExistenceCheck {
-  /** The reference to check */
   reference: string;
-  /** Parsed reference information */
   parseResult: ReferenceParseResult;
-  /** Whether the reference exists */
   exists: boolean;
-  /** HTTP status code */
   statusCode?: number;
-  /** Error message if check failed */
   errorMessage?: string;
-  /** Response time in milliseconds */
   responseTimeMs?: number;
-  /** Whether result came from cache */
   fromCache?: boolean;
 }
 
 export interface BatchCheckResult {
-  /** All check results */
   results: ReferenceExistenceCheck[];
-  /** Number of references that exist */
   existCount: number;
-  /** Number of references that don't exist */
   notExistCount: number;
-  /** Number of checks that failed */
   failedCount: number;
-  /** Number of results from cache */
   cacheHitCount: number;
-  /** Total time in milliseconds */
   totalTimeMs: number;
-  /** Average response time per request */
   averageResponseTimeMs: number;
 }
-
-// ============================================================================
-// Batched Reference Checker Class
-// ============================================================================
 
 export class BatchedReferenceChecker {
   private cache = new ReferenceCheckCache();
   private httpClient: AxiosInstance;
   private config: ResolvedBatchCheckConfig;
-  private pendingChecks: Map<string, Promise<ReferenceExistenceCheck>> = new Map(); // Task 10.9: Request deduplication
+  private pendingChecks: Map<string, Promise<ReferenceExistenceCheck>> = new Map();
 
   private circuitBreaker = new ReferenceCircuitBreaker();
 
@@ -86,26 +55,20 @@ export class BatchedReferenceChecker {
     this.httpClient = createReferenceHttpClient(this.config);
   }
 
-  /**
-   * Check existence of multiple references in batches
-   */
   async checkBatch(
     references: string[],
     config?: Partial<BatchCheckConfig>
   ): Promise<BatchCheckResult> {
-    // Merge instance config with call-specific config
     const fullConfig = { ...this.config, ...config };
     const startTime = Date.now();
 
     logger.info(`[BatchedReferenceChecker] Checking ${references.length} references (max concurrent: ${fullConfig.maxConcurrent})`);
 
-    // Parse all references
     const parsedRefs = references.map(ref => ({
       reference: ref,
       parseResult: parseReference(ref),
     }));
 
-    // Check cache first
     const uncachedRefs: typeof parsedRefs = [];
     const results: ReferenceExistenceCheck[] = [];
     let cacheHits = 0;
@@ -131,7 +94,6 @@ export class BatchedReferenceChecker {
 
     logger.info(`[BatchedReferenceChecker] ${cacheHits} cache hits, ${uncachedRefs.length} uncached`);
 
-    // Check uncached references in parallel batches
     const uncachedResults = await this.checkReferencesInParallel(
       uncachedRefs,
       fullConfig
@@ -152,10 +114,6 @@ export class BatchedReferenceChecker {
     };
   }
 
-  /**
-   * Check references in parallel with concurrency limit
-   * Task 10.9: Added request deduplication for concurrent checks
-   */
   private async checkReferencesInParallel(
     refs: Array<{ reference: string; parseResult: ReferenceParseResult }>,
     config: Required<BatchCheckConfig>
@@ -163,11 +121,9 @@ export class BatchedReferenceChecker {
     const results: ReferenceExistenceCheck[] = [];
     const maxConcurrent = config.maxConcurrent;
 
-    // Process in chunks
     for (let i = 0; i < refs.length; i += maxConcurrent) {
       const chunk = refs.slice(i, i + maxConcurrent);
 
-      // Task 10.9: Deduplicate requests within chunk
       const chunkResults = await Promise.all(
         chunk.map(ref => this.checkWithDeduplication(ref.reference, ref.parseResult, config))
       );
@@ -177,23 +133,16 @@ export class BatchedReferenceChecker {
     return results;
   }
 
-  /**
-   * Task 10.9: Check reference with request deduplication
-   * Reuses in-flight checks for the same reference to avoid duplicate HTTP requests
-   */
   private async checkWithDeduplication(
     reference: string,
     parseResult: ReferenceParseResult,
     config: Required<BatchCheckConfig>
   ): Promise<ReferenceExistenceCheck> {
-    // Check if this reference is already being checked
     let pendingCheck = this.pendingChecks.get(reference);
 
     if (!pendingCheck) {
-      // Start new check
       pendingCheck = this.checkSingleReference(reference, parseResult, config)
         .finally(() => {
-          // Clean up after completion
           this.pendingChecks.delete(reference);
         });
 
@@ -205,22 +154,6 @@ export class BatchedReferenceChecker {
     return pendingCheck;
   }
 
-  /**
-   * Check existence of a single reference.
-   *
-   * Flow:
-   *   1. Build an absolute URL from the reference + baseUrl.
-   *   2. If the target host has an open circuit, short-circuit immediately
-   *      with a cache-friendly "unknown" result (exists: false, errorMessage
-   *      populated) so validation degrades gracefully to format-only checks.
-   *   3. Try HEAD first. Many FHIR servers respond correctly to HEAD and it
-   *      is much cheaper than GET.
-   *   4. If HEAD returns 405 Method Not Allowed (or any 4xx other than 404),
-   *      or the host is in `headUnsupported`, retry with GET + `_summary=count`
-   *      which all FHIR servers must support.
-   *   5. On repeated network-level failures, trip the circuit breaker for
-   *      the host so subsequent references to the same host short-circuit.
-   */
   private async checkSingleReference(
     reference: string,
     parseResult: ReferenceParseResult,
@@ -228,7 +161,6 @@ export class BatchedReferenceChecker {
   ): Promise<ReferenceExistenceCheck> {
     const startTime = Date.now();
 
-    // Build URL
     const url = buildReferenceProbeUrl(reference, parseResult, config);
     if (!url) {
       return {
@@ -241,7 +173,6 @@ export class BatchedReferenceChecker {
 
     const host = extractUrlHost(url);
 
-    // Circuit breaker: short-circuit if the host is currently unreachable
     if (host && this.circuitBreaker.isOpen(host)) {
       return {
         reference,
@@ -256,20 +187,17 @@ export class BatchedReferenceChecker {
     const useHead = this.circuitBreaker.supportsHead(host);
 
     try {
-      // First attempt: HEAD (unless known-unsupported)
       const response = useHead
         ? await this.httpClient.head(url)
         : await this.httpClient.get(asSummaryUrl(url));
       let finalResponse = response;
       const responseTime = Date.now() - startTime;
 
-      // 405 Method Not Allowed → fall back to GET and remember the host
       if (useHead && finalResponse.status === 405) {
         this.circuitBreaker.markHeadUnsupported(host);
         finalResponse = await this.httpClient.get(asSummaryUrl(url));
       }
 
-      // 2xx / 3xx are considered success
       const exists =
         finalResponse.status >= 200 && finalResponse.status < 400;
       const isServerReachable = finalResponse.status < 500;
@@ -280,7 +208,6 @@ export class BatchedReferenceChecker {
         this.circuitBreaker.recordFailure(host);
       }
 
-      // Cache result
       if (config.enableCache) {
         this.cache.set(reference, exists, finalResponse.status);
       }
@@ -310,24 +237,15 @@ export class BatchedReferenceChecker {
     }
   }
 
-  /**
-   * Reset the circuit-breaker state. Primarily useful in tests.
-   */
   public resetCircuits(): void {
     this.circuitBreaker.reset();
   }
 
-  /**
-   * Clear cache
-   */
   clearCache(): void {
     this.cache.clear();
     logger.info('[BatchedReferenceChecker] Cache cleared');
   }
 
-  /**
-   * Get cache statistics
-   */
   getCacheStats(): {
     size: number;
     entries: Array<{ reference: string; exists: boolean; age: number }>;
@@ -335,16 +253,10 @@ export class BatchedReferenceChecker {
     return this.cache.getStats();
   }
 
-  /**
-   * Extract references from a resource
-   */
   extractReferences(resource: any): string[] {
     return extractReferencesFromResource(resource);
   }
 
-  /**
-   * Check all references in a resource
-   */
   async checkResourceReferences(
     resource: any,
     config?: Partial<BatchCheckConfig>
@@ -353,9 +265,6 @@ export class BatchedReferenceChecker {
     return this.checkBatch(references, config);
   }
 
-  /**
-   * Check all references in a Bundle
-   */
   async checkBundleReferences(
     bundle: any,
     config?: Partial<BatchCheckConfig>
@@ -363,9 +272,6 @@ export class BatchedReferenceChecker {
     return this.checkBatch(extractReferencesFromBundle(bundle), config);
   }
 
-  /**
-   * Filter references by existence
-   */
   async filterExistingReferences(
     references: string[],
     config?: Partial<BatchCheckConfig>
@@ -376,9 +282,6 @@ export class BatchedReferenceChecker {
       .map(r => r.reference);
   }
 
-  /**
-   * Filter references by non-existence
-   */
   async filterNonExistingReferences(
     references: string[],
     config?: Partial<BatchCheckConfig>
@@ -389,9 +292,6 @@ export class BatchedReferenceChecker {
       .map(r => r.reference);
   }
 
-  /**
-   * Check if all references exist
-   */
   async allReferencesExist(
     references: string[],
     config?: Partial<BatchCheckConfig>
@@ -400,13 +300,6 @@ export class BatchedReferenceChecker {
     return result.existCount === references.length && result.failedCount === 0;
   }
 
-  // ========================================================================
-  // Task 10.9: Performance Monitoring Methods
-  // ========================================================================
-
-  /**
-   * Get deduplication statistics
-   */
   getDeduplicationStats(): {
     pendingChecks: number;
     cacheSize: number;
@@ -415,20 +308,14 @@ export class BatchedReferenceChecker {
     return {
       pendingChecks: this.pendingChecks.size,
       cacheSize: this.cache.size,
-      estimatedSavedRequests: this.pendingChecks.size, // Each pending check may be reused
+      estimatedSavedRequests: this.pendingChecks.size,
     };
   }
 
-  /**
-   * Clear pending checks (for testing)
-   */
   clearPendingChecks(): void {
     this.pendingChecks.clear();
   }
 
-  /**
-   * Get optimization config
-   */
   getOptimizationConfig(): {
     maxConcurrent: number;
     timeoutMs: number;
@@ -439,15 +326,11 @@ export class BatchedReferenceChecker {
       maxConcurrent: this.config.maxConcurrent,
       timeoutMs: this.config.timeoutMs,
       cacheTtlMs: this.config.cacheTtlMs,
-      keepAlive: true, // Always enabled in Task 10.9
+      keepAlive: true,
     };
   }
 
 }
-
-// ============================================================================
-// Singleton Instance
-// ============================================================================
 
 let checkerInstance: BatchedReferenceChecker | null = null;
 

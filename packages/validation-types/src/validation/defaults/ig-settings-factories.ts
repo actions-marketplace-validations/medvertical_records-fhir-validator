@@ -48,9 +48,6 @@ export function createMii2026ValidationSettings(
     enabled: settings.hapiConfig?.enabled ?? false,
     timeout: settings.hapiConfig?.timeout ?? 30000,
     igPackages: MII_2026_IG_PACKAGES,
-    useProcessPool: settings.hapiConfig?.useProcessPool ?? true,
-    poolSize: settings.hapiConfig?.poolSize ?? 3,
-    cachePath: settings.hapiConfig?.cachePath ?? '/tmp/fhir-packages',
     enableBestPractice: settings.hapiConfig?.enableBestPractice ?? true
   };
   settings.mii = {
@@ -118,9 +115,6 @@ export function createEhds2026ValidationSettings(
     enabled: settings.hapiConfig?.enabled ?? false,
     timeout: settings.hapiConfig?.timeout ?? 30000,
     igPackages: [...MII_2026_IG_PACKAGES, ...HL7_EU_EHDS_2026_IG_PACKAGES],
-    useProcessPool: settings.hapiConfig?.useProcessPool ?? true,
-    poolSize: settings.hapiConfig?.poolSize ?? 3,
-    cachePath: settings.hapiConfig?.cachePath ?? '/tmp/fhir-packages',
     enableBestPractice: settings.hapiConfig?.enableBestPractice ?? true
   };
 

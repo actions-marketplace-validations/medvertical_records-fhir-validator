@@ -175,6 +175,21 @@ async function validateElementTargets(
         ? retargetIssuePath(issue, elementDef.path, first.fullPath)
         : issue
     ));
+
+    // getValidationTargets expands a proper repeating array into indexed
+    // targets. An object supplied where max > 1 yields a non-indexed target;
+    // retain that original shape long enough for CardinalityValidator to
+    // report the JSON array violation.
+    if (group.length === 1 && !/\[\d+\]$/.test(first.fullPath || '')) {
+      issues.push(...deps.cardinalityValidator.validate(
+        first.value,
+        elementDef,
+        validationPath,
+        effectiveProfileUrl,
+        resource,
+        { parentExists: true },
+      ).filter(issue => issue.code === 'structural-validation-error'));
+    }
   }
 
   for (const target of validationTargets) {

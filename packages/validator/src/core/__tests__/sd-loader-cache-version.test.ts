@@ -133,9 +133,11 @@ async function writePackageProfile(
   await writeFile(join(packageDir, fileName), JSON.stringify(sd));
 }
 
-async function makeLoader(): Promise<{ loader: StructureDefinitionLoader; dir: string }> {
+async function makeLoader(
+  options: { maxCacheEntries?: number } = {},
+): Promise<{ loader: StructureDefinitionLoader; dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'records-sd-loader-'));
-  const loader = new StructureDefinitionLoader(dir, null, { autoDownload: false });
+  const loader = new StructureDefinitionLoader(dir, null, { autoDownload: false, ...options });
   await loader.waitForInitialization();
   return { loader, dir };
 }
@@ -323,6 +325,33 @@ describe('StructureDefinitionLoader versioned cache', () => {
 
       const r5Hit = await loader.loadProfilesBatch([CORE_URL], 'R5');
       expect(r5Hit.get(CORE_URL)?.id).toBe('medicationrequest-r5');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['registerExternalProfile', (loader: StructureDefinitionLoader, profile: StructureDefinition) => {
+      loader.registerExternalProfile(profile, 'R4');
+    }],
+    ['cacheProfile', (loader: StructureDefinitionLoader, profile: StructureDefinition) => {
+      loader.cacheProfile(profile.url, profile, 'R4');
+    }],
+  ] as const)('preserves profiles added through %s when pruning reloadable entries', async (_method, addProfile) => {
+    const { loader, dir } = await makeLoader({ maxCacheEntries: 1 });
+    try {
+      const externalProfile = makeVersionedProfileSd('1.1.0');
+      const reloadableProfile = makeUsCoreCoverageSd();
+      addProfile(loader, externalProfile);
+      (loader as any).cache.set(`${reloadableProfile.url}:R4`, reloadableProfile);
+
+      await expect(loader.loadProfile(externalProfile.url, 'R4'))
+        .resolves.toMatchObject({ url: externalProfile.url });
+      await expect(loader.loadProfile(externalProfile.url, 'R4'))
+        .resolves.toMatchObject({ url: externalProfile.url });
+
+      expect((loader as any).cache.has(`${externalProfile.url}:R4`)).toBe(true);
+      expect((loader as any).cache.has(`${reloadableProfile.url}:R4`)).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -44,7 +44,7 @@ async function mergeTypeProfilePatterns(
         const typeRoot = typeSd.type || '';
         for (const typeEl of typeElements) {
           if (!typeEl.path.startsWith(typeRoot + '.')) continue;
-          const relativePath = typeEl.path.substring(typeRoot.length + 1);
+          const relativePath = getTypeProfileRelativePath(typeEl, typeRoot);
           if (!childPatterns.has(relativePath)) {
             const tp = extractPatternFromElement(typeEl);
             if (tp !== undefined) childPatterns.set(relativePath, tp);
@@ -188,6 +188,14 @@ function mergeInheritedSliceChildren(
       childTypes.set(relativePath, candidate.type);
     }
   }
+}
+
+function getTypeProfileRelativePath(element: ElementDefinition, typeRoot: string): string {
+  const idPrefix = `${typeRoot}.`;
+  if (typeof element.id === 'string' && element.id.startsWith(idPrefix)) {
+    return element.id.substring(idPrefix.length);
+  }
+  return element.path.substring(typeRoot.length + 1);
 }
 
 export async function extractSlicingInfo(

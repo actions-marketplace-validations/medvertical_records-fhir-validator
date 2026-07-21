@@ -13,7 +13,7 @@ import type { ProfileCache } from '../cache/profile-cache';
 import type { StructureDefinition } from './structure-definition-types';
 import type { SnapshotGenerator } from './snapshot-generator';
 import { logger } from '../logger';
-import { getProfileSource } from '../persistence';
+import { getProfileSource, type ProfileSourceContext } from '../persistence';
 
 // Module-level flag to prevent redundant warmups within a validation session
 let warmupCompleted = false;
@@ -78,7 +78,24 @@ function splitVersionedCanonical(url: string): { canonicalUrl: string; version?:
   return version ? { canonicalUrl, version } : { canonicalUrl };
 }
 
-// eslint-disable-next-line max-lines-per-function
+function isCoreStructureDefinition(url: string): boolean {
+  return splitVersionedCanonical(url).canonicalUrl.startsWith(
+    'http://hl7.org/fhir/StructureDefinition/',
+  );
+}
+
+function profileMatchesRequest(
+  profile: StructureDefinition,
+  explicitVersion: string | undefined,
+  fhirVersion: 'R4' | 'R5' | 'R6',
+): boolean {
+  if (explicitVersion && (profile as { version?: string }).version !== explicitVersion) return false;
+  const profileFhirVersion = (profile as { fhirVersion?: string }).fhirVersion;
+  if (!profileFhirVersion) return true;
+  const expectedPrefix = fhirVersion === 'R4' ? '4.' : fhirVersion === 'R5' ? '5.' : '6.';
+  return profileFhirVersion.startsWith(expectedPrefix);
+}
+
 export async function preloadProfiles(
   sdLoader: StructureDefinitionLoader,
   profileCache: ProfileCache,
@@ -86,7 +103,8 @@ export async function preloadProfiles(
   profileUrls: string[],
   fhirVersion: 'R4' | 'R5' | 'R6',
   fhirClient?: any,
-  settings?: any
+  settings?: any,
+  context?: ProfileSourceContext,
 ): Promise<void> {
   const startTime = Date.now();
 
@@ -94,7 +112,7 @@ export async function preloadProfiles(
 
   // Phase 2 Optimization: Aggressive Warmup (runs only ONCE per session)
   // Pre-load frequently used profiles from DB into memory cache FIRST
-  if (!warmupCompleted) {
+  if (!warmupCompleted && context?.organizationId === undefined) {
     const warmupResult = await warmupProfileCacheFromDatabase(profileCache);
     warmupCompleted = true; // Mark as done for this session
     if (warmupResult.warmedUp > 0) {
@@ -106,16 +124,25 @@ export async function preloadProfiles(
   // This is the fastest path since Phase 1 warm-up pre-populates the cache
   logger.info(`[RecordsValidator] ⚡ Loading ${profileUrls.length} profiles (DB/Cache priority)...`);
 
-  const sdLoaderResults = await sdLoader.loadProfilesBatch(profileUrls, fhirVersion);
+  const source = getProfileSource();
+  const scopedContext: ProfileSourceContext | undefined = context
+    ? { ...context, fhirVersion }
+    : undefined;
+  const tenantUrls = context?.organizationId !== undefined
+    ? profileUrls.filter(url => !isCoreStructureDefinition(url))
+    : [];
+  const tenantUrlSet = new Set(tenantUrls);
+  const loaderUrls = profileUrls.filter(url => !tenantUrlSet.has(url));
+  const sdLoaderResults = await sdLoader.loadProfilesBatch(loaderUrls, fhirVersion);
 
   for (const [url, sd] of sdLoaderResults.entries()) {
     profilesMap.set(url, sd);
   }
 
   // Identify profiles not found in SDLoader
-  const urlsToResolve: string[] = [];
+  const urlsToResolve: string[] = [...tenantUrls];
   for (const url of profileUrls) {
-    if (!sdLoaderResults.has(url) && !profilesMap.has(url)) {
+    if (!tenantUrlSet.has(url) && !sdLoaderResults.has(url) && !profilesMap.has(url)) {
       urlsToResolve.push(url);
     }
   }
@@ -126,7 +153,6 @@ export async function preloadProfiles(
   //    multi-source resolution backed by whatever the host wired up —
   //    e.g. the server's ProfileResolver). Standalone callers without a
   //    `resolveProfile` implementation skip this step silently.
-  const source = getProfileSource();
   if (urlsToResolve.length > 0 && source.resolveProfile) {
     const resolveProfile = source.resolveProfile.bind(source);
     try {
@@ -141,8 +167,8 @@ export async function preloadProfiles(
         await Promise.all(chunk.map(async (url) => {
           try {
             const { canonicalUrl, version } = splitVersionedCanonical(url);
-            const profile = await resolveProfile(canonicalUrl, version, settings);
-            if (profile) {
+            const profile = await resolveProfile(canonicalUrl, version, settings, scopedContext);
+            if (profile && profileMatchesRequest(profile, version, fhirVersion)) {
               profilesMap.set(url, profile);
               // Cache in sdLoader for future runs
               sdLoader.cacheProfile(url, profile, fhirVersion);
@@ -229,7 +255,8 @@ export function chunkArray<T>(array: T[], chunkSize: number): T[][] {
  */
 export async function warmupProfileCacheFromDatabase(
   profileCache: ProfileCache,
-  limit: number = 300
+  limit: number = 300,
+  context?: ProfileSourceContext,
 ): Promise<{ warmedUp: number; timeMs: number }> {
   const startTime = Date.now();
   const source = getProfileSource();
@@ -245,6 +272,7 @@ export async function warmupProfileCacheFromDatabase(
       (cacheKey, sd) => profileCache.set(cacheKey, sd),
       (cacheKey) => profileCache.get(cacheKey),
       limit,
+      context,
     );
     logger.info(`[Warmup] ✅ Pre-loaded ${result.warmedUp} profiles into memory cache in ${result.timeMs}ms`);
     return result;

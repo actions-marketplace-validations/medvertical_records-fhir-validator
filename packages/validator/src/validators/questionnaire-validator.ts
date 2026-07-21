@@ -1,17 +1,3 @@
-/**
- * Questionnaire Validator
- *
- * Validates Questionnaire and QuestionnaireResponse resources:
- * - LinkId uniqueness within Questionnaire
- * - FHIR R4 que-* invariants (que-0 … que-12)
- * - Required answers in QuestionnaireResponse
- * - Answer type validation against Questionnaire definition
- * - EnableWhen logic evaluation
- * - Option validation for choice questions
- *
- * Supports SDC (Structured Data Capture) extensions.
- */
-
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
@@ -22,6 +8,7 @@ import {
 } from './questionnaire-enable-when';
 import { validateQuestionnaireItems } from './questionnaire-item-validator';
 import { validateQuestionnaireSdcConstraints } from './questionnaire-sdc-validator';
+import { valueSetCache } from './valueset-cache';
 import type {
     QuestionnaireItem,
     QuestionnaireResponseAnswer,
@@ -40,23 +27,8 @@ export interface QuestionnaireValidationOptions {
     warnOnUnresolvedQuestionnaireReference?: boolean;
 }
 
-// ============================================================================
-// Questionnaire Validator
-// ============================================================================
-
 export class QuestionnaireValidator {
 
-    /**
-     * Entry point used by the validation engine. Handles either a
-     * Questionnaire or a QuestionnaireResponse, and also walks any contained
-     * Questionnaire/QuestionnaireResponse resources so the Java validator's
-     * path emission style (`Resource.contained[0]/<slash>Q/id<slash>.item...`)
-     * can be matched.
-     *
-     * When `contextQuestionnaire` is supplied on a QuestionnaireResponse, the
-     * validator also evaluates SDC extensions (minValue/maxValue/…) against
-     * the response's answers.
-     */
     validateAnyResource(
         resource: any,
         contextQuestionnaire?: any,
@@ -69,8 +41,6 @@ export class QuestionnaireValidator {
         if (rt === 'Questionnaire') {
             issues.push(...this.validateQuestionnaire(resource, 'Questionnaire'));
         } else if (rt === 'QuestionnaireResponse') {
-            // Prefer a caller-supplied questionnaire; otherwise fall back
-            // to a contained reference (`#id`) picked up from the QR.
             let q = contextQuestionnaire;
             if (!q && typeof resource.questionnaire === 'string' && resource.questionnaire.startsWith('#')) {
                 const id = resource.questionnaire.slice(1);
@@ -80,8 +50,6 @@ export class QuestionnaireValidator {
             issues.push(...this.validateQuestionnaireResponse(resource, q, options));
         }
 
-        // Walk contained resources (max one level — contained resources
-        // cannot themselves have `contained`, per FHIR R4 rules)
         if (Array.isArray(resource.contained)) {
             for (let i = 0; i < resource.contained.length; i++) {
                 const c = resource.contained[i];
@@ -95,14 +63,6 @@ export class QuestionnaireValidator {
         return issues;
     }
 
-    /**
-     * Validate a Questionnaire resource, including the FHIR R4 `que-*`
-     * invariants published at https://www.hl7.org/fhir/R4/questionnaire.html#invs.
-     *
-     * The invariants are spec-defined as FHIRPath constraints on the
-     * StructureDefinition. Records evaluates them directly so the checks
-     * run even when the base Questionnaire SD is unavailable.
-     */
     validateQuestionnaire(questionnaire: any, basePath: string = 'Questionnaire'): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
@@ -112,7 +72,6 @@ export class QuestionnaireValidator {
 
         logger.debug('[QuestionnaireValidator] Validating Questionnaire');
 
-        // Check required fields
         if (!questionnaire.status) {
             issues.push(createValidationIssue({
                 code: 'questionnaire-missing-status',
@@ -123,7 +82,6 @@ export class QuestionnaireValidator {
             }));
         }
 
-        // que-0: Name should be usable as an identifier — must match [A-Z]([A-Za-z0-9_]){0,254}
         if (questionnaire.name !== undefined && questionnaire.name !== null) {
             const name = String(questionnaire.name);
             if (!/^[A-Z]([A-Za-z0-9_]){0,254}$/.test(name)) {
@@ -140,7 +98,6 @@ export class QuestionnaireValidator {
             }
         }
 
-        // Validate items (recursive, applies que-1 / que-3..que-12)
         if (questionnaire.item && Array.isArray(questionnaire.item)) {
             const linkIdSet = new Set<string>();
             issues.push(...validateQuestionnaireItems(questionnaire.item, linkIdSet, `${basePath}.item`));
@@ -149,9 +106,6 @@ export class QuestionnaireValidator {
         return issues;
     }
 
-    /**
-     * Validate a QuestionnaireResponse against its Questionnaire
-     */
     validateQuestionnaireResponse(
         response: any,
         questionnaire?: any,
@@ -165,7 +119,6 @@ export class QuestionnaireValidator {
 
         logger.debug('[QuestionnaireValidator] Validating QuestionnaireResponse');
 
-        // Check required fields
         if (!response.status) {
             issues.push(createValidationIssue({
                 code: 'qr-missing-status',
@@ -176,9 +129,26 @@ export class QuestionnaireValidator {
             }));
         }
 
-        // If no questionnaire provided, only do basic validation
         if (!questionnaire) {
             if (options.warnOnUnresolvedQuestionnaireReference && typeof response.questionnaire === 'string' && response.questionnaire.trim()) {
+                const canonical = response.questionnaire.split('|')[0];
+                const wrongType = valueSetCache.getValueSetFile(canonical) ??
+                    valueSetCache.getCodeSystemFile(canonical);
+                const explicitCanonicalType = canonical.match(
+                    /\/(ValueSet|CodeSystem|StructureDefinition|ConceptMap|Library|PlanDefinition|ActivityDefinition)\//,
+                )?.[1];
+                const wrongResourceType = wrongType?.resourceType ?? explicitCanonicalType;
+                if (wrongResourceType) {
+                    issues.push(createValidationIssue({
+                        code: 'questionnaire-reference-wrong-type',
+                        path: 'QuestionnaireResponse.questionnaire',
+                        resourceType: 'QuestionnaireResponse',
+                        customMessage:
+                            `Canonical URL '${response.questionnaire}' refers to a resource that has the wrong type. ` +
+                            `Found ${wrongResourceType} expecting Questionnaire`,
+                        severityOverride: 'error',
+                    }));
+                }
                 issues.push(createValidationIssue({
                     code: 'questionnaire-reference-not-resolved',
                     path: 'QuestionnaireResponse.questionnaire',
@@ -197,15 +167,12 @@ export class QuestionnaireValidator {
             return issues;
         }
 
-        // Build question map from Questionnaire
         const questionMap = new Map<string, QuestionnaireItem>();
         this.buildQuestionMap(questionnaire.item || [], questionMap);
 
-        // Build answer map from QuestionnaireResponse
         const answerMap = new Map<string, QuestionnaireResponseAnswer[]>();
         buildQuestionnaireAnswerMap(response.item || [], answerMap);
 
-        // Validate response items against questionnaire
         if (response.item && Array.isArray(response.item)) {
             issues.push(...this.validateResponseItems(
                 response.item,
@@ -214,13 +181,8 @@ export class QuestionnaireValidator {
             ));
         }
 
-        // Check for required questions without answers (considering enableWhen)
         issues.push(...this.checkRequiredQuestions(response.item || [], questionMap, answerMap));
 
-        // Evaluate SDC extensions on each answer (minValue, maxValue, …)
-        // The question map already holds every linkId-keyed item, so we
-        // can walk the response items in parallel and read each question's
-        // extension array.
         if (response.item && Array.isArray(response.item)) {
             issues.push(...validateQuestionnaireSdcConstraints(
                 response.item,
@@ -232,9 +194,6 @@ export class QuestionnaireValidator {
         return issues;
     }
 
-    /**
-     * Basic validation without questionnaire definition
-     */
     private validateResponseItemsBasic(
         items: QuestionnaireResponseItem[],
         basePath: string
@@ -263,9 +222,6 @@ export class QuestionnaireValidator {
         return issues;
     }
 
-    /**
-     * Build map of linkId -> QuestionnaireItem
-     */
     private buildQuestionMap(
         items: QuestionnaireItem[],
         map: Map<string, QuestionnaireItem>
@@ -280,9 +236,6 @@ export class QuestionnaireValidator {
         }
     }
 
-    /**
-     * Validate response items against questionnaire definition
-     */
     private validateResponseItems(
         items: QuestionnaireResponseItem[],
         questionMap: Map<string, QuestionnaireItem>,
@@ -308,7 +261,6 @@ export class QuestionnaireValidator {
                 continue;
             }
 
-            // Items of type 'display' cannot have answers
             if (question.type === 'display' && item.answer && item.answer.length > 0) {
                 issues.push(createValidationIssue({
                     code: 'structure',
@@ -320,7 +272,6 @@ export class QuestionnaireValidator {
                 continue;
             }
 
-            // Items of type 'group' cannot have answers (only sub-items)
             if (question.type === 'group' && item.answer && item.answer.length > 0) {
                 issues.push(createValidationIssue({
                     code: 'structure',
@@ -331,10 +282,8 @@ export class QuestionnaireValidator {
                 }));
             }
 
-            // Required items must have answers (unless display/group)
             if (question.required && question.type !== 'display') {
                 if (question.type === 'group') {
-                    // Required groups must have at least one sub-item with content
                     const hasSubItems = item.item && item.item.length > 0;
                     if (!hasSubItems) {
                         issues.push(createValidationIssue({
@@ -356,7 +305,6 @@ export class QuestionnaireValidator {
                 }
             }
 
-            // Non-repeating items must not have multiple answers
             if (!question.repeats && item.answer && item.answer.length > 1) {
                 issues.push(createValidationIssue({
                     code: 'qr-repeats-violation',
@@ -367,12 +315,10 @@ export class QuestionnaireValidator {
                 }));
             }
 
-            // Validate answer types and answer options
             if (item.answer) {
                 issues.push(...validateQuestionnaireAnswerTypes(item.answer, question, `${path}.answer`));
             }
 
-            // Validate nested items
             if (item.item) {
                 issues.push(...this.validateResponseItems(item.item, questionMap, `${path}.item`));
             }
@@ -381,13 +327,6 @@ export class QuestionnaireValidator {
         return issues;
     }
 
-    /**
-     * Check that required questions have answers (considering enableWhen).
-     *
-     * Only flags items that do NOT appear in the response at all —
-     * items that appear but lack answers are already caught by
-     * `validateResponseItems` above.
-     */
     private checkRequiredQuestions(
         responseItems: QuestionnaireResponseItem[],
         questionMap: Map<string, QuestionnaireItem>,
@@ -396,7 +335,6 @@ export class QuestionnaireValidator {
         const issues: ValidationIssue[] = [];
         const presentLinkIds = new Set<string>();
 
-        // Collect all linkIds present in the response (whether answered or not)
         const collectPresent = (items: QuestionnaireResponseItem[]) => {
             for (const item of items) {
                 if (item.linkId) {
@@ -407,17 +345,14 @@ export class QuestionnaireValidator {
         };
         collectPresent(responseItems);
 
-        // Check required questions that are ABSENT from the response
         for (const [linkId, question] of questionMap) {
             if (!question.required) continue;
-            if (presentLinkIds.has(linkId)) continue; // handled by validateResponseItems
+            if (presentLinkIds.has(linkId)) continue;
             if (question.type === 'display') continue;
 
-            // Skip if question is disabled by enableWhen
             if (!isQuestionnaireItemEnabled(question, answerMap)) continue;
 
             if (question.type === 'group') {
-                // Required groups that are absent → "No sub-items found"
                 issues.push(createValidationIssue({
                     code: 'qr-required-group',
                     path: `QuestionnaireResponse.item(linkId=${linkId})`,
@@ -440,5 +375,4 @@ export class QuestionnaireValidator {
     }
 }
 
-// Singleton
 export const questionnaireValidator = new QuestionnaireValidator();

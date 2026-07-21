@@ -75,4 +75,23 @@ describe('StringSecurityValidator', () => {
       path: 'StructureDefinition.title',
     }));
   });
+
+  it('allows XHTML in the rendering-xhtml extension value', () => {
+    const validator = new StringSecurityValidator();
+    const issues = validator.validate({
+      resourceType: 'Questionnaire',
+      item: [{
+        linkId: 'display',
+        type: 'display',
+        _text: {
+          extension: [{
+            url: 'http://hl7.org/fhir/StructureDefinition/rendering-xhtml',
+            valueString: '<p>Rendered prompt</p>',
+          }],
+        },
+      }],
+    });
+
+    expect(issues).toHaveLength(0);
+  });
 });

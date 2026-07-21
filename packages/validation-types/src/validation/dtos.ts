@@ -134,6 +134,11 @@ export interface ValidationMessageGroupDTO {
     code?: string;
     canonicalPath: string;
     sampleMessage: string; // First message text
+    /** Number of persisted issue occurrences in this logical group. */
+    occurrences: number;
+    /** Number of distinct server/resource identities affected by this group. */
+    affectedResources: number;
+    /** @deprecated Use affectedResources. Retained for wire compatibility. */
     totalResources: number;
     firstSeenAt: Date;
     lastSeenAt: Date;

@@ -71,7 +71,10 @@ export class NarrativeValidator {
             // should have matching lang AND xml:lang attributes (FHIR rule,
             // see https://www.w3.org/TR/i18n-html-tech-lang/#langvalues)
             if (resource.language && typeof div === 'string') {
-                const langMatch = div.match(/\blang\s*=\s*["']([^"']*)["']/);
+                // `\blang` also matches the `lang` suffix in `xml:lang`.
+                // Require an actual attribute boundary so xml:lang alone does
+                // not incorrectly satisfy the separate HTML lang requirement.
+                const langMatch = div.match(/(?:^|[\s<])lang\s*=\s*["']([^"']*)["']/);
                 const xmlLangMatch = div.match(/\bxml:lang\s*=\s*["']([^"']*)["']/);
                 const hasLang = !!langMatch;
                 const hasXmlLang = !!xmlLangMatch;

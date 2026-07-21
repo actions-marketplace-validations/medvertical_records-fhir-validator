@@ -1,6 +1,11 @@
 import type { ElementDefinition } from './structure-definition-types';
 
+const expandedElementsCache = new WeakMap<ElementDefinition[], ElementDefinition[]>();
+
 export function expandContentReferenceElements(elements: ElementDefinition[]): ElementDefinition[] {
+  const cached = expandedElementsCache.get(elements);
+  if (cached) return cached;
+
   const expanded: ElementDefinition[] = [...elements];
   const seen = new Set(elements.map(element => element.id ?? element.path));
 
@@ -27,6 +32,7 @@ export function expandContentReferenceElements(elements: ElementDefinition[]): E
     }
   }
 
+  expandedElementsCache.set(elements, expanded);
   return expanded;
 }
 

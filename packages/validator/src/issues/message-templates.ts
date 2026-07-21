@@ -1,25 +1,6 @@
-/**
- * Validation Message Templates
- *
- * Template strings for all validation message codes.
- * Templates support variable interpolation using {variable} placeholders.
- *
- * Format convention: "{Entity} {problem}: {details}"
- * Examples:
- *   - "Code '{code}' is not in value set '{valueSet}' (binding strength: required)"
- *   - "versionId is longer than recommended: {length} characters"
- */
-
 import { ValidationCode } from './message-catalog';
 
-// ============================================================================
-// Message Templates
-// ============================================================================
-
 export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
-    // -------------------------------------------------------------------------
-    // Terminology
-    // -------------------------------------------------------------------------
     'terminology-binding-required':
         "Code '{code}' from system '{system}' is not in value set '{valueSet}' (binding strength: required)",
     'terminology-binding-extensible':
@@ -28,7 +9,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
         "Code '{code}' from system '{system}' is not in value set '{valueSet}' (binding strength: preferred)",
     'terminology-binding-example':
         "Code '{code}' from system '{system}' is not in value set '{valueSet}' (binding strength: example)",
-    // Primitive code types (no system property)
     'terminology-binding-required-code':
         "Code '{code}' is not in value set '{valueSet}' (binding strength: required)",
     'terminology-binding-extensible-code':
@@ -44,9 +24,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'terminology-binding-unverified':
         "Code '{code}' could not be verified against value set '{valueSet}' (binding strength: {strength}); no local expansion and no terminology server confirmation available",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Version ID
-    // -------------------------------------------------------------------------
     'metadata-version-id-invalid-type':
         "versionId must be a string",
     'metadata-version-id-empty':
@@ -68,9 +45,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-version-id-validation-error':
         "versionId validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Last Updated
-    // -------------------------------------------------------------------------
     'metadata-last-updated-invalid-type':
         "lastUpdated must be a string",
     'metadata-last-updated-missing-timezone':
@@ -96,9 +70,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-identical-timestamps':
         "Multiple timestamps have identical values",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Tags
-    // -------------------------------------------------------------------------
     'metadata-tag-invalid-array':
         "meta.tag must be an array",
     'metadata-tag-invalid-object':
@@ -126,9 +97,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-tag-long-display':
         "Tag display is very long at index {index}: {length} characters",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Security
-    // -------------------------------------------------------------------------
     'metadata-security-invalid-array':
         "meta.security must be an array",
     'metadata-security-invalid-object':
@@ -152,9 +120,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-security-unknown-system':
         "Unknown security system: {system}",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Source
-    // -------------------------------------------------------------------------
     'metadata-source-invalid-type':
         "source must be a string",
     'metadata-source-empty':
@@ -172,9 +137,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-source-validation-error':
         "source validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Profile
-    // -------------------------------------------------------------------------
     'metadata-profile-invalid-array':
         "meta.profile must be an array",
     'metadata-profile-invalid-type':
@@ -190,17 +152,11 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-profile-wrong-resource-type':
         "Profile is for wrong resource type (expected {expected}, got {actual})",
 
-    // -------------------------------------------------------------------------
-    // Metadata - General
-    // -------------------------------------------------------------------------
     'metadata-missing-meta':
         "Resource is missing meta element",
     'metadata-invalid-meta-type':
         "meta must be an object",
 
-    // -------------------------------------------------------------------------
-    // Reference
-    // -------------------------------------------------------------------------
     'reference-empty':
         "Reference is empty",
     'reference-invalid-contained':
@@ -224,9 +180,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'reference-validation-error':
         "Reference validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Reference - Bundle
-    // -------------------------------------------------------------------------
     'reference-bundle-unresolved':
         "Unresolved bundle reference: {reference}",
     'reference-bundle-duplicate-fullurl':
@@ -246,9 +199,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'reference-bundle-request-missing-url':
         "Bundle request at index {index} is missing url",
 
-    // -------------------------------------------------------------------------
-    // Structural
-    // -------------------------------------------------------------------------
     'structural-required-element-missing':
         "Required element {element} is missing",
     'structural-resource-type-mismatch':
@@ -270,9 +220,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'structural-cardinality-max':
         "Element {element} has too many values: expected at most {max}, found {actual}",
 
-    // -------------------------------------------------------------------------
-    // Profile
-    // -------------------------------------------------------------------------
     'profile-constraint-violation':
         "Constraint '{key}' violated: {message}",
     'profile-slice-min-cardinality':
@@ -328,9 +275,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'profile-load-error':
         "Profile could not be loaded: {profile}",
 
-    // -------------------------------------------------------------------------
-    // Business Rules
-    // -------------------------------------------------------------------------
     'business-rule-violation':
         "Business rule violated: {message}",
     'business-value-out-of-range':
@@ -364,25 +308,10 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'business-validation-error':
         "Business rule validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Generic
-    // -------------------------------------------------------------------------
     'validation-error':
         "Validation error: {message}",
 };
 
-// ============================================================================
-// Template Formatting
-// ============================================================================
-
-/**
- * Format a message template with parameters.
- * Replaces {variable} placeholders with values from params.
- *
- * @param code - The validation code
- * @param params - Object containing variable values
- * @returns Formatted message string
- */
 export function formatMessage(
     code: string,
     params: Record<string, unknown> = {}
@@ -390,7 +319,6 @@ export function formatMessage(
     const template = MessageTemplates[code as ValidationCode];
 
     if (!template) {
-        // Fall back to a generic format using params
         if (params.message) {
             return String(params.message);
         }
@@ -405,17 +333,9 @@ export function formatMessage(
     return result;
 }
 
-/**
- * Human-readable template for UI display.
- * Can be customized separately from diagnostic messages.
- */
 export const HumanReadableTemplates: Partial<Record<ValidationCode, string>> = {
-    // Add human-readable templates as needed - uses MessageTemplates as fallback
 };
 
-/**
- * Get human-readable message for a code.
- */
 export function getHumanReadableMessage(
     code: string,
     params: Record<string, unknown> = {}

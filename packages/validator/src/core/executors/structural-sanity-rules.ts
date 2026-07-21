@@ -21,6 +21,16 @@ export function validateResourceId(resource: any, resourceType: string): Validat
     }
   }
 
+  if (Array.isArray(resource?._id?.extension) && resource._id.extension.length > 0) {
+    issues.push(createValidationIssue({
+      code: 'structural-resource-id-extension',
+      path: `${resourceType}.id`,
+      resourceType,
+      customMessage: 'Extensions are not allowed on Resource.id',
+      severityOverride: 'error',
+    }));
+  }
+
   if (Array.isArray(resource.contained)) {
     for (let i = 0; i < resource.contained.length; i++) {
       const contained = resource.contained[i];
@@ -264,6 +274,45 @@ export function validateOrphanPrimitiveSidecars(resource: any, resourceType: str
     }));
   }
 
+  return issues;
+}
+
+export function validatePrimitiveSidecarArrayAlignment(resource: any, resourceType: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+
+  const walk = (node: any, path: string): void => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+
+    for (const [key, sidecar] of Object.entries(node)) {
+      if (!key.startsWith('_') || !Array.isArray(sidecar)) continue;
+      const primitiveKey = key.slice(1);
+      const primitiveValues = node[primitiveKey];
+      if (!Array.isArray(primitiveValues) || sidecar.length <= primitiveValues.length) continue;
+
+      issues.push(createValidationIssue({
+        code: 'structural-primitive-array-alignment',
+        path: `${path}.${primitiveKey}`,
+        resourceType,
+        customMessage:
+          `The primitive extension array '${key}' has entries beyond the '${primitiveKey}' value array`,
+        severityOverride: 'error',
+      }));
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      if (key.startsWith('_')) continue;
+      const childPath = `${path}.${key}`;
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => {
+          if (item && typeof item === 'object') walk(item, `${childPath}[${index}]`);
+        });
+      } else if (value && typeof value === 'object') {
+        walk(value, childPath);
+      }
+    }
+  };
+
+  walk(resource, resourceType);
   return issues;
 }
 

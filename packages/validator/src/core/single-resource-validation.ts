@@ -24,6 +24,7 @@ export interface SingleResourceValidationInput {
   profileFallbackIssue?: ValidationIssue | null;
   contextQuestionnaire?: any;
   referenceResolver?: ReferenceResolver | null;
+  organizationId?: number;
 }
 
 export interface SingleResourceValidationDeps {
@@ -53,6 +54,7 @@ export async function collectSingleResourceValidationIssues(
       settings: input.settings,
       contextQuestionnaire: input.contextQuestionnaire,
       referenceResolver: input.referenceResolver,
+      organizationId: input.organizationId,
     },
     deps.structuralExecutor,
     deps.profileExecutor,

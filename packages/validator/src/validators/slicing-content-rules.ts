@@ -32,6 +32,8 @@ export function validateSliceContentConstraints(
   const issues: ValidationIssue[] = [];
   const elements = profileSD.snapshot?.element || profileSD.differential?.element || [];
   const slicePrefix = `${slice.path}:${slice.sliceName}`;
+  const checkedFixedPaths = new Set<string>();
+  const checkedPatternPaths = new Set<string>();
 
   for (const elementDef of elements) {
     const relativePath = getSliceRelativePath(elementDef, slicePrefix);
@@ -39,13 +41,27 @@ export function validateSliceContentConstraints(
 
     const fixedValue = extractFixedValue(elementDef);
     if (fixedValue !== undefined) {
+      checkedFixedPaths.add(relativePath);
       issues.push(...validateSliceFixedValue(element, slice, elementPath, relativePath, fixedValue));
     }
 
     const patternValue = extractPatternValue(elementDef);
     if (patternValue !== undefined) {
+      checkedPatternPaths.add(relativePath);
       issues.push(...validateSlicePatternValue(element, slice, elementPath, relativePath, patternValue));
     }
+  }
+
+  for (const [relativePath, fixedValue] of slice.childFixed ?? []) {
+    if (checkedFixedPaths.has(relativePath)) continue;
+    if (!isContentConstraintPath(relativePath)) continue;
+    issues.push(...validateSliceFixedValue(element, slice, elementPath, relativePath, fixedValue));
+  }
+
+  for (const [relativePath, patternValue] of slice.childPatterns ?? []) {
+    if (checkedPatternPaths.has(relativePath)) continue;
+    if (!isContentConstraintPath(relativePath)) continue;
+    issues.push(...validateSlicePatternValue(element, slice, elementPath, relativePath, patternValue));
   }
 
   return issues;
@@ -253,6 +269,14 @@ function validateSliceFixedValue(
       actualValue,
     },
   })];
+}
+
+function isContentConstraintPath(relativePath: string): boolean {
+  // Constraints merged from a profiled slice type can include nested slice labels
+  // such as "extension:domain.url". getValueAtPath resolves instance object
+  // paths, not StructureDefinition slice labels, so emitting those as runtime
+  // fixed/pattern mismatches creates false positives on valid nested slices.
+  return !relativePath.split('.').some(segment => segment.includes(':'));
 }
 
 function validateSlicePatternValue(

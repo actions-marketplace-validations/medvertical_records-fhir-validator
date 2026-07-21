@@ -97,6 +97,63 @@ describe('ComplexTypeValidator Period per-1', () => {
     expect(parentPathReads).toBe(readsAfterFirstPath);
   });
 
+  it('preserves the requested FHIR version for nested primitive bindings', async () => {
+    const backboneElementSd = {
+      resourceType: 'StructureDefinition',
+      url: 'http://hl7.org/fhir/StructureDefinition/BackboneElement',
+      name: 'BackboneElement',
+      status: 'active',
+      kind: 'complex-type',
+      abstract: false,
+      type: 'BackboneElement',
+      snapshot: {
+        element: [
+          { path: 'BackboneElement' },
+          {
+            path: 'BackboneElement.type',
+            min: 1,
+            max: '1',
+            type: [{ code: 'code' }],
+            binding: {
+              strength: 'required',
+              valueSet: 'http://hl7.org/fhir/ValueSet/device-nametype',
+            },
+          },
+        ],
+      },
+    };
+    const localLoader = {
+      loadProfile: vi.fn().mockResolvedValue(backboneElementSd),
+    };
+    const validator = new ComplexTypeValidator(localLoader as any);
+    const validateBinding = vi
+      .spyOn((validator as any).valueSetValidator, 'validateBinding')
+      .mockResolvedValue([]);
+
+    await validator.validateComplexTypeSubElements(
+      { type: 'model-name' },
+      {
+        id: 'Device.deviceName',
+        path: 'Device.deviceName',
+        type: [{ code: 'BackboneElement' }],
+      },
+      'Device.deviceName[0]',
+      'http://hl7.org/fhir/StructureDefinition/Device',
+      undefined,
+      'R4',
+    );
+
+    expect(validateBinding).toHaveBeenCalledWith(
+      'model-name',
+      expect.objectContaining({
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/device-nametype',
+      }),
+      'Device.deviceName[0].type',
+      expect.objectContaining({ fhirVersion: 'R4' }),
+    );
+  });
+
   it('still reports truly backwards dateTime periods', async () => {
     const validator = new ComplexTypeValidator(sdLoader);
 

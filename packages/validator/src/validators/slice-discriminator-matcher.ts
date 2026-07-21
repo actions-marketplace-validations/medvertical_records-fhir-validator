@@ -19,8 +19,14 @@ import {
   matchTypeDiscriminator,
   stripCanonicalVersion,
 } from './slice-type-discriminator';
+import {
+  matchProfileDiscriminator,
+  profileListContains,
+  toProfileArray,
+  type ReferenceResolverFn,
+} from './slice-profile-discriminator-matcher';
 
-export type ReferenceResolverFn = ((ref: string) => any | null) | null;
+export type { ReferenceResolverFn } from './slice-profile-discriminator-matcher';
 
 export function matchDiscriminator(
   element: any,
@@ -327,105 +333,6 @@ function matchWholeElementChildConstraints(
   return hasConstraint ? true : null;
 }
 
-function matchProfileDiscriminator(
-  element: any, slice: SliceDefinition, path: string,
-  referenceResolver: ReferenceResolverFn,
-  allSlices?: SliceDefinition[],
-): boolean {
-  const typeSpecs = getTypeSpecsForDiscriminator(slice, path);
-  if (typeSpecs.length === 0) return false;
-
-  const value = getValueAtPath(element, path);
-  if (!value || typeof value !== 'object') return false;
-
-  const requiredProfiles: string[] = [];
-  const allowedTypeCodes: string[] = [];
-  for (const typeSpec of typeSpecs) {
-    if (typeSpec.code) allowedTypeCodes.push(typeSpec.code);
-    if (typeSpec.profile && typeSpec.profile.length > 0) requiredProfiles.push(...typeSpec.profile);
-    if (typeSpec.targetProfile && typeSpec.targetProfile.length > 0) requiredProfiles.push(...typeSpec.targetProfile);
-  }
-
-  // 1. Exact meta.profile match (strongest signal)
-  if (value.meta && value.meta.profile && requiredProfiles.length > 0) {
-    const profiles = toProfileArray(value.meta.profile);
-    if (profiles.some(profile => profileListContains(requiredProfiles, profile))) return true;
-  }
-
-  // 2. Reference resolution for profile matching
-  if (typeof value.reference === 'string' && referenceResolver && requiredProfiles.length > 0) {
-    try {
-      const referenced = referenceResolver(value.reference);
-      if (referenced?.meta?.profile) {
-        const profiles = toProfileArray(referenced.meta.profile);
-        if (profiles.some(profile => profileListContains(requiredProfiles, profile))) return true;
-      }
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.debug(`[SlicingValidator] Reference resolver threw: ${err.message}`);
-    }
-  }
-
-  // 3. Fallback: match by resourceType when different slices have distinct
-  // type codes so type alone unambiguously identifies the slice. When all
-  // slices share the same type code set (or there's only one slice), type
-  // matching is insufficient — the FHIR profile discriminator requires
-  // conformsTo semantics that we can't fully check here, so we conservatively
-  // return false to avoid false-positive matches.
-  if (typeof value.resourceType === 'string' && allowedTypeCodes.length > 0) {
-    if (allowedTypeCodes.includes(value.resourceType) &&
-        typeCodesAreDistinguishing(slice, path, allSlices)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Check whether the type codes on this slice are sufficient to distinguish it
- * from other slices. Returns true when at least one other slice exists AND
- * this slice's type codes don't fully overlap with every other slice's codes.
- *
- * When there's only one slice, type matching alone can't confirm conformance
- * to the required profile (the FHIR spec requires conformsTo), so we return
- * false to avoid false-positive slice matches.
- */
-function typeCodesAreDistinguishing(
-  currentSlice: SliceDefinition,
-  path: string,
-  allSlices?: SliceDefinition[],
-): boolean {
-  if (!allSlices || allSlices.length <= 1) return false;
-
-  const currentCodes = collectTypeCodes(currentSlice, path);
-  if (currentCodes.size === 0) return false;
-
-  // Check if any other slice has a completely disjoint set of type codes.
-  // If so, type-based matching can disambiguate slices.
-  for (const otherSlice of allSlices) {
-    if (otherSlice.sliceName === currentSlice.sliceName) continue;
-    const otherCodes = collectTypeCodes(otherSlice, path);
-    if (otherCodes.size === 0) continue;
-
-    // If there's any overlap between this slice and another, type codes
-    // alone can't distinguish them — need real conformsTo.
-    for (const code of currentCodes) {
-      if (otherCodes.has(code)) return false;
-    }
-  }
-
-  return true;
-}
-
-function collectTypeCodes(slice: SliceDefinition, path: string): Set<string> {
-  const codes = new Set<string>();
-  for (const t of getTypeSpecsForDiscriminator(slice, path)) {
-    if (t.code) codes.add(t.code);
-  }
-  return codes;
-}
-
 function matchExistsDiscriminator(element: any, path: string): boolean {
   const value = getValueAtPath(element, path);
   return value !== null && value !== undefined;
@@ -438,18 +345,4 @@ function resolveDiscriminatorPath(element: any, _path: string, resolver: Referen
 
   if (!refString || !resolver) return null;
   try { return resolver(refString) ?? null; } catch { return null; }
-}
-
-function toProfileArray(profile: unknown): string[] {
-  if (Array.isArray(profile)) return profile.filter((p): p is string => typeof p === 'string');
-  if (typeof profile === 'string') return [profile];
-  return [];
-}
-
-function profileListContains(profiles: string[], requestedProfile: string): boolean {
-  return profiles.some(profile => profilesMatch(profile, requestedProfile));
-}
-
-function profilesMatch(left: string, right: string): boolean {
-  return left === right || stripCanonicalVersion(left) === stripCanonicalVersion(right);
 }

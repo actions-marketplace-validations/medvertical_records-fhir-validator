@@ -12,7 +12,8 @@ import type { PackageDownloader } from '../package/package-downloader.js';
 import type { PackageRegistryClient } from '../package/package-registry-client.js';
 import { logger } from '../logger';
 import type { StructureDefinition } from './structure-definition-types';
-import type { ProfileSourcesConfig } from '../types';
+import type { ProfileSourcesConfig, ValidationSettings } from '../types';
+import { getProfileSource, type ProfileSourceContext } from '../persistence';
 import { loadFromLocalCache } from './sd-loader-filesystem';
 import { checkDatabaseCache } from './sd-loader-db-cache';
 import { attemptAutoDownload, isPublicProfile } from './sd-loader-auto-download';
@@ -36,6 +37,8 @@ export interface LoadProfileContext {
   allowedPackages: string[];
   packageVersionPins: Record<string, string>;
   profileSourcesConfig: ProfileSourcesConfig;
+  profileSourceContext?: ProfileSourceContext;
+  profileResolutionSettings?: ValidationSettings;
   resolvePinnedCanonical(url: string): string;
 }
 
@@ -67,6 +70,24 @@ export async function loadProfile(
     // Use version-specific cache key to avoid R4/R5 confusion
     const cacheKey = cacheKeyForProfile(resolvedUrl, fhirVersion);
 
+    // For a tenant-scoped validation, non-core profiles must be resolved by
+    // the embedder before any shared memory/DB/filesystem cache is consulted.
+    // A null result intentionally stops here: globally installed but inactive
+    // packages are not valid inputs for this organization.
+    const scopedProfile = await resolveScopedProfile(
+      ctx,
+      resolvedUrl,
+      fhirVersion,
+    );
+    if (scopedProfile !== undefined) {
+      if (!scopedProfile) return null;
+      const sanitized = sanitizeProfile(scopedProfile);
+      ctx.cache.set(cacheKey, sanitized);
+      ctx.availableProfiles.add(resolvedUrl);
+      ctx.profileNotFound.delete(cacheKey);
+      return sanitized;
+    }
+
     if (ctx.profileNotFound.has(cacheKey)) {
       logger.debug(`[SDLoader] Skipping profile load for ${cacheKey} (known not found)`);
       return null;
@@ -79,7 +100,12 @@ export async function loadProfile(
     }
 
     // Check database cache (from ProfileResolver downloads)
-    const dbCachedProfile = await checkDatabaseCache(resolvedUrl, ctx.dbCacheNotFound, fhirVersion);
+    const dbCachedProfile = await checkDatabaseCache(
+      resolvedUrl,
+      ctx.dbCacheNotFound,
+      fhirVersion,
+      ctx.profileSourceContext,
+    );
     if (dbCachedProfile) {
       // Cache it in memory with version-specific key
       const sanitized = sanitizeProfile(dbCachedProfile);
@@ -133,6 +159,38 @@ export async function loadProfile(
     logger.error(`[SDLoader] Error loading profile ${url}:`, error);
     return null;
   }
+}
+
+function isCoreStructureDefinition(url: string): boolean {
+  return url.split('|')[0].startsWith('http://hl7.org/fhir/StructureDefinition/');
+}
+
+/** undefined = normal unscoped pipeline; null = scoped lookup was authoritative but missed. */
+async function resolveScopedProfile(
+  ctx: LoadProfileContext,
+  url: string,
+  fhirVersion: 'R4' | 'R5' | 'R6',
+): Promise<StructureDefinition | null | undefined> {
+  if (ctx.profileSourceContext?.organizationId === undefined || isCoreStructureDefinition(url)) {
+    return undefined;
+  }
+
+  const source = getProfileSource();
+  if (!source.resolveProfile) return undefined;
+
+  const [canonicalUrl, explicitVersion] = url.split('|');
+  const profile = await source.resolveProfile(
+    canonicalUrl,
+    explicitVersion || undefined,
+    ctx.profileResolutionSettings,
+    { ...ctx.profileSourceContext, fhirVersion },
+  );
+  if (!profile) return null;
+  if (explicitVersion && (profile as { version?: string }).version !== explicitVersion) return null;
+  const profileFhirVersion = (profile as { fhirVersion?: string }).fhirVersion;
+  if (!profileFhirVersion) return profile;
+  const expectedPrefix = fhirVersion === 'R4' ? '4.' : fhirVersion === 'R5' ? '5.' : '6.';
+  return profileFhirVersion.startsWith(expectedPrefix) ? profile : null;
 }
 
 function hasExplicitCanonicalVersion(url: string): boolean {

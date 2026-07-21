@@ -466,6 +466,24 @@ describe('ValueSetPackageLoader canonical package scan', () => {
         expect(cache.getCodeSystemFile(`${canonical}|fhir4`)).toMatchObject({ url: canonical });
     });
 
+    it('single-flights concurrent misses and reuses its negative lookup', async () => {
+        const cache = new ValueSetCache();
+        const loader = new ValueSetPackageLoader(cache);
+        const findDirect = vi.spyOn(loader as any, 'findInPackages').mockResolvedValue(null);
+        const findCanonical = vi.spyOn(loader as any, 'findByCanonicalScan').mockResolvedValue(null);
+        const canonical = 'https://example.org/fhir/CodeSystem/missing';
+
+        await Promise.all([
+            loader.loadCodeSystem(canonical, '4'),
+            loader.loadCodeSystem(canonical, '4'),
+            loader.loadCodeSystem(canonical, '4'),
+        ]);
+        await loader.loadCodeSystem(canonical, '4');
+
+        expect(findDirect).toHaveBeenCalledTimes(1);
+        expect(findCanonical).toHaveBeenCalledTimes(1);
+    });
+
     it('prefers the newest package version when multiple packages share a canonical URL', async () => {
         const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
         const canonical = 'https://example.org/fhir/ValueSet/shared';

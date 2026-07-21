@@ -250,11 +250,32 @@ export const ImposedProfilesConfigSchema = z.object({
     policies: z.array(ImposedProfilePolicySchema),
 });
 
+export const AdvisorRuleSchema = z.object({
+    id: z.string(),
+    action: z.enum(['suppress', 'override-severity', 'override-message']),
+    match: z.object({
+        code: z.union([z.string(), z.array(z.string())]).optional(),
+        path: z.union([z.string(), z.array(z.string())]).optional(),
+        message: z.string().optional(),
+        messageRegex: z.union([z.string(), z.array(z.string())]).optional(),
+        aspect: z.union([z.string(), z.array(z.string())]).optional(),
+        severity: z.string().optional(),
+        profile: z.string().optional(),
+        resourceType: z.union([z.string(), z.array(z.string())]).optional(),
+    }),
+    transform: z.object({
+        severity: z.enum(['error', 'warning', 'information', 'info']).optional(),
+        message: z.string().optional(),
+    }).optional(),
+    reason: z.string().optional(),
+    enabled: z.boolean().optional(),
+});
+
 // ============================================================================
 // Main ValidationSettings Schema
 // ============================================================================
 
-export const ValidationSettingsSchema = z.object({
+const ValidationSettingsObjectSchema = z.object({
     // Core aspects
     aspects: z.object({
         structural: ValidationAspectConfigSchema,
@@ -272,14 +293,15 @@ export const ValidationSettingsSchema = z.object({
         maxConcurrent: z.number().min(1).max(20),
         batchSize: z.number().min(10).max(100),
         enableDeltaSearch: z.boolean().optional(),
-    }),
+    }).strict(),
 
     // Resource type filtering
     resourceTypes: z.object({
         enabled: z.boolean(),
         includedTypes: z.array(z.string()),
         excludedTypes: z.array(z.string()),
-    }),
+        fhirVersion: FHIRVersionSchema.optional(),
+    }).strict(),
 
     // Optional settings
     terminologyServers: z.array(TerminologyServerSchema).optional(),
@@ -314,25 +336,44 @@ export const ValidationSettingsSchema = z.object({
     hapiConfig: HapiConfigSchema.optional(),
     autoApplyCustomRules: z.boolean().optional(),
     engine: z.string().optional(),
-    advisorRules: z.array(z.object({
-        id: z.string(),
-        action: z.enum(['suppress', 'override-severity', 'override-message']),
-        match: z.object({
-            code: z.union([z.string(), z.array(z.string())]).optional(),
-            path: z.union([z.string(), z.array(z.string())]).optional(),
-            message: z.string().optional(),
-            aspect: z.union([z.string(), z.array(z.string())]).optional(),
-            severity: z.string().optional(),
-            profile: z.string().optional(),
-            resourceType: z.union([z.string(), z.array(z.string())]).optional(),
-        }),
-        transform: z.object({
-            severity: z.enum(['error', 'warning', 'information', 'info']).optional(),
-            message: z.string().optional(),
-        }).optional(),
-        reason: z.string().optional(),
-        enabled: z.boolean().optional(),
-    })).optional(),
+    excludedPaths: z.array(z.string()).optional(),
+    advisorRules: z.array(AdvisorRuleSchema).optional(),
+}).strict();
+
+export const ValidationSettingsSchema = ValidationSettingsObjectSchema.superRefine((settings, context) => {
+    const includedTypes = settings.resourceTypes.includedTypes;
+    const excludedTypes = new Set(settings.resourceTypes.excludedTypes);
+    const conflicts = includedTypes.filter(resourceType => excludedTypes.has(resourceType));
+    if (conflicts.length > 0) {
+        context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['resourceTypes'],
+            message: `Resource types cannot be both included and excluded: ${conflicts.join(', ')}`,
+        });
+    }
+
+    if (new Set(includedTypes).size !== includedTypes.length) {
+        context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['resourceTypes', 'includedTypes'],
+            message: 'Included resource types must not contain duplicates',
+        });
+    }
+    if (excludedTypes.size !== settings.resourceTypes.excludedTypes.length) {
+        context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['resourceTypes', 'excludedTypes'],
+            message: 'Excluded resource types must not contain duplicates',
+        });
+    }
+
+    if (!Object.values(settings.aspects).some(aspect => aspect.enabled)) {
+        context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['aspects'],
+            message: 'At least one validation aspect must be enabled',
+        });
+    }
 });
 
 // ============================================================================
@@ -343,7 +384,13 @@ export const ValidationSettingsSchema = z.object({
  * Deep partial of ValidationSettings for partial updates.
  * All fields are optional at every level.
  */
-export const ValidationSettingsUpdateSchema = ValidationSettingsSchema.deepPartial();
+export const ValidationSettingsUpdateSchema = ValidationSettingsObjectSchema.deepPartial().extend({
+    terminologyServers: z.array(TerminologyServerSchema).optional(),
+    circuitBreaker: CircuitBreakerConfigSchema.optional(),
+    profileSources: ProfileSourcesConfigSchema.optional(),
+    imposedProfiles: ImposedProfilesConfigSchema.partial().optional(),
+    advisorRules: z.array(AdvisorRuleSchema).optional(),
+}).strict();
 
 // ============================================================================
 // Type Exports (derived from schemas)
@@ -351,12 +398,22 @@ export const ValidationSettingsUpdateSchema = ValidationSettingsSchema.deepParti
 
 export type ValidationSettingsZod = z.infer<typeof ValidationSettingsSchema>;
 export type ValidationSettingsUpdateZod = z.infer<typeof ValidationSettingsUpdateSchema>;
+export type ValidationAspectConfigZod = z.infer<typeof ValidationAspectConfigSchema>;
+export type ProfileSourcesConfigZod = z.infer<typeof ProfileSourcesConfigSchema>;
 export type AdvancedTerminologyConfigZod = z.infer<typeof AdvancedTerminologyConfigSchema>;
 export type TerminologyServerZod = z.infer<typeof TerminologyServerSchema>;
 
 // ============================================================================
 // Validation Utilities
 // ============================================================================
+
+export function parseSettings(data: unknown): ValidationSettingsZod {
+    return ValidationSettingsSchema.parse(normalizeValidationSettings(data as Record<string, unknown>));
+}
+
+export function safeParseSettings(data: unknown) {
+    return ValidationSettingsSchema.safeParse(normalizeValidationSettings(data as Record<string, unknown>));
+}
 
 /**
  * Parse and validate a settings update payload.

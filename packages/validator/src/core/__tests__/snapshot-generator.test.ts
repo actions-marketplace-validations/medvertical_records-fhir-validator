@@ -286,6 +286,53 @@ describe('SnapshotGenerator', () => {
       expect(systolicLoinc?.patternCoding).toEqual({ system: 'http://loinc.org', code: '60989-1' });
       expect(meanLoinc?.patternCoding).toEqual({ system: 'http://loinc.org', code: '8399-8' });
     });
+
+    it('keeps id-less legacy slice children scoped to their preceding slice', async () => {
+      const baseProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/Patient',
+        name: 'Patient',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Patient',
+        snapshot: {
+          element: [
+            { id: 'Patient', path: 'Patient' } as ElementDefinition,
+            { id: 'Patient.telecom', path: 'Patient.telecom', min: 0, max: '*' } as ElementDefinition,
+            { id: 'Patient.telecom.system', path: 'Patient.telecom.system', min: 0, max: '1' } as ElementDefinition,
+          ],
+        },
+      };
+      const profile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/legacy-slices',
+        name: 'LegacySlices',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Patient',
+        baseDefinition: baseProfile.url,
+        differential: {
+          element: [
+            { path: 'Patient.telecom', slicing: { discriminator: [{ type: 'value', path: 'system' }], rules: 'open' } } as ElementDefinition,
+            { path: 'Patient.telecom', sliceName: 'phone' } as ElementDefinition,
+            { path: 'Patient.telecom.system', fixedCode: 'phone' } as ElementDefinition,
+            { path: 'Patient.telecom', sliceName: 'email' } as ElementDefinition,
+            { path: 'Patient.telecom.system', fixedCode: 'email' } as ElementDefinition,
+          ],
+        },
+      };
+      vi.spyOn(sdLoader, 'loadProfile').mockResolvedValue(baseProfile);
+
+      const snapshot = await generator.generateSnapshot(profile, { cacheResults: false });
+
+      expect(snapshot).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'Patient.telecom:phone.system', fixedCode: 'phone' }),
+        expect.objectContaining({ id: 'Patient.telecom:email.system', fixedCode: 'email' }),
+      ]));
+      expect(snapshot.find(element => element.id === 'Patient.telecom.system')?.fixedCode).toBeUndefined();
+    });
     
     it('should clear cache', () => {
       generator.clearCache();
@@ -293,6 +340,42 @@ describe('SnapshotGenerator', () => {
       const stats = generator.getCacheStats();
       expect(stats.size).toBe(0);
       expect(stats.profiles).toEqual([]);
+    });
+
+    it('evicts every versioned cache entry for a canonical profile URL', async () => {
+      const baseProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/Patient',
+        name: 'Patient',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Patient',
+        snapshot: { element: [{ id: 'Patient', path: 'Patient' } as ElementDefinition] },
+      };
+      vi.spyOn(sdLoader, 'loadProfile').mockResolvedValue(baseProfile);
+      const canonical = 'http://example.org/Profile/shared';
+
+      await generator.generateSnapshot({
+        ...baseProfile,
+        url: canonical,
+        version: '1.0.0',
+        baseDefinition: baseProfile.url,
+        snapshot: undefined,
+        differential: { element: [{ id: 'Patient', path: 'Patient', min: 1 }] },
+      } as StructureDefinition);
+      await generator.generateSnapshot({
+        ...baseProfile,
+        url: canonical,
+        version: '2.0.0',
+        baseDefinition: baseProfile.url,
+        snapshot: undefined,
+        differential: { element: [{ id: 'Patient', path: 'Patient', min: 1 }] },
+      } as StructureDefinition);
+
+      expect(generator.getCacheStats().size).toBe(2);
+      expect(generator.evict(canonical)).toBe(true);
+      expect(generator.getCacheStats().size).toBe(0);
     });
   });
 });

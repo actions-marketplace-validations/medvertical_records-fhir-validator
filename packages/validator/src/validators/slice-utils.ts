@@ -14,26 +14,25 @@ export function getValueAtPath(obj: any, path: string): any {
     ? path.slice('$this.'.length)
     : path;
   const parts = normalizedPath.split('.');
-  let current: any = obj;
+  const resolved = resolvePathParts(obj, parts, 0);
+  return resolved ?? null;
+}
 
-  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
-    const part = parts[partIndex];
-    const hasRemainingPath = partIndex < parts.length - 1;
-    if (current === null || current === undefined) return null;
+function resolvePathParts(current: any, parts: string[], index: number): any {
+  if (current === null || current === undefined) return undefined;
+  if (index >= parts.length) return current;
 
-    if (Array.isArray(current)) {
-      for (const item of current) {
-        if (item == null) continue;
-        const v = resolveSegmentForPath(item, part, hasRemainingPath);
-        if (v !== undefined) return v;
-      }
-      return null;
+  if (Array.isArray(current)) {
+    for (const item of current) {
+      const value = resolvePathParts(item, parts, index);
+      if (value !== undefined) return value;
     }
-
-    current = resolveSegmentForPath(current, part, hasRemainingPath);
+    return undefined;
   }
 
-  return current ?? null;
+  const next = resolveSegmentForPath(current, parts[index], index < parts.length - 1);
+  if (next === undefined) return undefined;
+  return resolvePathParts(next, parts, index + 1);
 }
 
 function resolveSegmentForPath(container: any, segment: string, hasRemainingPath: boolean): any {

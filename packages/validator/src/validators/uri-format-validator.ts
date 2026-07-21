@@ -69,6 +69,12 @@ function allowsRelativeUri(path: string): boolean {
     if (RELATIVE_URI_EXACT_PATHS.has(stripped)) return true;
     if (isFhirTypeCodePath(stripped)) return true;
     if (isCodingSystemPath(stripped)) return true;
+    // operationdefinition-allowed-type is a uri-valued extension whose
+    // values are FHIR type names such as `Reference` and `Questionnaire`.
+    if (
+        stripped.startsWith('OperationDefinition.parameter.') &&
+        stripped.endsWith('.extension.value[x]')
+    ) return true;
 
     const segments = stripped.split('.');
     if (segments.length >= 2) {

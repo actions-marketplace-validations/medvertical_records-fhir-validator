@@ -276,10 +276,51 @@ describe('preloadProfiles', () => {
       'http://example.org/StructureDefinition/Profile',
       '1.1.0',
       undefined,
+      undefined,
     );
     expect(sdLoader.cacheProfile).toHaveBeenCalledWith(
       'http://example.org/StructureDefinition/Profile|1.1.0',
       expect.objectContaining({ version: '1.1.0' }),
+      'R4',
+    );
+  });
+
+  it('re-resolves tenant profiles instead of trusting an unscoped loader hit', async () => {
+    const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
+    const globalProfile = {
+      resourceType: 'StructureDefinition',
+      url: canonical,
+      version: '8.0.0',
+      snapshot: { element: [{ path: 'Observation' }] },
+    };
+    const organizationProfile = { ...globalProfile, version: '7.0.0' };
+    const resolveProfile = vi.fn().mockResolvedValue(organizationProfile);
+    setProfileSource({ resolveProfile });
+    const sdLoader = {
+      loadProfilesBatch: vi.fn().mockResolvedValue(new Map([[canonical, globalProfile]])),
+      cacheProfile: vi.fn(),
+    };
+
+    await preloadProfiles(
+      sdLoader as any,
+      { get: vi.fn(), set: vi.fn() } as any,
+      { generateSnapshot: vi.fn() } as any,
+      [canonical],
+      'R4',
+      undefined,
+      { packageDownload: { autoDownload: true } },
+      { organizationId: 17 },
+    );
+
+    expect(resolveProfile).toHaveBeenCalledWith(
+      canonical,
+      undefined,
+      expect.objectContaining({ packageDownload: { autoDownload: true } }),
+      { organizationId: 17, fhirVersion: 'R4' },
+    );
+    expect(sdLoader.cacheProfile).toHaveBeenCalledWith(
+      canonical,
+      organizationProfile,
       'R4',
     );
   });

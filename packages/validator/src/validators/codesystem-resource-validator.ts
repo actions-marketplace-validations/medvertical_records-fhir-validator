@@ -82,7 +82,10 @@ function validateCodeSystemCaseSensitive(
   hl7: boolean,
 ): ValidationIssue[] {
   const contentDefinesCodes = cs.content === 'complete' || cs.content === 'example' || cs.content === 'supplement';
-  if (!contentDefinesCodes || cs.caseSensitive !== undefined && cs.caseSensitive !== null) return [];
+  if (
+    cs.caseSensitive !== undefined && cs.caseSensitive !== null ||
+    (!hl7 && !contentDefinesCodes)
+  ) return [];
 
   const severity = hl7 ? 'warning' : 'information';
   const prefix = hl7 ? 'HL7 Defined ' : '';

@@ -15,10 +15,10 @@ import { logger } from '../logger';
 import {
   deduplicateResources,
   groupResourcesByProfile,
-  preloadProfiles,
-  chunkArray
+  preloadProfiles
 } from './batch-utils';
 import { createValidationErrorIssue as _createValidationErrorIssue } from './validation-utils';
+import type { ProfileSourceContext } from '../persistence';
 
 export interface BatchValidationOptions {
   fhirVersion?: 'R4' | 'R5' | 'R6';
@@ -29,6 +29,8 @@ export interface BatchValidationOptions {
   fhirClient?: FhirClientLike;
   referenceResolver?: ReferenceResolver;
   organizationId?: number;
+  serverId?: number;
+  runtimeScopeKey?: string;
   onResourceValidated?: (resource: any, result: unknown) => void | Promise<void>;
   onEmbeddedResourceValidated?: (resource: any, result: unknown) => void | Promise<void>;
   shouldStop?: () => boolean;
@@ -70,7 +72,6 @@ function throwIfBatchStopped(options: BatchValidationOptions): void {
 /**
  * Execute batch validation
  */
-// eslint-disable-next-line max-lines-per-function
 export async function executeBatchValidation<T = ValidationIssue[]>(
   resources: any[],
   options: BatchValidationOptions,
@@ -78,6 +79,13 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
 ): Promise<Map<any, T>> {
   const fhirVersion = options.fhirVersion || 'R4';
   const maxConcurrency = options.maxConcurrency || 10;
+  const profileSourceContext: ProfileSourceContext = {
+    organizationId: options.organizationId,
+    serverId: options.serverId,
+    fhirVersion,
+  };
+
+  context.sdLoader.setProfileResolutionContext(profileSourceContext, options.settings);
 
   logger.info(`[RecordsValidator] ⚡ Starting batch validation of ${resources.length} resources (concurrency: ${maxConcurrency})`);
 
@@ -107,31 +115,33 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
       profileUrls,
       fhirVersion,
       options.fhirClient,
-      options.settings
+      options.settings,
+      profileSourceContext,
     );
     const preloadTime = Date.now() - preloadStart;
     logger.info(`[RecordsValidator] ✓ Pre-loaded ${profileUrls.length} profile(s) in ${preloadTime}ms`);
 
-    // Step 4: Validate resources in parallel (by profile group)
+    // Step 4: Validate all resources with one bounded worker pool. Profiles
+    // are already preloaded, so serial profile groups and lock-step chunks only
+    // create head-of-line blocking when one resource is slower than its peers.
     const validationStart = Date.now();
     const resultsMap = new Map<any, T>();
+    const workItems = Array.from(groupedByProfile.entries()).flatMap(
+      ([profileUrl, resourceGroup]) => resourceGroup.map(resource => ({ profileUrl, resource })),
+    );
+    let nextWorkIndex = 0;
+    let workerFailed = false;
+    const workerCount = Math.min(Math.max(1, maxConcurrency), workItems.length);
 
-    for (const [profileUrl, resourceGroup] of groupedByProfile.entries()) {
-      throwIfBatchStopped(options);
-      const groupValidationStart = Date.now();
-      logger.info(`[RecordsValidator] 🔄 Validating ${resourceGroup.length} resources against ${profileUrl}...`);
-
-      // Process resources in chunks for this profile
-      const chunks = chunkArray(resourceGroup, maxConcurrency);
-
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const runWorker = async () => {
+      while (!workerFailed) {
         throwIfBatchStopped(options);
-        const chunk = chunks[chunkIndex];
-        const chunkStart = Date.now();
+        const workIndex = nextWorkIndex++;
+        if (workIndex >= workItems.length) return;
+        const { resource, profileUrl } = workItems[workIndex];
+        const resourceStart = Date.now();
 
-        const chunkPromises = chunk.map(async (resource) => {
-          throwIfBatchStopped(options);
-          const resourceStart = Date.now();
+        try {
           const result = await context.validateResource(resource, profileUrl, fhirVersion);
           throwIfBatchStopped(options);
           const resourceTime = Date.now() - resourceStart;
@@ -148,18 +158,15 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
           if (options.onResourceValidated) {
             await options.onResourceValidated(resource, result);
           }
-        });
-
-        await Promise.all(chunkPromises);
-        throwIfBatchStopped(options);
-
-        const chunkTime = Date.now() - chunkStart;
-        logger.debug(`[RecordsValidator]   - Chunk ${chunkIndex + 1}/${chunks.length}: ${chunkTime}ms (${chunk.length} resources)`);
+        } catch (error) {
+          workerFailed = true;
+          throw error;
+        }
       }
+    };
 
-      const groupValidationTime = Date.now() - groupValidationStart;
-      logger.info(`[RecordsValidator] ✓ Profile group complete in ${groupValidationTime}ms (avg ${(groupValidationTime / resourceGroup.length).toFixed(2)}ms/resource)`);
-    }
+    await Promise.all(Array.from({ length: workerCount }, runWorker));
+    throwIfBatchStopped(options);
 
     const validationTime = Date.now() - validationStart;
     logger.info(`[RecordsValidator] ✓ All validations complete in ${validationTime}ms`);

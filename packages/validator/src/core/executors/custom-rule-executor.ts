@@ -25,51 +25,30 @@ export interface CustomRuleValidationContext {
 }
 
 export class CustomRuleExecutor {
-    private ruleCache = new Map<string, { expiresAt: number; promise: Promise<EngineCustomRule[]> }>();
-    private static readonly RULE_CACHE_TTL_MS = 5 * 60_000;
     private static readonly RULE_LOAD_TIMEOUT_MS = 250;
 
     private async loadRules(resourceType: string, organizationId?: number): Promise<EngineCustomRule[]> {
         if (organizationId === undefined) {
-            return [];
-        }
-
-        const now = Date.now();
-        const cacheKey = `${organizationId}:${resourceType}`;
-        const cached = this.ruleCache.get(cacheKey);
-        if (cached && cached.expiresAt > now) {
-            return cached.promise;
+            throw new Error('organizationId is required to load tenant custom rules');
         }
 
         const sourcePromise = getCustomRulesSource().getRulesByResourceType(resourceType, { organizationId });
-        const timeoutPromise = new Promise<EngineCustomRule[]>((resolve) => {
-            setTimeout(() => {
-                logger.warn(
-                    `[CustomRuleExecutor] Rule fetch timed out after ` +
-                    `${CustomRuleExecutor.RULE_LOAD_TIMEOUT_MS}ms for ${resourceType}, skipping custom rules`
-                );
-                resolve([]);
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+                reject(new Error(
+                    `Custom rule source timed out after ${CustomRuleExecutor.RULE_LOAD_TIMEOUT_MS}ms`,
+                ));
             }, CustomRuleExecutor.RULE_LOAD_TIMEOUT_MS);
+            timeout.unref?.();
         });
-
-        const promise = Promise.race([sourcePromise, timeoutPromise])
-            .catch(error => {
-                // A custom-rule source failure is environmental, not a
-                // resource validation failure. Cache the empty result briefly
-                // so batch validation does not stampede the backing store.
-                logger.warn(
-                    `[CustomRuleExecutor] Fetch/setup failed for ${resourceType}, skipping custom rules: ` +
-                    (error instanceof Error ? error.message : String(error))
-                );
-                return [];
-            });
-
-        this.ruleCache.set(cacheKey, {
-            expiresAt: now + CustomRuleExecutor.RULE_CACHE_TTL_MS,
-            promise,
-        });
-
-        return promise;
+        try {
+            // Cache ownership belongs to the embedder. A second engine-local
+            // cache used to survive host invalidation for five minutes.
+            return await Promise.race([sourcePromise, timeoutPromise]);
+        } finally {
+            if (timeout) clearTimeout(timeout);
+        }
     }
 
     /**
@@ -169,16 +148,23 @@ export class CustomRuleExecutor {
             return issues;
 
         } catch (error) {
-            // A custom-rule executor source failure is *not* a validation
-            // failure — emitting it as `error` would pollute the result with
-            // environmental noise in offline test runs. Log it and return no
-            // issues; the regular customRules pipeline will resurface it via
-            // monitoring if persistent.
+            // Failing open would report a resource as clean without executing
+            // tenant policy. Surface a warning so the result is explicitly
+            // incomplete while keeping an infrastructure outage from becoming
+            // a resource-level error.
             logger.warn(
-                `[CustomRuleExecutor] Validation failed, skipping custom rules: ` +
+                `[CustomRuleExecutor] Custom rule source unavailable: ` +
                 (error instanceof Error ? error.message : String(error))
             );
-            return [];
+            return [createValidationIssue({
+                code: 'custom-rule-source-unavailable',
+                path: resource.resourceType,
+                resourceType: resource.resourceType,
+                customMessage: 'Custom rules could not be loaded; this validation result is incomplete',
+                severityOverride: 'warning',
+                aspectOverride: 'custom_rule',
+                details: { sourceStatus: 'unavailable' },
+            })];
         }
     }
 

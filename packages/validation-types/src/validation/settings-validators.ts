@@ -7,6 +7,7 @@
 import type { ValidationSettings, ValidationSettingsValidationResult } from './settings';
 import type { ValidationAspect, FHIRVersion } from './enums';
 import { PERFORMANCE_LIMITS } from './settings';
+import { safeParseSettings } from './settings-schema';
 import {
   getAllResourceTypesForVersion,
   getR5SpecificResourceTypes
@@ -189,6 +190,15 @@ export function validateValidationSettings(
   const errors: string[] = [];
   const warnings: string[] = [];
 
+  const schemaResult = safeParseSettings(settings);
+  if (!schemaResult.success) {
+    return {
+      isValid: false,
+      errors: schemaResult.error.issues.map(issue => issue.message),
+      warnings,
+    };
+  }
+
   // Validate performance settings
   const performanceValidation = validatePerformanceSettings(settings.performance);
   errors.push(...performanceValidation.errors);
@@ -219,4 +229,3 @@ export function validateValidationSettings(
     warnings
   };
 }
-

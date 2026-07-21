@@ -1,23 +1,6 @@
-/**
- * Snapshot Generator
- * 
- * Generates complete snapshots from differential StructureDefinitions:
- * - Loads base profile definition
- * - Merges differential elements with base snapshot
- * - Resolves inheritance chain
- * - Applies constraints and restrictions
- * - Generates complete element list
- * 
- * Essential for validating profiles that only have differential
- */
-
 import type { StructureDefinition, ElementDefinition } from './structure-definition-types';
 import { StructureDefinitionLoader } from './structure-definition-loader';
 import { logger } from '../logger';
-
-// ============================================================================
-// Types
-// ============================================================================
 
 export interface SnapshotGenerationOptions {
   includeBaseElements?: boolean;
@@ -25,42 +8,34 @@ export interface SnapshotGenerationOptions {
   cacheResults?: boolean;
 }
 
-// ============================================================================
-// Snapshot Generator
-// ============================================================================
-
 export class SnapshotGenerator {
   private sdLoader: StructureDefinitionLoader;
   private snapshotCache: Map<string, ElementDefinition[]> = new Map();
+  private readonly maxCacheEntries: number;
 
-  constructor(sdLoader: StructureDefinitionLoader) {
+  constructor(sdLoader: StructureDefinitionLoader, maxCacheEntries: number = 192) {
     this.sdLoader = sdLoader;
+    this.maxCacheEntries = Math.max(1, Math.trunc(maxCacheEntries));
   }
 
-  /**
-   * Generate snapshot from differential StructureDefinition
-   */
   async generateSnapshot(
     profileSD: StructureDefinition,
     options: SnapshotGenerationOptions = {}
   ): Promise<ElementDefinition[]> {
     try {
-      // If snapshot already exists, return it
       if (profileSD.snapshot && profileSD.snapshot.element && profileSD.snapshot.element.length > 0) {
         logger.debug(`[SnapshotGenerator] Snapshot already exists for ${profileSD.url}`);
         return profileSD.snapshot.element;
       }
 
-      // Check cache
-      if (options.cacheResults !== false && this.snapshotCache.has(profileSD.url)) {
+      const snapshotCacheKey = this.getSnapshotCacheKey(profileSD);
+      if (options.cacheResults !== false && this.snapshotCache.has(snapshotCacheKey)) {
         logger.debug(`[SnapshotGenerator] Using cached snapshot for ${profileSD.url}`);
-        return this.snapshotCache.get(profileSD.url)!;
+        return this.snapshotCache.get(snapshotCacheKey)!;
       }
 
-      // Generate new snapshot
       logger.info(`[SnapshotGenerator] Generating snapshot for ${profileSD.url}`);
 
-      // Load base profile
       const baseProfile = await this.loadBaseProfile(profileSD.baseDefinition);
 
       if (!baseProfile) {
@@ -68,26 +43,27 @@ export class SnapshotGenerator {
         return profileSD.differential?.element || [];
       }
 
-      // Get base snapshot
       let baseSnapshot = baseProfile.snapshot?.element || [];
 
-      // If base profile also needs snapshot generation, generate it recursively
       if (baseSnapshot.length === 0 && baseProfile.differential) {
         baseSnapshot = await this.generateSnapshot(baseProfile, options);
       }
 
-      // Merge differential with base snapshot
-      const differential = profileSD.differential?.element || [];
+      const differential = this.inferLegacySliceIds(profileSD.differential?.element || []);
       const snapshot = this.mergeElements(baseSnapshot, differential, profileSD.type);
 
-      // Apply constraints if requested
       if (options.applyConstraints !== false) {
         this.applyConstraints(snapshot, differential);
       }
 
-      // Cache result
       if (options.cacheResults !== false) {
-        this.snapshotCache.set(profileSD.url, snapshot);
+        this.snapshotCache.delete(snapshotCacheKey);
+        while (this.snapshotCache.size >= this.maxCacheEntries) {
+          const oldestKey = this.snapshotCache.keys().next().value;
+          if (oldestKey === undefined) break;
+          this.snapshotCache.delete(oldestKey);
+        }
+        this.snapshotCache.set(snapshotCacheKey, snapshot);
       }
 
       logger.info(`[SnapshotGenerator] Generated ${snapshot.length} elements for ${profileSD.url}`);
@@ -95,14 +71,16 @@ export class SnapshotGenerator {
 
     } catch (error: unknown) {
       logger.error(`[SnapshotGenerator] Error generating snapshot for ${profileSD.url}:`, error);
-      // Return differential as fallback
       return profileSD.differential?.element || [];
     }
   }
 
-  /**
-   * Load base profile StructureDefinition
-   */
+  private getSnapshotCacheKey(profileSD: StructureDefinition): string {
+    const version = (profileSD as { version?: string }).version ?? 'unversioned';
+    const fhirVersion = (profileSD as { fhirVersion?: string }).fhirVersion ?? 'fhir-any';
+    return `${profileSD.url}|${version}|${fhirVersion}`;
+  }
+
   private async loadBaseProfile(baseUrl?: string): Promise<StructureDefinition | null> {
     if (!baseUrl) {
       return null;
@@ -119,18 +97,13 @@ export class SnapshotGenerator {
     }
   }
 
-  /**
-   * Merge differential elements with base snapshot
-   */
   private mergeElements(
     baseElements: ElementDefinition[],
     differentialElements: ElementDefinition[],
     _resourceType: string
   ): ElementDefinition[] {
-    // Start with a copy of base elements
     const mergedElements: ElementDefinition[] = JSON.parse(JSON.stringify(baseElements));
-
-    // Create a map of base elements by path for quick lookup
+    const scopedDifferentialElements = this.inferLegacySliceIds(differentialElements);
     const baseElementMap = new Map<string, number>();
     mergedElements.forEach((element, index) => {
       if (element.path && !element.sliceName && !this.isSliceScopedElement(element)) {
@@ -138,8 +111,7 @@ export class SnapshotGenerator {
       }
     });
 
-    // Process each differential element
-    for (const diffElement of differentialElements) {
+    for (const diffElement of scopedDifferentialElements) {
       if (!diffElement.path) continue;
 
       const path = diffElement.path;
@@ -154,8 +126,6 @@ export class SnapshotGenerator {
       const isSliceScopedChild = this.isSliceScopedElement(diffElement);
 
       if (baseElementMap.has(path) && !isSliceInstance && !isSliceScopedChild) {
-        // Element exists in base AND is not a named slice or slice-scoped
-        // sub-element – merge properties.
         const index = baseElementMap.get(path)!;
         mergedElements[index] = this.mergeElementProperties(
           mergedElements[index],
@@ -177,8 +147,6 @@ export class SnapshotGenerator {
           mergedElements.push({ ...diffElement });
         }
       } else {
-        // New element or slice-scoped sub-element – add to the snapshot
-        // as a separate entry without touching the base.
         mergedElements.push({ ...diffElement });
         if (!baseElementMap.has(path)) {
           baseElementMap.set(path, mergedElements.length - 1);
@@ -186,7 +154,6 @@ export class SnapshotGenerator {
       }
     }
 
-    // Sort elements by path for consistency
     mergedElements.sort((a, b) => {
       const pathA = a.path || '';
       const pathB = b.path || '';
@@ -194,6 +161,40 @@ export class SnapshotGenerator {
     });
 
     return mergedElements;
+  }
+
+  /**
+   * Older differentials may omit ElementDefinition.id. Slice children are
+   * then associated by their position after the named slice root. Give those
+   * entries stable synthetic ids so they remain scoped to that slice instead
+   * of being merged into (and overwriting) the base path.
+   */
+  private inferLegacySliceIds(elements: ElementDefinition[]): ElementDefinition[] {
+    let activeSlice: { path: string; name: string; id: string } | null = null;
+
+    return elements.map(source => {
+      const element = { ...source };
+      if (element.sliceName && element.path) {
+        const id = element.id || `${element.path}:${element.sliceName}`;
+        activeSlice = { path: element.path, name: element.sliceName, id };
+        element.id = id;
+        return element;
+      }
+
+      if (
+        activeSlice &&
+        element.path?.startsWith(`${activeSlice.path}.`) &&
+        !element.id
+      ) {
+        element.id = `${activeSlice.id}${element.path.slice(activeSlice.path.length)}`;
+        return element;
+      }
+
+      if (activeSlice && element.path && !element.path.startsWith(`${activeSlice.path}.`)) {
+        activeSlice = null;
+      }
+      return element;
+    });
   }
 
   private isSliceScopedElement(element: ElementDefinition): boolean {
@@ -227,16 +228,12 @@ export class SnapshotGenerator {
     return element.id.slice(0, sliceStart);
   }
 
-  /**
-   * Merge properties from differential element into base element
-   */
   private mergeElementProperties(
     baseElement: ElementDefinition,
     diffElement: ElementDefinition
   ): ElementDefinition {
     const merged = { ...baseElement };
 
-    // Merge cardinality (apply restrictions)
     if (diffElement.min !== undefined) {
       merged.min = Math.max(baseElement.min || 0, diffElement.min);
     }
@@ -245,12 +242,10 @@ export class SnapshotGenerator {
       merged.max = this.restrictMax(baseElement.max, diffElement.max);
     }
 
-    // Merge types (apply restrictions)
     if (diffElement.type) {
       merged.type = this.mergeTypes(baseElement.type, diffElement.type);
     }
 
-    // Merge constraints (add new constraints)
     if (diffElement.constraint) {
       merged.constraint = [
         ...(baseElement.constraint || []),
@@ -258,12 +253,10 @@ export class SnapshotGenerator {
       ];
     }
 
-    // Merge binding (differential overrides base)
     if (diffElement.binding) {
       merged.binding = diffElement.binding;
     }
 
-    // Copy other properties from differential
     const propertiesToCopy = [
       'short', 'definition', 'comment', 'requirements',
       'mustSupport', 'isModifier', 'isSummary',
@@ -298,9 +291,6 @@ export class SnapshotGenerator {
     return merged;
   }
 
-  /**
-   * Restrict max cardinality
-   */
   private restrictMax(baseMax?: string, diffMax?: string): string {
     if (!baseMax) return diffMax || '*';
     if (!diffMax) return baseMax;
@@ -314,9 +304,6 @@ export class SnapshotGenerator {
     return Math.min(baseNum, diffNum).toString();
   }
 
-  /**
-   * Merge type definitions
-   */
   private mergeTypes(
     baseTypes?: Array<{ code: string; profile?: string[]; targetProfile?: string[] }>,
     diffTypes?: Array<{ code: string; profile?: string[]; targetProfile?: string[] }>
@@ -324,15 +311,12 @@ export class SnapshotGenerator {
     if (!baseTypes) return diffTypes || [];
     if (!diffTypes) return baseTypes;
 
-    // Differential can restrict types
     const mergedTypes: Array<{ code: string; profile?: string[]; targetProfile?: string[] }> = [];
 
     for (const diffType of diffTypes) {
-      // Check if this type code exists in base
       const baseType = baseTypes.find(bt => bt.code === diffType.code);
 
       if (baseType) {
-        // Merge profiles
         const mergedType = { ...baseType };
 
         if (diffType.profile) {
@@ -345,7 +329,6 @@ export class SnapshotGenerator {
 
         mergedTypes.push(mergedType);
       } else {
-        // New type (only allowed if base was open)
         mergedTypes.push(diffType);
       }
     }
@@ -353,9 +336,6 @@ export class SnapshotGenerator {
     return mergedTypes.length > 0 ? mergedTypes : baseTypes;
   }
 
-  /**
-   * Apply constraints from differential to snapshot
-   */
   private applyConstraints(
     snapshot: ElementDefinition[],
     differential: ElementDefinition[]
@@ -385,7 +365,6 @@ export class SnapshotGenerator {
       const diffElement = constraintMap.get(snapElement.path);
       if (!diffElement) continue;
 
-      // Apply min/max restrictions
       if (diffElement.min !== undefined && snapElement.min !== undefined) {
         snapElement.min = Math.max(snapElement.min, diffElement.min);
       }
@@ -394,38 +373,32 @@ export class SnapshotGenerator {
         snapElement.max = this.restrictMax(snapElement.max, diffElement.max);
       }
 
-      // Apply mustSupport
       if (diffElement.mustSupport !== undefined) {
         snapElement.mustSupport = diffElement.mustSupport;
       }
 
-      // Apply isModifier
       if (diffElement.isModifier !== undefined) {
         snapElement.isModifier = diffElement.isModifier;
       }
     }
   }
 
-  /**
-   * Clear snapshot cache
-   */
   clearCache(): void {
     this.snapshotCache.clear();
     logger.debug('[SnapshotGenerator] Cache cleared');
   }
 
-  /**
-   * Remove a single entry from the snapshot cache by profile URL.
-   * Used when an external profile with the same URL is re-registered
-   * with different content (e.g. conformance test runner swapping SDs).
-   */
   evict(profileUrl: string): boolean {
-    return this.snapshotCache.delete(profileUrl);
+    let deleted = this.snapshotCache.delete(profileUrl);
+    const prefix = `${profileUrl}|`;
+    for (const key of [...this.snapshotCache.keys()]) {
+      if (key.startsWith(prefix)) {
+        deleted = this.snapshotCache.delete(key) || deleted;
+      }
+    }
+    return deleted;
   }
 
-  /**
-   * Get cache statistics
-   */
   getCacheStats(): { size: number; profiles: string[] } {
     return {
       size: this.snapshotCache.size,

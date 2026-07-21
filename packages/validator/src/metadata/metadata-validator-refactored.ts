@@ -1,23 +1,3 @@
-/**
- * Metadata Validator (Refactored)
- * 
- * Main orchestrator for metadata validation.
- * Coordinates all metadata validation sub-components.
- * 
- * This refactored version implements a modular structure where:
- * - Field validators (lastUpdated, versionId, source) are in field-validators.ts
- * - Profile validators are in profile-validators.ts
- * - Security label validators are in security-validators.ts
- * - Tag validators are in tag-validators.ts
- * - URI validators are in uri-validators.ts
- * - Completeness checker is in completeness-checker.ts
- * 
- * Each validator is independently testable and focused on a single responsibility.
- * 
- * The original metadata-validator.ts (2,208 lines) remains for backward compatibility
- * and will be deprecated in a future release.
- */
-
 import type { ValidationContext, ValidationIssue } from '../types';
 import type { ValidationResult } from '@records-fhir/validation-types';
 /**
@@ -116,9 +96,7 @@ export class MetadataValidator {
     this.securityValidator = new SecurityValidator();
     this.tagValidator = new TagValidator();
   }
-  /**
-   * Validate metadata - supports both new and legacy signatures for backward compatibility
-   */
+
   async validate(
     resource: any,
     resourceTypeOrContext: string | ValidationContext,
@@ -127,7 +105,6 @@ export class MetadataValidator {
     settings?: any,
     profileUrl?: string
   ): Promise<ValidationIssue[] | ValidationResult> {
-    // New signature: validate(resource, context)
     if (typeof resourceTypeOrContext === 'object') {
       const context = resourceTypeOrContext as ValidationContext;
       const startTime = Date.now();
@@ -160,7 +137,6 @@ export class MetadataValidator {
       };
     }
 
-    // Legacy signature: validate(resource, resourceType, fhirVersion, coordinator, settings)
     return this.validateInternal(
       resource,
       resourceTypeOrContext as string,
@@ -171,11 +147,6 @@ export class MetadataValidator {
     );
   }
 
-  /**
-   * Internal validation method
-   *
-   * Coordinates all metadata validation aspects and aggregates results.
-   */
   async validateInternal(
     resource: any,
     resourceType: string,
@@ -202,7 +173,6 @@ export class MetadataValidator {
         }
       }
 
-      // Check coordinator first (HAPI might have already validated metadata)
       if (coordinator) {
         const resourceId = `${resource.resourceType}/${resource.id}`;
         const coordinatorIssues = coordinator.getIssuesByAspect(resourceId, 'metadata');
@@ -218,11 +188,9 @@ export class MetadataValidator {
         }
       }
 
-      // Validate meta field existence and structure
       const metaIssues = this.validateMetaField(resource, resourceType);
       issues.push(...metaIssues);
 
-      // Validate required metadata based on resource type (check even if meta is missing)
       const requiredMetadataIssues = validateRequiredMetadata(resource, resourceType);
       issues.push(...requiredMetadataIssues);
 
@@ -234,12 +202,10 @@ export class MetadataValidator {
         issues.push(...provenanceIssues);
       }
 
-      // Skip further validation if meta is invalid
       if (!resource.meta) {
         return issues;
       }
 
-      // Validate lastUpdated field if present
       if (resource.meta.lastUpdated) {
         const lastUpdatedIssues = this.lastUpdatedValidator.validate(
           resource.meta.lastUpdated,
@@ -249,7 +215,6 @@ export class MetadataValidator {
         issues.push(...lastUpdatedIssues);
       }
 
-      // Validate versionId field if present (check for undefined/null, not falsy)
       if (resource.meta.versionId !== undefined && resource.meta.versionId !== null) {
         const versionIdFormatIssues = this.versionIdValidator.validateFormat(
           resource.meta.versionId,
@@ -266,7 +231,6 @@ export class MetadataValidator {
         issues.push(...versionIdConsistencyIssues);
       }
 
-      // Validate profile URLs if present (validator handles array check)
       if (resource.meta.profile !== undefined && resource.meta.profile !== null) {
         const profileUrlIssues = this.profileValidator.validateUrls(
           resource.meta.profile,
@@ -275,7 +239,6 @@ export class MetadataValidator {
         issues.push(...profileUrlIssues);
       }
 
-      // Validate security labels if present (validator handles array check)
       if (resource.meta.security !== undefined && resource.meta.security !== null) {
         const securityIssues = this.securityValidator.validate(
           resource.meta.security,
@@ -284,7 +247,6 @@ export class MetadataValidator {
         issues.push(...securityIssues);
       }
 
-      // Validate tags if present (validator handles array check)
       if (resource.meta.tag !== undefined && resource.meta.tag !== null) {
         const tagIssues = this.tagValidator.validate(
           resource.meta.tag,
@@ -293,7 +255,6 @@ export class MetadataValidator {
         issues.push(...tagIssues);
       }
 
-      // Validate source URI if present
       if (resource.meta.source !== undefined && resource.meta.source !== null) {
         const sourceIssues = this.sourceValidator.validate(
           resource.meta.source,
@@ -329,9 +290,6 @@ export class MetadataValidator {
     return issues;
   }
 
-  /**
-   * Validate profile accessibility (async method for tests)
-   */
   async validateProfileAccessibility(
     profiles: any,
     resourceType: string,
@@ -339,17 +297,14 @@ export class MetadataValidator {
   ): Promise<ValidationIssue[]> {
     const issues: ValidationIssue[] = [];
 
-    // Handle empty profiles
     if (!profiles || (Array.isArray(profiles) && profiles.length === 0)) {
       return issues;
     }
 
-    // Handle non-array profiles
     if (!Array.isArray(profiles)) {
-      return issues; // Already validated in validateInternal
+      return issues;
     }
 
-    // Validate each profile URL (skip non-string entries)
     for (let i = 0; i < profiles.length; i++) {
       const profile = profiles[i];
       if (typeof profile !== 'string') {
@@ -360,15 +315,9 @@ export class MetadataValidator {
     return issues;
   }
 
-  /**
-   * Validate meta field existence and basic structure
-   * 
-   * Note: candidate for extraction to field-validators.ts in a future refactor.
-   */
   private validateMetaField(resource: any, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
-    // Check for required meta field
     if (!resource.meta) {
       issues.push({
         id: `metadata-missing-meta-${Date.now()}`,
@@ -391,7 +340,6 @@ export class MetadataValidator {
       return issues;
     }
 
-    // Check meta field type
     if (typeof resource.meta !== 'object' || Array.isArray(resource.meta)) {
       issues.push({
         id: `metadata-invalid-meta-type-${Date.now()}`,

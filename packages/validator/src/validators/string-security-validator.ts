@@ -77,6 +77,7 @@ export class StringSecurityValidator {
                 // narrative-validator handles its own XHTML whitelist.
                 if (this.isInsideNarrative(childPath)) continue;
                 if (this.isConformanceDefinitionDocumentation(childPath)) continue;
+                if (this.isRenderingXhtmlExtensionValue(obj, key)) continue;
 
                 if (containsHtmlTag(value)) {
                     issues.push(createValidationIssue({
@@ -99,6 +100,11 @@ export class StringSecurityValidator {
                 this.walk(value, childPath, issues);
             }
         }
+    }
+
+    private isRenderingXhtmlExtensionValue(parent: any, key: string): boolean {
+        return key === 'valueString' &&
+            parent?.url === 'http://hl7.org/fhir/StructureDefinition/rendering-xhtml';
     }
 
     /**

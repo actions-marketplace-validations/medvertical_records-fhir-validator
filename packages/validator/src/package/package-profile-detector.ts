@@ -7,13 +7,19 @@
 
 import { logger } from '../logger';
 import { getProfileSource } from '../persistence';
+import {
+  isSafePackageId,
+  packageErrorMetadata,
+  packageReferenceMetadata,
+  packageTargetMetadata,
+} from './package-artifact-policy.js';
 
 /**
  * Detect package ID from a profile URL.
  * First tries known patterns, then falls back to generic ProfilePackageMapper.
  */
 export async function detectPackageForProfile(profileUrl: string): Promise<string | null> {
-  logger.info(`[PackageRegistry] Detecting package for profile: ${profileUrl}`);
+  logger.info('[PackageRegistry] Detecting package for profile', packageTargetMetadata(profileUrl));
 
   // ========================================================================
   // Fast path: Known patterns for common packages
@@ -21,31 +27,31 @@ export async function detectPackageForProfile(profileUrl: string): Promise<strin
 
   // US Core: http://hl7.org/fhir/us/core/StructureDefinition/...
   if (profileUrl.includes('hl7.org/fhir/us/core')) {
-    logger.info(`[PackageRegistry] ✓ Pattern match: US Core → hl7.fhir.us.core`);
+    logger.info('[PackageRegistry] Matched known US Core profile pattern');
     return 'hl7.fhir.us.core';
   }
 
   // Da Vinci PDEX Plan-Net: http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/...
   if (profileUrl.includes('hl7.org/fhir/us/davinci-pdex-plan-net')) {
-    logger.info(`[PackageRegistry] ✓ Pattern match: Da Vinci PDEX Plan-Net → hl7.fhir.us.davinci-pdex-plan-net`);
+    logger.info('[PackageRegistry] Matched known Da Vinci PDEX Plan-Net profile pattern');
     return 'hl7.fhir.us.davinci-pdex-plan-net';
   }
 
   // Da Vinci PDEX: http://hl7.org/fhir/us/davinci-pdex/StructureDefinition/...
   if (profileUrl.includes('hl7.org/fhir/us/davinci-pdex')) {
-    logger.info(`[PackageRegistry] ✓ Pattern match: Da Vinci PDEX → hl7.fhir.us.davinci-pdex`);
+    logger.info('[PackageRegistry] Matched known Da Vinci PDEX profile pattern');
     return 'hl7.fhir.us.davinci-pdex';
   }
 
   // Da Vinci CRD: http://hl7.org/fhir/us/davinci-crd/StructureDefinition/...
   if (profileUrl.includes('hl7.org/fhir/us/davinci-crd')) {
-    logger.info(`[PackageRegistry] ✓ Pattern match: Da Vinci CRD → hl7.fhir.us.davinci-crd`);
+    logger.info('[PackageRegistry] Matched known Da Vinci CRD profile pattern');
     return 'hl7.fhir.us.davinci-crd';
   }
 
   // HL7 SDC: http://hl7.org/fhir/uv/sdc/StructureDefinition/...
   if (profileUrl.includes('hl7.org/fhir/uv/sdc')) {
-    logger.info(`[PackageRegistry] ✓ Pattern match: HL7 SDC → hl7.fhir.uv.sdc`);
+    logger.info('[PackageRegistry] Matched known HL7 SDC profile pattern');
     return 'hl7.fhir.uv.sdc';
   }
 
@@ -53,8 +59,10 @@ export async function detectPackageForProfile(profileUrl: string): Promise<strin
   const hl7UvMatch = profileUrl.toLowerCase().match(/^https?:\/\/hl7\.org\/fhir\/uv\/([^/]+)\//);
   if (hl7UvMatch) {
     const packageId = `hl7.fhir.uv.${hl7UvMatch[1]}`;
-    logger.info(`[PackageRegistry] ✓ Pattern match: HL7 UV → ${packageId}`);
-    return packageId;
+    if (isSafePackageId(packageId)) {
+      logger.info('[PackageRegistry] Matched generic HL7 UV profile pattern', packageReferenceMetadata(packageId));
+      return packageId;
+    }
   }
 
   // UK Core: https://fhir.hl7.org.uk/StructureDefinition/...
@@ -191,7 +199,7 @@ export async function detectPackageForProfile(profileUrl: string): Promise<strin
 
   // WHO ANC-CDS: http://fhir.org/guides/who/anc-cds/StructureDefinition/...
   if (profileUrl.includes('fhir.org/guides/who/anc-cds') || profileUrl.includes('who.anc-cds')) {
-    logger.info(`[PackageRegistry] Detected WHO ANC-CDS profile: ${profileUrl}`);
+    logger.info('[PackageRegistry] Matched known WHO ANC-CDS profile pattern');
     return 'who.fhir.anc-cds';
   }
 
@@ -199,7 +207,7 @@ export async function detectPackageForProfile(profileUrl: string): Promise<strin
   // Generic discovery: Use ProfilePackageMapper for unknown packages
   // ========================================================================
 
-  logger.info(`[PackageRegistry] Unknown profile URL, using generic discovery: ${profileUrl}`);
+  logger.info('[PackageRegistry] Using generic profile package discovery', packageTargetMetadata(profileUrl));
 
   try {
     // Use the embedder's package-mapping fallback (server wires the
@@ -207,16 +215,18 @@ export async function detectPackageForProfile(profileUrl: string): Promise<strin
     const find = getProfileSource().findPackageForProfile;
     if (find) {
       const packageInfo = await find(profileUrl);
-      if (packageInfo) {
-        logger.info(`[PackageRegistry] ✓ Generic discovery found: ${packageInfo.packageId} (confidence: ${packageInfo.confidenceScore ?? 'n/a'})`);
+      if (packageInfo && isSafePackageId(packageInfo.packageId)) {
+        logger.info('[PackageRegistry] Generic profile package discovery succeeded', {
+          ...packageReferenceMetadata(packageInfo.packageId),
+          confidence: packageInfo.confidenceScore ?? null,
+        });
         return packageInfo.packageId;
       }
     }
   } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.error(`[PackageRegistry] Generic discovery failed:`, err.message);
+    logger.error('[PackageRegistry] Generic profile package discovery failed', packageErrorMetadata(error));
   }
 
-  logger.warn(`[PackageRegistry] Could not detect package for profile: ${profileUrl}`);
+  logger.warn('[PackageRegistry] Could not detect package for profile', packageTargetMetadata(profileUrl));
   return null;
 }

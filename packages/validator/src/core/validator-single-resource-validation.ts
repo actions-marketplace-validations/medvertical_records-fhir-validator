@@ -32,6 +32,8 @@ interface RecordsSingleResourceValidationInput {
   settings?: ValidationSettings;
   fhirClient?: FhirClientLike;
   referenceResolver?: ReferenceResolver | null;
+  organizationId?: number;
+  serverId?: number;
 }
 
 interface RecordsSingleResourceValidationContext {
@@ -55,10 +57,12 @@ export async function validateRecordsResource(
   input: RecordsSingleResourceValidationInput,
   context: RecordsSingleResourceValidationContext,
 ): Promise<ValidationIssue[]> {
-  const { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver } = input;
+  const { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver, organizationId, serverId } = input;
   const startTime = Date.now();
 
   try {
+    const profileSourceContext = { organizationId, serverId, fhirVersion };
+    context.sdLoader.setProfileResolutionContext(profileSourceContext, settings);
     const declaredProfileUrl =
       profileUrl ??
       resource.meta?.profile?.[0] ??
@@ -74,6 +78,8 @@ export async function validateRecordsResource(
       fhirVersion,
       context.profileCache,
       fhirClient,
+      profileSourceContext,
+      settings,
     );
     const structureDef = loadResult.structureDef;
 
@@ -111,6 +117,7 @@ export async function validateRecordsResource(
         profileFallbackIssue,
         contextQuestionnaire,
         referenceResolver,
+        organizationId,
       },
       {
         structuralExecutor: context.structuralExecutor,

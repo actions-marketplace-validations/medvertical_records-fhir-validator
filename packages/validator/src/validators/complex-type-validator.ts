@@ -11,14 +11,14 @@ import {
     mergeElementConstraints
 } from '../core/executors/structural-executor-helpers';
 import { checkExtensionExt1, checkPeriodPer1 } from './complex-type-invariants';
+import {
+    narrowChoiceTypeElement,
+    parentComplexElementAbsent,
+    rewriteChoiceTypeBasePath,
+    shouldSkipComplexDeepValidation,
+} from './complex-type-path-rules';
 
-/**
- * Validator for complex nested types
- * Handles recursive validation of sub-elements in complex types (e.g. HumanName, Address)
- */
 export class ComplexTypeValidator {
-    // Lazy, shared — VSV carries its own cache, instantiating per-resource
-    // wastes those caches. A singleton per ComplexTypeValidator is enough.
     private valueSetValidator: ValueSetValidator;
     private typeDefinitionCache = new Map<string, Promise<StructureDefinition | null>>();
     private effectiveElementsCache = new Map<string, Promise<Map<string, ElementDefinition> | null>>();
@@ -53,35 +53,6 @@ export class ComplexTypeValidator {
         return promise;
     }
 
-    /**
-     * Check if a path should be skipped for deep validation.
-     * Certain paths contain definitions or delegated resources, not data to validate.
-     */
-    private shouldSkipDeepValidation(basePath: string): boolean {
-        // SD snapshot/differential element definitions contain arbitrary FHIR types
-        // as *definitions*, not as data to validate.
-        if (basePath.match(/^StructureDefinition\.(snapshot|differential)\.element/)) {
-            return true;
-        }
-        // Bundle.entry.resource is typed as "Resource" — entry resources must be
-        // validated independently with their own SD (Phase 5), not through Bundle recursion.
-        if (basePath.match(/^Bundle\.entry(\[\d+\])?\.resource/)) {
-            return true;
-        }
-        // Parameters.parameter.resource (including nested through .part) is a
-        // polymorphic Resource slot — the nested resource must be validated with
-        // its own SD, not through the Parameters snapshot.
-        if (basePath.match(/^Parameters\.parameter(\[\d+\])?(\.part(\[\d+\])?)*\.resource/)) {
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * Validate required sub-elements of complex types
-     * This ensures that when a complex type exists (e.g., HumanName), its required sub-elements are also validated
-     * Uses profile-specific constraints from the parent profile when available
-     */
     async validateComplexTypeSubElements(
         value: any,
         elementDef: ElementDefinition,
@@ -100,23 +71,10 @@ export class ComplexTypeValidator {
             if (!primaryType) return issues;
             if (isPrimitiveType(primaryType.code)) return issues;
             if (typeof value !== 'object' || value === null) return issues;
-            if (this.shouldSkipDeepValidation(basePath)) return issues;
+            if (shouldSkipComplexDeepValidation(basePath)) return issues;
 
-            // Polymorphic boundary: a path like `Observation.value[x]`
-            // crossed the type resolver into a concrete type (e.g.
-            // Quantity). Rewrite the path to use the concrete key
-            // (`Observation.valueQuantity`) so emitted issues match
-            // what a FHIR user actually reads in their resource. This
-            // also keeps nested paths like `Observation.valueQuantity.
-            // extension[0]` consistent without having to rewrite them
-            // after the fact.
-            if (basePath.endsWith('[x]')) {
-                const stem = basePath.slice(0, -'[x]'.length);
-                const typeSuffix = primaryType.code.charAt(0).toUpperCase() + primaryType.code.slice(1);
-                basePath = stem + typeSuffix;
-            }
+            basePath = rewriteChoiceTypeBasePath(basePath, primaryType.code);
 
-            // Handle arrays: validate each element
             if (Array.isArray(value)) {
                 for (let i = 0; i < value.length; i++) {
                     const el = value[i];
@@ -129,35 +87,21 @@ export class ComplexTypeValidator {
                 return issues;
             }
 
-            // Extension-specific invariant: ext-1 says an Extension MUST
-            // have exactly one of `extension.*` or `value[x]`, never both,
-            // never neither. Records' generic SDFHIRPathExecutor evaluates
-            // ext-1 on extensions declared at direct resource paths, but
-            // extensions nested inside complex-type children
-            // (e.g. `Observation.valueQuantity.extension[0]`) never enter
-            // that walk. Handle them here at the point of descent.
             if (primaryType.code === 'Extension') {
                 const ext1Issue = checkExtensionExt1(value, basePath);
                 if (ext1Issue) issues.push(ext1Issue);
             }
 
-            // Period-specific invariant: per-1 says "If present, start
-            // SHALL have a lower value than end". Nested Period instances
-            // (Encounter.period, Patient.communication.period, …) live in
-            // the Period SD which the generic executor doesn't reach via
-            // the parent's snapshot. Handled here at the descent point.
             if (primaryType.code === 'Period') {
                 const per1Issue = checkPeriodPer1(value, basePath);
                 if (per1Issue) issues.push(per1Issue);
             }
 
-            // Load base SD and build effective elements with profile overlays
             const effectiveElements = await this.buildEffectiveElements(
                 primaryType.code, basePath, parentStructureDef, fhirVersion
             );
             if (!effectiveElements) return issues;
 
-            // Validate each sub-element
             for (const [elementPath, subElementDef] of effectiveElements.entries()) {
                 if (subElementDef.path === primaryType.code) continue;
                 const subIssues = await this.validateSubElement(
@@ -173,9 +117,6 @@ export class ComplexTypeValidator {
         return issues;
     }
 
-    /**
-     * Build effective element definitions by merging base type SD with profile-specific constraints.
-     */
     private async buildEffectiveElements(
         typeCode: string,
         basePath: string,
@@ -204,16 +145,13 @@ export class ComplexTypeValidator {
             return null;
         }
 
-        // Extract profile-specific constraints
         const profileOverrides = this.extractProfileConstraints(typeCode, basePath, parentStructureDef);
 
-        // Start with base type elements
         const effective = new Map<string, ElementDefinition>();
         for (const el of baseTypeDef.snapshot.element) {
             effective.set(el.path, { ...el });
         }
 
-        // Overlay profile-specific constraints
         for (const [typePath, profileElement] of profileOverrides.entries()) {
             const base = effective.get(typePath);
             if (base) {
@@ -243,9 +181,6 @@ export class ComplexTypeValidator {
         return `${fhirVersion}|${typeCode}|${parentKey}|${normalizedBasePath}`;
     }
 
-    /**
-     * Extract profile-specific constraints from the parent profile for a complex type's sub-elements.
-     */
     private extractProfileConstraints(
         typeCode: string,
         basePath: string,
@@ -256,12 +191,6 @@ export class ComplexTypeValidator {
 
         const basePathPrefix = basePath.replace(/\[\d+\]/g, '');
         for (const el of parentStructureDef.snapshot.element) {
-            // Skip slice-scoped sub-elements — their cardinality / type
-            // constraints apply only to the matching slice, not to every
-            // occurrence at the base path. Without this guard the last slice
-            // overlay wins and its per-slice min=1 leaks to the base sub-
-            // element (e.g. Observation.referenceRange.appliesTo suddenly
-            // required for every referenceRange item).
             if (el.sliceName) continue;
             if (typeof el.id === 'string' && el.id.includes(':')) continue;
 
@@ -273,41 +202,6 @@ export class ComplexTypeValidator {
         return result;
     }
 
-    /**
-     * FHIR cardinality on a nested element (e.g. `qualification.code` min=1)
-     * only applies when the parent is actually instantiated. If the direct
-     * ancestor is absent/null/empty-array on the resource, the parent's own
-     * 0..* cardinality has already permitted the absence — required children
-     * must not fire.
-     */
-    private parentElementAbsent(value: any, subPath: string): boolean {
-        if (!subPath.includes('.')) return false;
-        const parentSubPath = subPath.substring(0, subPath.lastIndexOf('.'));
-        const parentValue = getNestedValue(value, parentSubPath);
-        return (
-            parentValue === undefined ||
-            parentValue === null ||
-            (Array.isArray(parentValue) && parentValue.length === 0)
-        );
-    }
-
-    /**
-     * For choice-type elements (value[x]), narrow the type list to the concrete type
-     * indicated by the property key suffix. Prevents false-positive URI validation on DateTime values.
-     */
-    private narrowChoiceType(subPath: string, value: any, elementDef: ElementDefinition): ElementDefinition {
-        if (!subPath.endsWith('[x]') || !value || typeof value !== 'object') return elementDef;
-        const prefix = subPath.slice(0, -3);
-        const actualKey = Object.keys(value).find(k => k.startsWith(prefix) && k !== prefix);
-        if (!actualKey || !elementDef.type || elementDef.type.length <= 1) return elementDef;
-        const suffix = actualKey.substring(prefix.length);
-        const matched = elementDef.type.find(t => t.code.toLowerCase() === suffix.toLowerCase());
-        return matched ? { ...elementDef, type: [matched] } : elementDef;
-    }
-
-    /**
-     * Validate a single sub-element of a complex type.
-     */
     private async validateSubElement(
         value: any,
         elementPath: string,
@@ -316,7 +210,7 @@ export class ComplexTypeValidator {
         basePath: string,
         profileUrl: string,
         parentStructureDef?: StructureDefinition,
-        _fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
+        fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
     ): Promise<ValidationIssue[]> {
         // Extract relative sub-path
         let subPath: string;
@@ -333,9 +227,8 @@ export class ComplexTypeValidator {
         }
 
         const fullPath = `${basePath}.${subPath}`;
-        const effectiveElementDef = this.narrowChoiceType(subPath, value, subElementDef);
+        const effectiveElementDef = narrowChoiceTypeElement(subPath, value, subElementDef);
 
-        // Resolve value with fallback
         let subValue = getNestedValue(value, subPath);
         if (subValue === undefined && !subPath.includes('.') && value && typeof value === 'object' && subPath in value) {
             subValue = value[subPath];
@@ -346,7 +239,7 @@ export class ComplexTypeValidator {
         const minCardinality = subElementDef.min ?? 0;
 
         if (isValueMissing && minCardinality > 0) {
-            if (this.parentElementAbsent(value, subPath)) return [];
+            if (parentComplexElementAbsent(value, subPath)) return [];
             return [createValidationIssue({
                 code: 'structural-required-element-missing',
                 path: fullPath,
@@ -355,11 +248,6 @@ export class ComplexTypeValidator {
                 messageParams: { element: fullPath },
             })];
         } else if (typeof subValue === 'object' && subValue !== null) {
-            // Determine whether this element is declared as a primitive
-            // type. If so, the value (which may be an array like
-            // `given: [42]`) should go through TypeValidator for per-
-            // item type checking rather than recursing into the complex-
-            // type walker which would silently skip non-object array items.
             const declaredTypes = effectiveElementDef.type?.map(t => t.code) || [];
             const allPrimitive = declaredTypes.length > 0 && declaredTypes.every(t => isPrimitiveType(t));
             if (allPrimitive && this.typeValidator) {
@@ -368,30 +256,17 @@ export class ComplexTypeValidator {
                 issues.push(...typeIssues);
                 return issues;
             }
-            return this.validateComplexTypeSubElements(subValue, effectiveElementDef, fullPath, profileUrl, parentStructureDef, _fhirVersion);
+            return this.validateComplexTypeSubElements(subValue, effectiveElementDef, fullPath, profileUrl, parentStructureDef, fhirVersion);
         } else if (subValue !== undefined && subValue !== null) {
             const issues: ValidationIssue[] = [];
 
-            // Check required bindings on this primitive leaf. Records
-            // used to only evaluate bindings declared on elements in the
-            // top-level resource SD (see terminology-executor.ts);
-            // bindings on sub-elements of complex types
-            // (e.g. Timing.repeat.periodUnit) were silently skipped.
-            //
-            // We only check `required` strength here. `extensible` would
-            // fire a lot of false-positive warnings on value sets that
-            // are not bundled (like ExpressionLanguage / BCP-47) and that
-            // Java doesn't bother with — see the mr-covid-m4 regression
-            // note. A future Phase C pass can widen this once the
-            // value-set resolver gracefully reports "can't check" without
-            // emitting an issue.
             if (effectiveElementDef.binding && effectiveElementDef.binding.strength === 'required') {
                 try {
                     const bindingIssues = await this.valueSetValidator.validateBinding(
                         subValue,
                         subElementDef.binding,
                         fullPath,
-                        { profileUrl }
+                        { profileUrl, fhirVersion }
                     );
                     issues.push(...bindingIssues);
                 } catch (err) {
@@ -408,36 +283,26 @@ export class ComplexTypeValidator {
         return [];
     }
 
-    /**
-     * Resolve which of the allowed types best matches the value
-     * Used for polymorphic elements (value[x]) where multiple types are allowed
-     */
     private async resolveMatchingType(value: any, types: ElementDefinition['type'], fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'): Promise<{ code: string } | undefined> {
         if (!types || types.length === 0) return undefined;
         if (types.length === 1) return types[0];
 
-        // Filter out primitive types as ComplexTypeValidator ignores them anyway
         const complexCandidates = types.filter(t => !isPrimitiveType(t.code));
 
-        if (complexCandidates.length === 0) return types[0]; // Fallback
+        if (complexCandidates.length === 0) return types[0];
         if (complexCandidates.length === 1) return complexCandidates[0];
 
-        // If generic object without keys, can't determine
         const valueKeys = Object.keys(value);
         if (valueKeys.length === 0) return complexCandidates[0];
 
         let bestMatch = complexCandidates[0];
         let maxMatches = -1;
 
-        // Find the type that defines the most keys present in the value
         for (const type of complexCandidates) {
             try {
-                // Load definition to get fields
-                // Note: basic caching in sdLoader makes this relatively cheap
                 const def = await this.loadTypeDefinition(type.code, fhirVersion);
                 if (!def?.snapshot?.element) continue;
 
-                // valid keys for this type are immediate children of the root
                 const validKeys = new Set(def.snapshot.element
                     .filter(e => {
                         const parts = e.path.split('.');
@@ -445,7 +310,6 @@ export class ComplexTypeValidator {
                     })
                     .map(e => e.path.split('.')[1]));
 
-                // Count how many keys in the value are valid for this type
                 const matchCount = valueKeys.filter(k => validKeys.has(k)).length;
 
                 logger.debug(`[ComplexTypeValidator] Type candidate ${type.code}: matched ${matchCount} keys (${valueKeys.filter(k => validKeys.has(k)).join(',')})`);
@@ -455,7 +319,6 @@ export class ComplexTypeValidator {
                     bestMatch = type;
                 }
             } catch {
-                // Ignore load errors
             }
         }
 

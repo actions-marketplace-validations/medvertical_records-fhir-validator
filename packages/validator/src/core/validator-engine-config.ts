@@ -17,7 +17,10 @@ export interface RecordsValidatorConfig {
   autoDownload?: boolean;
   allowedPackages?: string[];
   packageVersionPins?: Record<string, string>;
+  profileCacheMaxEntries?: number;
 }
+
+const DEFAULT_PROFILE_CACHE_MAX_ENTRIES = 192;
 
 export function resolveRecordsValidatorConfig(config: RecordsValidatorConfig): RecordsValidatorConfig {
   const defaultCachePath = process.env.HOME
@@ -36,8 +39,22 @@ export function resolveRecordsValidatorConfig(config: RecordsValidatorConfig): R
     autoDownload: config.autoDownload !== false,
     allowedPackages: config.allowedPackages,
     packageVersionPins: config.packageVersionPins,
+    profileCacheMaxEntries: resolvePositiveInteger(
+      config.profileCacheMaxEntries,
+      process.env.VALIDATOR_PROFILE_CACHE_MAX_ENTRIES,
+      DEFAULT_PROFILE_CACHE_MAX_ENTRIES,
+    ),
     bundledProfilesPath: config.bundledProfilesPath !== undefined
       ? config.bundledProfilesPath
       : process.env.RECORDS_BUNDLED_PROFILES_PATH,
   };
+}
+
+function resolvePositiveInteger(
+  configured: number | undefined,
+  raw: string | undefined,
+  fallback: number,
+): number {
+  const value = configured ?? (raw?.trim() ? Number(raw) : fallback);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }

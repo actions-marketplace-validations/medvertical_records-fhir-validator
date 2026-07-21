@@ -10,6 +10,30 @@
     "failedCases": 0,
     "errorCases": 0,
     "passRate": 100,
+    "manifestScope": {
+      "totalEntries": 974,
+      "prefilteredEntries": 438,
+      "candidateEntries": 536,
+      "prefilterReasons": {
+        "unsupported version (3.0)": 44,
+        "unsupported version (3.0.1)": 2,
+        "unsupported version (1.4)": 1,
+        "XML resource (Records is JSON-only)": 296,
+        "unsupported module (shc)": 16,
+        "unsupported module (xver)": 13,
+        "unsupported module (cda)": 5,
+        "unsupported module (cdshooks)": 20,
+        "unsupported module (json5)": 8,
+        "unsupported module (v2)": 4,
+        "unsupported module (dsig)": 8,
+        "disabled (use-test: false)": 17,
+        "no java baseline": 3,
+        "logical model test": 1
+      }
+    },
+    "runtimeSkipReasons": {
+      "Declared Java baseline output not found or not resolvable locally": 40
+    },
     "claim": "HL7 JSON comparison lane: 496/496 executable comparisons passed (100.0%)."
   },
   "mii": {

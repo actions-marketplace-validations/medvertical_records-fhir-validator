@@ -1,0 +1,174 @@
+import type { ValidationIssue } from '../../types';
+import { valueSetCache } from '../../validators/valueset-cache';
+import { ValueSetPackageLoader } from '../../validators/valueset-package-loader';
+
+type CodeSystemReferenceMode = 'syntax' | 'not-found';
+
+const localCodeSystemKnownCache = new Map<string, Promise<boolean>>();
+
+export async function validateCodeSystemReference(
+  coding: any,
+  path: string,
+  index: number,
+  isArrayInput: boolean,
+  mode: CodeSystemReferenceMode,
+  fhirVersion?: 'R4' | 'R5' | 'R6',
+): Promise<ValidationIssue[]> {
+  const issues: ValidationIssue[] = [];
+  const systemPath = isArrayInput ? `${path}[${index}].system` : `${path}.system`;
+
+  if (mode === 'syntax' && /\/ValueSet\//i.test(coding.system)) {
+    issues.push({
+      id: `terminology-codesystem-is-valueset-${Date.now()}-${index}`,
+      aspect: 'terminology',
+      severity: 'error',
+      code: 'terminology-coding-system-valueset',
+      message: `The Coding references a value set, not a code system ('${coding.system}')`,
+      path: systemPath,
+      timestamp: new Date(),
+      details: {
+        valueSetUrl: coding.system,
+        fixHint: 'Replace Coding.system with the CodeSystem URL that defines the code; do not use a ValueSet URL as Coding.system.',
+      },
+    });
+  }
+
+  const systemValidation = validateCodeSystemUrl(coding.system);
+  const cacheKnowsIt = mode === 'not-found' && (
+    valueSetCache.hasCodeSystem(coding.system) ||
+    valueSetCache.hasCodeSystemFile(coding.system) ||
+    await localCodeSystemExists(coding.system, fhirVersion)
+  );
+  if (mode === 'not-found' && !systemValidation.valid && !cacheKnowsIt) {
+    issues.push({
+      id: `terminology-codesystem-unresolvable-${Date.now()}-${index}`,
+      aspect: 'terminology',
+      severity: 'warning',
+      code: 'terminology-codesystem-unresolvable',
+      message: `A definition for CodeSystem '${coding.system}' could not be found, so the code cannot be validated`,
+      path: systemPath,
+      timestamp: new Date(),
+      details: {
+        code: coding.code,
+        system: coding.system,
+        ...(coding.display ? { display: coding.display } : {}),
+        fieldPath: systemPath,
+        ...buildCodeSystemUrlDetails(coding.system),
+      },
+    });
+  }
+
+  return issues;
+}
+
+function fhirVersionToPackageMajor(fhirVersion?: 'R4' | 'R5' | 'R6'): string | undefined {
+  if (fhirVersion === 'R4') return '4';
+  if (fhirVersion === 'R5') return '5';
+  if (fhirVersion === 'R6') return '6';
+  return undefined;
+}
+
+function localCodeSystemExists(
+  systemUrl: string,
+  fhirVersion?: 'R4' | 'R5' | 'R6',
+): Promise<boolean> {
+  if (!isAbsoluteCodeSystemUri(systemUrl)) {
+    return Promise.resolve(false);
+  }
+
+  const key = `${systemUrl}|${fhirVersion ?? ''}`;
+  let lookup = localCodeSystemKnownCache.get(key);
+  if (!lookup) {
+    lookup = new ValueSetPackageLoader(valueSetCache)
+      .loadCodeSystem(systemUrl, fhirVersionToPackageMajor(fhirVersion))
+      .then(Boolean)
+      .catch(() => false);
+    localCodeSystemKnownCache.set(key, lookup);
+  }
+  return lookup;
+}
+
+function buildCodeSystemUrlDetails(systemUrl: string): Record<string, unknown> {
+  const oidPattern = /^\d+(?:\.\d+)+$/;
+  if (oidPattern.test(systemUrl)) {
+    const suggestedSystem = `urn:oid:${systemUrl}`;
+    return {
+      expectedSystemType: 'absolute CodeSystem URI',
+      suggestedSystem,
+      fixHint: `Use '${suggestedSystem}' if this Coding.system is an OID; otherwise replace Coding.system with the absolute CodeSystem.url that defines the code.`,
+    };
+  }
+
+  if (!isAbsoluteCodeSystemUri(systemUrl)) {
+    return {
+      expectedSystemType: 'absolute CodeSystem URI',
+      fixHint: `Replace Coding.system '${systemUrl}' with the absolute CodeSystem.url that defines the code; Coding.system cannot be a local label or code-system mnemonic.`,
+    };
+  }
+
+  return {
+    expectedSystemType: 'known CodeSystem URI',
+    fixHint: `Verify '${systemUrl}' is the canonical CodeSystem.url and provide a local CodeSystem package/cache or terminology server that can validate it.`,
+  };
+}
+
+function validateCodeSystemUrl(systemUrl: string): { valid: boolean; message?: string } {
+  const knownPatterns = [
+    /^http:\/\/hl7\.org\/fhir\//,
+    /^http:\/\/terminology\.hl7\.org\//,
+    /^http:\/\/loinc\.org\/?$/,
+    /^https?:\/\/snomed\.info\/sct/,
+    /^http:\/\/unitsofmeasure\.org\/?$/,
+    /^http:\/\/www\.nlm\.nih\.gov\/research\/umls\/rxnorm/,
+    /^urn:oid:/,
+    /^urn:iso:/,
+    /^urn:ietf:/,
+    /^urn:uuid:/,
+    /^http:\/\/hl7\.org\/fhir\/sid\/icd/,
+    /^https?:\/\/id\.who\.int\/icd\//,
+    /^http:\/\/www\.cms\.gov\/Medicare\/Coding\/ICD10\/?$/,
+    /^http:\/\/www\.whocc\.no\/atc/,
+    /^http:\/\/unstats\.un\.org\//,
+    /^http:\/\/dicom\.nema\.org\//,
+    /^http:\/\/www\.ama-assn\.org\/go\/cpt/,
+    /^http:\/\/hl7\.org\/fhir\/sid\//,
+    /^http:\/\/www\.iso\.org\//,
+    /^http:\/\/ihe\.net\//,
+    /^http:\/\/ihe-d\.de\//,
+    /^http:\/\/nucc\.org\//,
+    /^https?:\/\/www\.nubc\.org\//,
+    /^http:\/\/fdasis\.nlm\.nih\.gov/,
+    /^http:\/\/ncimeta\.nci\.nih\.gov/,
+    /^http:\/\/varnomen\.hgvs\.org/,
+    /^http:\/\/www\.genenames\.org/,
+    /^http:\/\/clinicaltrials\.gov/,
+    /^http:\/\/www\.ada\.org\/snodent/,
+    /^http:\/\/cts2\.nlm\.nih\.gov/,
+    /^http:\/\/standardterms\.edqm\.eu\/?$/,
+    /^http:\/\/fhir\.de\//,
+    /^http:\/\/fhir\.nl\//,
+    /^http:\/\/fhir\.ch\//,
+    /^https:\/\/fhir\.hl7\.org\.uk\//,
+    /^https:\/\/hl7chile\.cl\/fhir\//,
+    /^https?:\/\/fhir\.ee\//,
+    /^https?:\/\/fhir\.bbmri\.de\//,
+    /^http:\/\/fhir\.fi\//,
+    /^https?:\/\/.*\.hl7\.org\//,
+    /^urn:ietf:bcp:47$/,
+    /^http:\/\/fhir\.synapxe\.sg\/CodeSystem\//,
+  ];
+
+  if (knownPatterns.some(pattern => pattern.test(systemUrl))) {
+    return { valid: true };
+  }
+
+  if (!isAbsoluteCodeSystemUri(systemUrl)) {
+    return { valid: false, message: `CodeSystem URL should be an absolute URI: '${systemUrl}'` };
+  }
+
+  return { valid: false, message: `Unknown CodeSystem URL: ${systemUrl}` };
+}
+
+function isAbsoluteCodeSystemUri(systemUrl: string): boolean {
+  return systemUrl.startsWith('http://') || systemUrl.startsWith('https://') || systemUrl.startsWith('urn:');
+}

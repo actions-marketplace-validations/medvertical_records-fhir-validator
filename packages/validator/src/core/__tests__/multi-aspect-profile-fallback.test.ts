@@ -99,6 +99,7 @@ describe('multi-aspect-validate-callback — profile fallback', () => {
     expect(structural).toBeDefined();
     expect(structural!.issues).toHaveLength(1);
     expect(structural!.issues[0].code).toBe('structural-cardinality-min');
+    expect(structural!.issues[0].profile).toBe('http://example.org/DoesNotExist');
 
     // Profile aspect carries the fallback warning.
     const profile = result.aspects.find(a => a.aspect === 'profile');
@@ -134,6 +135,25 @@ describe('multi-aspect-validate-callback — profile fallback', () => {
     // Structural still ran.
     const structural = result.aspects.find(a => a.aspect === 'structural');
     expect(structural!.issues[0].code).toBe('structural-cardinality-min');
+  });
+
+  it('never reports a successful validation when only the base fallback was applied', async () => {
+    const deps = makeDeps();
+    deps.structuralExecutor = { validate: async () => [] } as any;
+    const callback = buildMultiAspectValidateCallback(
+      deps,
+      ['structural', 'profile'],
+      { validationStrictness: 'standard', aspects: {} },
+    );
+
+    const result = await callback(
+      { resourceType: 'Observation' },
+      'http://example.org/DoesNotExist',
+      'R4',
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.aspects.find(aspect => aspect.aspect === 'profile')?.isValid).toBe(false);
   });
 
   it('applies central issue dedupe to multi-aspect results', async () => {

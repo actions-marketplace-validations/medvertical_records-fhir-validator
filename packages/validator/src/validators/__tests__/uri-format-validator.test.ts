@@ -101,6 +101,20 @@ describe('validateUriFormat', () => {
     )).toBeNull();
   });
 
+  it('allows FHIR type names in operationdefinition-allowed-type extensions', () => {
+    expect(validateUriFormat(
+      'Questionnaire',
+      'OperationDefinition.parameter[1].extension[0].value[x]',
+      'OperationDefinition',
+    )).toBeNull();
+
+    expect(validateUriFormat(
+      'Reference',
+      'OperationDefinition.parameter[3].part[1].extension[0].value[x]',
+      'OperationDefinition',
+    )).toBeNull();
+  });
+
   it('allows relative Expression.reference URI values', () => {
     expect(validateUriFormat(
       'cql/QuestionnaireLogicLibrary|1.0',

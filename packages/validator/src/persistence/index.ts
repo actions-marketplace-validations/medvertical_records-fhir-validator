@@ -48,6 +48,20 @@ export interface ProfileResolutionEntry {
 }
 
 /**
+ * Request-local profile scope supplied by the embedding application.
+ *
+ * A server-backed embedder must use this scope when looking up package
+ * artifacts. Otherwise a profile that merely exists in the shared artifact
+ * store can leak into a tenant validation even though that tenant has never
+ * activated the package.
+ */
+export interface ProfileSourceContext {
+    organizationId?: number;
+    serverId?: number;
+    fhirVersion?: 'R4' | 'R5' | 'R6';
+}
+
+/**
  * Optional database-backed (or other side-channel) profile lookup.
  * Implemented by the server's `ProfileCache` + `ProfileResolver` stack;
  * left as a noop in the standalone engine package.
@@ -67,6 +81,7 @@ export interface ProfileSource {
     findByUrl?(
         url: string,
         fhirVersion?: 'R4' | 'R5' | 'R6',
+        context?: ProfileSourceContext,
     ): Promise<StructureDefinition | null>;
 
     /**
@@ -79,6 +94,7 @@ export interface ProfileSource {
         url: string,
         version: string | undefined,
         settings: ValidationSettings | undefined,
+        context?: ProfileSourceContext,
     ): Promise<StructureDefinition | null>;
 
     /**
@@ -104,6 +120,7 @@ export interface ProfileSource {
         setProfile: (cacheKey: string, sd: StructureDefinition) => void,
         getProfile: (cacheKey: string) => StructureDefinition | null | undefined,
         limit?: number,
+        context?: ProfileSourceContext,
     ): Promise<{ warmedUp: number; timeMs: number }>;
 
     /**

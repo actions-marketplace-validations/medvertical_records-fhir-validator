@@ -1,16 +1,10 @@
-const MII_ONKO_PREFIX = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/';
-
-const GRAPH_CANONICAL_ALIASES = new Map<string, string>([
-  [`${MII_ONKO_PREFIX}mii-cs-onko-therapie-stellungzurop`, `${MII_ONKO_PREFIX}mii-cs-therapie-stellungzurop`],
-]);
-
 export function graphValuesMatch(value: unknown, expected: unknown): boolean {
   if (value === null || value === undefined || expected === null || expected === undefined) {
     return value === expected;
   }
 
   if (typeof value !== 'object' || typeof expected !== 'object') {
-    return value === expected || graphCanonicalValuesMatch(value, expected);
+    return value === expected;
   }
 
   if (Array.isArray(value) && Array.isArray(expected)) {
@@ -33,7 +27,7 @@ export function graphValuesMatch(value: unknown, expected: unknown): boolean {
 export function graphPatternMatches(value: unknown, pattern: unknown): boolean {
   if (pattern === null || pattern === undefined) return true;
   if (value === null || value === undefined) return false;
-  if (typeof pattern !== 'object') return value === pattern || graphCanonicalValuesMatch(value, pattern);
+  if (typeof pattern !== 'object') return value === pattern;
 
   if (Array.isArray(pattern)) {
     const values = Array.isArray(value) ? value : [value];
@@ -49,14 +43,4 @@ export function graphPatternMatches(value: unknown, pattern: unknown): boolean {
   return Object.entries(pattern as Record<string, unknown>).every(([key, expected]) =>
     graphPatternMatches(actualRecord[key], expected)
   );
-}
-
-function graphCanonicalValuesMatch(value: unknown, expected: unknown): boolean {
-  if (typeof value !== 'string' || typeof expected !== 'string') return false;
-  return canonicalAliasKey(value) === canonicalAliasKey(expected);
-}
-
-function canonicalAliasKey(value: string): string {
-  const base = value.split('|')[0];
-  return GRAPH_CANONICAL_ALIASES.get(base) ?? value;
 }

@@ -1,5 +1,4 @@
 import type { ValidationAspect } from './enums';
-import type { ValidationSettings, ValidationSettingsUpdate } from './settings';
 
 export const CANONICAL_CUSTOM_RULE_ASPECT = 'custom_rule' as const;
 
@@ -50,7 +49,7 @@ export function normalizeValidationSettings<T>(settings: T): T {
     return settings;
   }
 
-  const typedSettings = settings as Partial<ValidationSettings> | ValidationSettingsUpdate;
+  const typedSettings = settings as Record<string, unknown> & { aspects?: unknown };
   return {
     ...typedSettings,
     aspects: normalizeValidationAspects(typedSettings.aspects),

@@ -71,6 +71,22 @@ export type {
 } from './results';
 
 export type {
+  ValidationRunActivityEventSnapshot,
+  ValidationRunLifecycleStatus,
+  ValidationRunOutcome,
+  ValidationRunResourceTypeSnapshot,
+  ValidationRunSnapshotV1,
+} from './run-snapshot';
+
+export type {
+  ValidationIssueSeverityMetricsV1,
+  ValidationIssueSummaryMetrics,
+  ValidationIssueSummaryScopeV1,
+  ValidationIssueSummarySeverity,
+  ValidationIssueSummaryV1,
+} from './issue-summary';
+
+export type {
   ValidationQualityMetrics,
   ValidationAccuracyMetrics,
   ValidationConsistencyMetrics,
@@ -119,6 +135,13 @@ export type {
   AdvisorRuleTransform
 } from './settings';
 
+export type {
+  CredentialPresenceHints,
+  PublicTerminologyAuthConfig,
+  PublicTerminologyServer,
+  PublicValidationSettings,
+} from './settings-public';
+
 export { PERFORMANCE_LIMITS } from './settings';
 
 export {
@@ -165,7 +188,12 @@ export {
 export {
   DEFAULT_PROFILE_SOURCES_CONFIG,
   normalizeProfileSourcesConfig,
-  safeParseSettingsUpdate
+  parseSettings,
+  parseSettingsUpdate,
+  safeParseSettings,
+  safeParseSettingsUpdate,
+  ValidationSettingsSchema,
+  ValidationSettingsUpdateSchema,
 } from './settings-schema';
 
 export {
@@ -224,6 +252,12 @@ export {
   computeValidationIssueId,
   stableStringify
 } from './issue-identity';
+
+export {
+  getEffectiveIssueRuleId,
+  getSpecificIssueRuleId,
+  type IssueRuleIdentityInput,
+} from './issue-rule-id';
 
 export type {
   ValidationIssueConfidence,

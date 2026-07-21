@@ -12,10 +12,13 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import {
-  WG_PUBLISHER, WG_CONTACT_URL,
-  R4_ELEMENT_DEFINITION_ELEMENTS, R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS, STATUS_CONSISTENCY,
+  R4_ELEMENT_DEFINITION_ELEMENTS, R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS,
   CHOICE_TYPE_BASES, VALID_CHOICE_TYPE_SUFFIXES,
 } from './sd-wg-mappings';
+import {
+  validateStructureDefinitionStatusConsistency,
+  validateStructureDefinitionWgConsistency,
+} from './structure-definition-metadata-rules';
 
 // ============================================================================
 // Validator
@@ -29,11 +32,11 @@ export class StructureDefinitionValidator {
     const issues: ValidationIssue[] = [];
 
     if (rt === 'StructureDefinition') {
-      issues.push(...this.validateWgConsistency(resource));
+      issues.push(...validateStructureDefinitionWgConsistency(resource));
     }
 
     if (rt === 'StructureDefinition') {
-      issues.push(...this.validateStatusConsistency(resource));
+      issues.push(...validateStructureDefinitionStatusConsistency(resource));
       issues.push(...this.validateExtensionFixedUrl(resource));
       issues.push(...this.validateContextValidity(resource));
       issues.push(...this.validateExtensionContextType(resource));
@@ -43,80 +46,10 @@ export class StructureDefinitionValidator {
       issues.push(...this.validateSliceMustSupport(resource));
       issues.push(...this.validateBaseDefinition(resource));
       issues.push(...this.validatePatternIdent1(resource));
+      issues.push(...this.validatePatternCodingCompleteness(resource));
     }
 
     return issues;
-  }
-
-  /**
-   * WG extension -> publisher / contact consistency.
-   * Java: "The nominated WG 'fhir' means that the publisher should be X but Y was found"
-   */
-  private validateWgConsistency(resource: any): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-    const rt = resource.resourceType;
-
-    const wgExt = (resource.extension || []).find(
-      (e: any) => e?.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-wg'
-    );
-    if (!wgExt?.valueCode) return issues;
-
-    const wg = wgExt.valueCode;
-    const expectedPublisher = WG_PUBLISHER[wg];
-
-    if (expectedPublisher && resource.publisher && !publisherMatchesWg(resource.publisher, expectedPublisher)) {
-      issues.push(createValidationIssue({
-        code: 'business-rule-wg-publisher',
-        path: rt,
-        resourceType: rt,
-        customMessage:
-          `The nominated WG '${wg}' means that the publisher should be ` +
-          `'${expectedPublisher}' but '${resource.publisher}' was found`,
-        severityOverride: 'warning',
-      }));
-    }
-
-    const expectedUrl = WG_CONTACT_URL[wg];
-    if (expectedUrl) {
-      const allContactUrls = extractContactUrls(resource.contact);
-      if (!allContactUrls.some(url => contactUrlMatchesWg(url, expectedUrl))) {
-        issues.push(createValidationIssue({
-          code: 'business-rule-wg-contact',
-          path: rt,
-          resourceType: rt,
-          customMessage:
-            `The nominated WG '${wg}' means that the contact url should be ` +
-            `'${expectedUrl}' but it was not found`,
-          severityOverride: 'warning',
-        }));
-      }
-    }
-
-    return issues;
-  }
-
-  /**
-   * standards-status vs publication status consistency.
-   * Java: "The resource status 'draft' and the standards status 'normative' are not consistent"
-   */
-  private validateStatusConsistency(sd: any): ValidationIssue[] {
-    const stdStatusExt = (sd.extension || []).find(
-      (e: any) => e?.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'
-    );
-    if (!stdStatusExt?.valueCode || !sd.status) return [];
-
-    const allowed = STATUS_CONSISTENCY[stdStatusExt.valueCode];
-    if (allowed && !allowed.includes(sd.status)) {
-      return [createValidationIssue({
-        code: 'business-rule-sd-status-consistency',
-        path: 'StructureDefinition',
-        resourceType: 'StructureDefinition',
-        customMessage:
-          `The resource status '${sd.status}' and the standards status '${stdStatusExt.valueCode}' are not consistent`,
-        severityOverride: 'warning',
-      })];
-    }
-    return [];
   }
 
   /**
@@ -389,6 +322,32 @@ export class StructureDefinitionValidator {
     return issues;
   }
 
+  private validatePatternCodingCompleteness(sd: any): ValidationIssue[] {
+    const issues: ValidationIssue[] = [];
+    const elements = [
+      ...(Array.isArray(sd?.differential?.element) ? sd.differential.element : []),
+      ...(Array.isArray(sd?.snapshot?.element) ? sd.snapshot.element : []),
+    ];
+
+    elements.forEach((element: any, elementIndex: number) => {
+      const concept = element?.patternCodeableConcept ?? element?.fixedCodeableConcept;
+      if (!concept || !Array.isArray(concept.coding)) return;
+
+      concept.coding.forEach((coding: any, codingIndex: number) => {
+        if (typeof coding?.system !== 'string' || coding.system.length === 0 || coding.code != null) return;
+        issues.push(createValidationIssue({
+          code: 'sd-pattern-coding-missing-code',
+          path: `StructureDefinition.differential.element[${elementIndex}].pattern.ofType(CodeableConcept).coding[${codingIndex}].code`,
+          resourceType: 'StructureDefinition',
+          customMessage: `No code provided for CodeSystem '${coding.system}'`,
+          severityOverride: 'warning',
+        }));
+      });
+    });
+
+    return issues;
+  }
+
   /** Detect self-referencing baseDefinition (circular). */
   private validateBaseDefinition(sd: any): ValidationIssue[] {
     if (!sd.baseDefinition || sd.baseDefinition !== sd.url) return [];
@@ -418,56 +377,15 @@ function collectKnownChoicePaths(sd: any, baseType: string): Set<string> {
   if (baseType === 'Extension') {
     paths.add('Extension.value[x]');
   }
+  if (baseType === 'Observation') {
+    paths.add('Observation.value[x]');
+  }
 
   return paths;
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function extractContactUrls(contacts: any[] | undefined): string[] {
-  if (!Array.isArray(contacts)) return [];
-  const urls: string[] = [];
-  for (const contact of contacts) {
-    for (const telecom of contact?.telecom || []) {
-      if (telecom?.system === 'url' && telecom.value) urls.push(telecom.value);
-    }
-  }
-  return urls;
-}
-
 function looksLikeStructureDefinitionCanonical(value: string): boolean {
   return /\/StructureDefinition\/[^/]+$/.test(value);
-}
-
-function publisherMatchesWg(actual: string, expected: string): boolean {
-  return normalizeWgPublisher(actual) === normalizeWgPublisher(expected);
-}
-
-function normalizeWgPublisher(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/\bhealth\s+level\s+seven\b/g, 'hl7')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
-}
-
-function contactUrlMatchesWg(actual: string, expected: string): boolean {
-  const normalizedActual = normalizeWgContactUrl(actual);
-  const normalizedExpected = normalizeWgContactUrl(expected);
-  return normalizedActual === normalizedExpected ||
-    normalizedActual.startsWith(`${normalizedExpected}/`);
-}
-
-function normalizeWgContactUrl(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .replace(/\/index\.(cfm|html?)$/, '')
-    .replace(/\/$/, '');
 }
 
 export const structureDefinitionValidator = new StructureDefinitionValidator();

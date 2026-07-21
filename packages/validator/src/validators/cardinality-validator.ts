@@ -1,24 +1,9 @@
 /* eslint-disable max-lines-per-function */
-/**
- * Cardinality Validator
- *
- * Validates min/max occurrence constraints on FHIR elements
- * Supports: 0..1, 1..1, 0..*, 1..*, and specific numbers
- * 
- * Handles conditional cardinality: child elements are only required
- * when their parent elements exist (e.g., Patient.communication.language
- * is only required if Patient.communication exists)
- */
-
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import type { ElementDefinition } from '../core/structure-definition-types';
 import { shouldValidateRequired, getValidationTargets } from '../business-rules';
 import { logger } from '../logger';
-
-// ============================================================================
-// Cardinality Validator
-// ============================================================================
 
 const CHOICE_BASES = [
   'value', 'effective', 'onset', 'abatement', 'deceased', 'multipleBirth',
@@ -191,22 +176,10 @@ function resolveIndexedPathParent(resource: any, path: string): any {
 export class CardinalityValidator {
   private mustSupportSeverity: 'error' | 'warning' | 'information' = 'warning';
 
-  /**
-   * Configure mustSupport validation severity
-   */
   setMustSupportSeverity(severity: 'error' | 'warning' | 'information'): void {
     this.mustSupportSeverity = severity;
   }
 
-  /**
-   * Validate cardinality of an element
-   * 
-   * @param value - Current value at the element path
-   * @param elementDef - Element definition from StructureDefinition
-   * @param path - Element path (e.g., "Patient.communication.language")
-   * @param profileUrl - Profile URL for error context
-   * @param resource - Full resource for parent existence checking
-   */
   validate(
     value: any,
     elementDef: ElementDefinition,
@@ -217,18 +190,12 @@ export class CardinalityValidator {
   ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
-    // Get min and max from element definition
     const min = elementDef.min ?? 0;
     const max = elementDef.max ?? '*';
 
-    // Determine actual count
     const count = this.getCount(value);
 
-    // Check for array vs scalar type mismatch (HAPI parity)
-    // If element is repeating (max > 1 or *) but value is a non-array scalar
-    // BUT skip if the path implies we are validating a specific array item (ends in [n])
     if (value !== undefined && value !== null && !Array.isArray(value) && this.isRepeating(elementDef) && !path.match(/\[\d+\]$/)) {
-      // Get the element name from path for better error message
       const elementName = path.split('.').pop() || path;
       issues.push(createValidationIssue({
         code: 'structural-validation-error',
@@ -237,14 +204,11 @@ export class CardinalityValidator {
         profile: profileUrl,
         customMessage: `Element '${elementName}' must be an array (max cardinality is ${max})`,
         messageParams: { element: elementName, max },
-        severityOverride: 'error',  // Match HAPI severity
+        severityOverride: 'error',
       }));
     }
 
-    // Validate minimum cardinality
-    // Only check if parent exists (conditional cardinality)
     if (count < min) {
-      // Check if parent element exists before flagging as error
       const shouldValidate = options.parentExists ?? (resource ? shouldValidateRequired(resource, path) : true);
 
       if (shouldValidate) {
@@ -259,7 +223,6 @@ export class CardinalityValidator {
           },
         }));
       } else {
-        // Parent doesn't exist - child element is not required
         logger.debug(
           `[CardinalityValidator] Skipping min cardinality check for '${path}' ` +
           `(parent doesn't exist - conditional cardinality)`
@@ -267,7 +230,6 @@ export class CardinalityValidator {
       }
     }
 
-    // Validate maximum cardinality (if not unbounded)
     if (max !== '*') {
       const maxNum = parseInt(max, 10);
       if (!isNaN(maxNum) && count > maxNum) {
@@ -281,9 +243,7 @@ export class CardinalityValidator {
       }
     }
 
-    // Validate mustSupport
     if (elementDef.mustSupport === true) {
-      // Only validate mustSupport if parent element exists (conditional mustSupport)
       const shouldValidateMustSupport = options.parentExists ?? (resource ? shouldValidateRequired(resource, path) : true);
       const shouldSkipObservationAlternative =
         shouldSkipObservationAlternativeMustSupport(resource, path);
@@ -298,15 +258,11 @@ export class CardinalityValidator {
         !shouldSkipContextual &&
         !shouldSkipConformance
       ) {
-        // Double-check that element truly doesn't exist before reporting mustSupport-missing
-        // The 'value' parameter might be undefined even if the element exists in the resource
         let elementActuallyExists = count > 0;
 
         if (!elementActuallyExists && resource) {
-          // Use getValidationTargets to check if element exists (handles arrays correctly)
           const validationTargets = getValidationTargets(resource, path);
           if (validationTargets.length > 0) {
-            // Check if any target has a non-empty value
             const hasNonEmptyValue = validationTargets.some(target => {
               const targetValue = target.value;
               if (targetValue === undefined || targetValue === null) {
@@ -337,7 +293,6 @@ export class CardinalityValidator {
         );
         issues.push(...mustSupportIssues);
       } else if (!shouldValidateMustSupport) {
-        // Parent doesn't exist - child element is not mustSupport required
         logger.debug(
           `[CardinalityValidator] Skipping mustSupport check for '${path}' ` +
           `(parent doesn't exist - conditional mustSupport)`
@@ -353,9 +308,6 @@ export class CardinalityValidator {
     return issues;
   }
 
-  /**
-   * Validate mustSupport elements
-   */
   private validateMustSupport(
     value: any,
     count: number,
@@ -366,9 +318,6 @@ export class CardinalityValidator {
   ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
-    // If mustSupport element is missing (count = 0) AND it actually doesn't exist, flag it
-    // elementActuallyExists is an optional parameter that indicates a double-check was performed
-    // If it's true, the element exists even though count might be 0 (e.g., due to path resolution issues)
     if (count === 0 && elementActuallyExists !== true) {
       issues.push(createValidationIssue({
         code: 'profile-mustsupport-missing',
@@ -385,10 +334,6 @@ export class CardinalityValidator {
     return issues;
   }
 
-  /**
-   * Get count of elements
-   * Returns 0 if undefined/null, 1 if single value, array.length if array
-   */
   private getCount(value: any): number {
     if (value === undefined || value === null) {
       return 0;
@@ -401,19 +346,10 @@ export class CardinalityValidator {
     return 1;
   }
 
-  /**
-   * Check if element is required (min > 0)
-   */
   isRequired(elementDef: ElementDefinition): boolean {
     return (elementDef.min ?? 0) > 0;
   }
 
-  /**
-   * Check if element is repeating (max > 1 or *)
-   * Returns false when max is undefined – elements without an explicit max constraint
-   * are not considered repeating (avoids false positives from differential-only SDs
-   * where child elements are added without inheriting parent cardinality).
-   */
   isRepeating(elementDef: ElementDefinition): boolean {
     const max = elementDef.max;
     if (max === undefined || max === null) {
@@ -427,9 +363,6 @@ export class CardinalityValidator {
     return !isNaN(maxNum) && maxNum > 1;
   }
 
-  /**
-   * Get cardinality as string (e.g., "0..1", "1..*")
-   */
   getCardinalityString(elementDef: ElementDefinition): string {
     const min = elementDef.min ?? 0;
     const max = elementDef.max ?? '*';

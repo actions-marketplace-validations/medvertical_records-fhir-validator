@@ -23,6 +23,7 @@ export type {
   CustomRulesSource,
   EngineCustomRule,
   ProfileResolutionEntry,
+  ProfileSourceContext,
   ProfileSource,
 } from '../persistence';
 export { createFilesystemProfileSource } from '../persistence/filesystem-profile-source';
@@ -47,6 +48,14 @@ export {
   normalizeKnownStructureDefinitionCanonicalUrl,
   StructureDefinitionLoader,
 } from '../core/structure-definition-loader';
+export { scanCacheDirectory } from '../core/sd-loader-package-scanner';
+export type { ScanCacheDirectoryOptions } from '../core/sd-loader-package-scanner';
+export { loadFromPersistentIndex } from '../core/sd-loader-persistent-index';
+export type { PersistentIndexOptions } from '../core/sd-loader-persistent-index';
+export {
+  isPackageAllowed,
+  parseAllowedPackages,
+} from '../core/sd-loader-package-config';
 export type {
   Binding,
   Constraint,
@@ -58,6 +67,16 @@ export {
   PackageDownloader,
   packageDownloader,
 } from '../package/package-downloader';
+export {
+  MAX_ARCHIVE_ENTRIES,
+  MAX_ARCHIVE_TOTAL_BYTES,
+  isSafePackageArchiveEntry,
+  isSafePackageId,
+  isSafePackageVersion,
+  packageErrorMetadata,
+  packageReferenceMetadata,
+  packageTargetMetadata,
+} from '../package/package-artifact-policy';
 export type {
   DownloadResult,
   PackageDownloadOptions,

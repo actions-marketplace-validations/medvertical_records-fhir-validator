@@ -1,12 +1,3 @@
-/**
- * Canonical Reference Validator
- * 
- * Validates canonical URLs that reference conformance resources.
- * Handles profiles, value sets, code systems, and other definitional resources.
- * 
- * Task 6.9: Add canonical reference validation (e.g., references to profiles, valuesets)
- */
-
 import {
   CANONICAL_RESOURCE_TYPES,
   CANONICAL_URL_PATTERN,
@@ -18,69 +9,39 @@ import { extractCanonicalUrlsFromResource } from './canonical-url-extraction';
 
 export type { CanonicalResourceType } from './canonical-reference-definitions';
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export interface CanonicalReferenceInfo {
-  /** Original canonical URL */
   canonical: string;
-  /** Base URL without version */
   baseUrl: string;
-  /** Version if specified */
   version?: string;
-  /** Expected resource type (if known from context) */
   expectedResourceType?: CanonicalResourceType;
-  /** Whether this is a valid canonical URL format */
   isValidFormat: boolean;
-  /** Whether this references a conformance resource */
   isConformanceResource: boolean;
 }
 
 export interface CanonicalValidationResult {
-  /** Whether the canonical reference is valid */
   isValid: boolean;
-  /** Validation severity */
   severity: 'error' | 'warning' | 'info';
-  /** Validation message */
   message: string;
-  /** Canonical info */
   canonicalInfo?: CanonicalReferenceInfo;
-  /** Details */
   details?: any;
 }
 
 export interface CanonicalResolutionResult {
-  /** Whether the canonical resource was found */
   found: boolean;
-  /** The resolved resource (if found) */
   resource?: any;
-  /** Error message if not found */
   errorMessage?: string;
-  /** Source where found */
   source?: 'local' | 'registry' | 'remote';
 }
 
-// ============================================================================
-// Canonical Reference Validator Class
-// ============================================================================
-
 export class CanonicalReferenceValidator {
-  /**
-   * Parse canonical URL information
-   */
   parseCanonicalUrl(canonical: string): CanonicalReferenceInfo {
     const trimmed = canonical.trim();
 
-    // Split version if present
     const [baseUrl, version] = trimmed.includes('|')
       ? trimmed.split('|')
       : [trimmed, undefined];
 
-    // Validate format
     const isValidFormat = this.isValidCanonicalFormat(baseUrl);
-
-    // Determine if it's a conformance resource
     const isConformanceResource = this.isConformanceResourceUrl(baseUrl);
 
     return {
@@ -92,16 +53,12 @@ export class CanonicalReferenceValidator {
     };
   }
 
-  /**
-   * Validate a canonical URL
-   */
   validateCanonicalUrl(
     canonical: string,
     expectedResourceType?: CanonicalResourceType
   ): CanonicalValidationResult {
     const canonicalInfo = this.parseCanonicalUrl(canonical);
 
-    // Check format
     if (!canonicalInfo.isValidFormat) {
       return {
         isValid: false,
@@ -114,7 +71,6 @@ export class CanonicalReferenceValidator {
       };
     }
 
-    // Check if it's a conformance resource
     if (!canonicalInfo.isConformanceResource) {
       return {
         isValid: false,
@@ -127,7 +83,6 @@ export class CanonicalReferenceValidator {
       };
     }
 
-    // Check expected resource type if provided
     if (expectedResourceType) {
       const actualType = this.extractResourceTypeFromUrl(canonicalInfo.baseUrl);
       if (actualType && actualType !== expectedResourceType) {
@@ -152,16 +107,11 @@ export class CanonicalReferenceValidator {
     };
   }
 
-  /**
-   * Check if URL is a valid canonical format
-   */
   private isValidCanonicalFormat(url: string): boolean {
-    // HTTP(S) URLs
     if (CANONICAL_URL_PATTERN.test(url)) {
       return true;
     }
 
-    // URN format
     if (CANONICAL_URN_PATTERN.test(url)) {
       return true;
     }
@@ -169,18 +119,13 @@ export class CanonicalReferenceValidator {
     return false;
   }
 
-  /**
-   * Check if URL references a conformance resource
-   */
   private isConformanceResourceUrl(url: string): boolean {
-    // Check if URL contains a conformance resource type
     for (const resourceType of CANONICAL_RESOURCE_TYPES) {
       if (url.includes(`/${resourceType}/`)) {
         return true;
       }
     }
 
-    // Check for common patterns
     if (url.includes('/fhir/') && (
       url.includes('profile') ||
       url.includes('extension') ||
@@ -193,9 +138,6 @@ export class CanonicalReferenceValidator {
     return false;
   }
 
-  /**
-   * Extract resource type from canonical URL
-   */
   extractResourceTypeFromUrl(url: string): CanonicalResourceType | null {
     for (const resourceType of CANONICAL_RESOURCE_TYPES) {
       if (url.includes(`/${resourceType}/`)) {
@@ -205,45 +147,27 @@ export class CanonicalReferenceValidator {
     return null;
   }
 
-  /**
-   * Validate profile canonical URL
-   */
   validateProfileCanonical(canonical: string): CanonicalValidationResult {
     return this.validateCanonicalUrl(canonical, 'StructureDefinition');
   }
 
-  /**
-   * Validate value set canonical URL
-   */
   validateValueSetCanonical(canonical: string): CanonicalValidationResult {
     return this.validateCanonicalUrl(canonical, 'ValueSet');
   }
 
-  /**
-   * Validate code system canonical URL
-   */
   validateCodeSystemCanonical(canonical: string): CanonicalValidationResult {
     return this.validateCanonicalUrl(canonical, 'CodeSystem');
   }
 
-  /**
-   * Extract all canonical URLs from a resource
-   */
   extractCanonicalUrls(resource: any): CanonicalReferenceInfo[] {
     return extractCanonicalUrlsFromResource(resource, canonical => this.parseCanonicalUrl(canonical));
   }
 
-  /**
-   * Validate all canonical URLs in a resource
-   */
   validateResourceCanonicals(resource: any): CanonicalValidationResult[] {
     const canonicals = this.extractCanonicalUrls(resource);
     return canonicals.map(info => this.validateCanonicalUrl(info.canonical));
   }
 
-  /**
-   * Resolve a canonical URL (requires resource fetcher)
-   */
   async resolveCanonical(
     canonical: string,
     resourceFetcher?: (url: string, resourceType?: string) => Promise<any>
@@ -269,7 +193,6 @@ export class CanonicalReferenceValidator {
       const resource = await resourceFetcher(canonicalInfo.baseUrl, resourceType || undefined);
 
       if (resource) {
-        // Verify canonical URL matches
         if (resource.url && resource.url !== canonicalInfo.baseUrl) {
           return {
             found: true,
@@ -279,7 +202,6 @@ export class CanonicalReferenceValidator {
           };
         }
 
-        // Verify version if specified
         if (canonicalInfo.version && resource.version && resource.version !== canonicalInfo.version) {
           return {
             found: true,
@@ -308,9 +230,6 @@ export class CanonicalReferenceValidator {
     }
   }
 
-  /**
-   * Check if two canonical URLs are equivalent (ignoring version)
-   */
   areEquivalent(canonical1: string, canonical2: string): boolean {
     const info1 = this.parseCanonicalUrl(canonical1);
     const info2 = this.parseCanonicalUrl(canonical2);
@@ -318,13 +237,9 @@ export class CanonicalReferenceValidator {
     return info1.baseUrl === info2.baseUrl;
   }
 
-  /**
-   * Check if canonical matches a pattern
-   */
   matchesPattern(canonical: string, pattern: string): boolean {
     const info = this.parseCanonicalUrl(canonical);
 
-    // Simple pattern matching (can be extended with regex)
     if (pattern.includes('*')) {
       const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
       return regex.test(info.baseUrl);
@@ -333,24 +248,15 @@ export class CanonicalReferenceValidator {
     return info.baseUrl.includes(pattern);
   }
 
-  /**
-   * Get canonical without version
-   */
   stripVersion(canonical: string): string {
     return canonical.split('|')[0];
   }
 
-  /**
-   * Add or replace version in canonical
-   */
   withVersion(canonical: string, version: string): string {
     const baseUrl = this.stripVersion(canonical);
     return `${baseUrl}|${version}`;
   }
 
-  /**
-   * Validate Bundle canonical references
-   */
   validateBundleCanonicals(bundle: any): {
     isValid: boolean;
     results: CanonicalValidationResult[];
@@ -372,7 +278,6 @@ export class CanonicalReferenceValidator {
             const validationResult = this.validateCanonicalUrl(info.canonical);
             results.push(validationResult);
 
-            // Track duplicates
             if (!canonicalMap.has(info.canonical)) {
               canonicalMap.set(info.canonical, []);
             }
@@ -382,7 +287,6 @@ export class CanonicalReferenceValidator {
       });
     }
 
-    // Find duplicates
     const duplicates = Array.from(canonicalMap.entries())
       .filter(([_, entries]) => entries.length > 1)
       .map(([canonical, entries]) => ({
@@ -398,16 +302,10 @@ export class CanonicalReferenceValidator {
     };
   }
 
-  /**
-   * Get common FHIR canonical base URLs
-   */
   getCommonBaseUrls(): Record<string, string> {
     return { ...COMMON_CANONICAL_BASE_URLS };
   }
 
-  /**
-   * Detect canonical base URL organization
-   */
   detectOrganization(canonical: string): string | null {
     const info = this.parseCanonicalUrl(canonical);
     const commonUrls = this.getCommonBaseUrls();
@@ -421,10 +319,6 @@ export class CanonicalReferenceValidator {
     return null;
   }
 }
-
-// ============================================================================
-// Singleton Instance
-// ============================================================================
 
 let validatorInstance: CanonicalReferenceValidator | null = null;
 

@@ -15,6 +15,13 @@ import type {
 } from './public-validation-api';
 
 let validatorInstance: RecordsValidator | null = null;
+let validatorInstancePromise: Promise<RecordsValidator> | null = null;
+type ScopedValidatorEntry = {
+  promise: Promise<RecordsValidator>;
+  instance?: RecordsValidator;
+};
+const scopedValidatorInstances = new Map<string, ScopedValidatorEntry>();
+const MAX_SCOPED_VALIDATOR_INSTANCES = 32;
 
 const defaultAllowedPackages = [
   'hl7.fhir.r4.core',
@@ -48,19 +55,47 @@ interface QuestionnaireLike {
   item?: unknown;
 }
 
-async function getRecordsValidator(): Promise<RecordsValidator> {
-  if (!validatorInstance) {
-    const { RecordsValidator } = await import('./core/validator-engine');
-    const { logger } = await import('./logger');
-    validatorInstance = new RecordsValidator({
+async function createRecordsValidator(): Promise<RecordsValidator> {
+  const { RecordsValidator } = await import('./core/validator-engine');
+  const { logger } = await import('./logger');
+  const instance = new RecordsValidator({
       enableCaching: true,
       strictMode: false,
       timeout: 30000,
       allowedPackages: [...defaultAllowedPackages],
+  });
+  logger.info('[RecordsValidator] Validator initialized');
+  return instance;
+}
+
+async function getRecordsValidator(runtimeScopeKey?: string): Promise<RecordsValidator> {
+  if (!runtimeScopeKey) {
+    validatorInstancePromise ??= createRecordsValidator().then((instance) => {
+      validatorInstance = instance;
+      return instance;
     });
-    logger.info('[RecordsValidator] Validator initialized');
+    return validatorInstancePromise;
   }
-  return validatorInstance;
+
+  const existing = scopedValidatorInstances.get(runtimeScopeKey);
+  if (existing) {
+    scopedValidatorInstances.delete(runtimeScopeKey);
+    scopedValidatorInstances.set(runtimeScopeKey, existing);
+    return existing.promise;
+  }
+
+  const entry = {} as ScopedValidatorEntry;
+  entry.promise = createRecordsValidator().then((instance) => {
+    entry.instance = instance;
+    return instance;
+  });
+  scopedValidatorInstances.set(runtimeScopeKey, entry);
+  while (scopedValidatorInstances.size > MAX_SCOPED_VALIDATOR_INSTANCES) {
+    const oldestKey = scopedValidatorInstances.keys().next().value;
+    if (oldestKey === undefined) break;
+    scopedValidatorInstances.delete(oldestKey);
+  }
+  return entry.promise;
 }
 
 async function prewarmAnswerValueSets(questionnaire: QuestionnaireLike): Promise<void> {
@@ -98,6 +133,9 @@ export interface RecordsValidatorSingleton {
     settings?: ValidationSettings,
     fhirClient?: FhirClientLike,
     referenceResolver?: Parameters<RecordsValidator['validate']>[5],
+    organizationId?: number,
+    runtimeScopeKey?: string,
+    serverId?: number,
   ): Promise<ValidationIssue[]>;
   validateMetadata(...args: Parameters<RecordsValidator['validateMetadata']>): ReturnType<RecordsValidator['validateMetadata']>;
   validateStructure(...args: Parameters<RecordsValidator['validateStructure']>): ReturnType<RecordsValidator['validateStructure']>;
@@ -131,10 +169,22 @@ export const recordsValidator: RecordsValidatorSingleton = {
     settings?: ValidationSettings,
     fhirClient?: FhirClientLike,
     referenceResolver?: Parameters<RecordsValidator['validate']>[5],
+    organizationId?: number,
+    runtimeScopeKey?: string,
+    serverId?: number,
   ) {
-    const instance = await getRecordsValidator();
+    const instance = await getRecordsValidator(runtimeScopeKey);
     const mapped = fhirVersion ? toInternalFhirVersion(fhirVersion) : undefined;
-    return instance.validate(resource, profileUrl, mapped, settings, fhirClient, referenceResolver);
+    return instance.validate(
+      resource,
+      profileUrl,
+      mapped,
+      settings,
+      fhirClient,
+      referenceResolver,
+      organizationId,
+      serverId,
+    );
   },
   async validateMetadata(...args) {
     const instance = await getRecordsValidator();
@@ -145,7 +195,7 @@ export const recordsValidator: RecordsValidatorSingleton = {
     return instance.validateStructure(...args);
   },
   async validateBatch(...args) {
-    const instance = await getRecordsValidator();
+    const instance = await getRecordsValidator(args[1]?.runtimeScopeKey);
     return instance.validateBatch(...args);
   },
   async validateAll(inputs, options) {
@@ -213,12 +263,20 @@ export const recordsValidator: RecordsValidatorSingleton = {
     return instance.clearConstraintDiagnostics();
   },
   async clearProfileCache() {
-    if (!validatorInstance) return undefined;
-    return validatorInstance.clearProfileCache();
+    validatorInstance?.clearProfileCache();
+    await Promise.all([...scopedValidatorInstances.values()].map(async (entry) => {
+      (await entry.promise).clearProfileCache();
+    }));
   },
   evictProfile(profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6' = 'R4') {
-    if (!validatorInstance) return undefined;
-    return validatorInstance.evictProfile(profileUrl, fhirVersion);
+    validatorInstance?.evictProfile(profileUrl, fhirVersion);
+    for (const entry of scopedValidatorInstances.values()) {
+      if (entry.instance) {
+        entry.instance.evictProfile(profileUrl, fhirVersion);
+      } else {
+        void entry.promise.then(instance => instance.evictProfile(profileUrl, fhirVersion));
+      }
+    }
   },
   async setPinnedCanonicals(...args) {
     const instance = await getRecordsValidator();

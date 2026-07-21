@@ -44,20 +44,22 @@ export interface RecordsValidatorComponents {
 }
 
 export function createRecordsValidatorComponents(config: RecordsValidatorConfig): RecordsValidatorComponents {
-  const profileCache = new ProfileCache(config.enableCaching);
+  const profileCacheMaxEntries = config.profileCacheMaxEntries ?? 192;
+  const profileCache = new ProfileCache(config.enableCaching, profileCacheMaxEntries);
   const sdLoader = new StructureDefinitionLoader(
     config.packageCachePath || process.env.HOME + '/.fhir/packages',
     config.bundledProfilesPath,
     {
       autoDownload: config.autoDownload,
       allowedPackages: config.allowedPackages,
-      packageVersionPins: config.packageVersionPins
+      packageVersionPins: config.packageVersionPins,
+      maxCacheEntries: profileCacheMaxEntries,
     }
   );
   const typeValidator = new TypeValidator();
   const valuesetValidator = new ValueSetValidator();
   const elementRulesValidator = new ElementRulesValidator();
-  const snapshotGenerator = new SnapshotGenerator(sdLoader);
+  const snapshotGenerator = new SnapshotGenerator(sdLoader, profileCacheMaxEntries);
   const extensionValidator = new ExtensionValidator(
     sdLoader,
     typeValidator,

@@ -1,38 +1,12 @@
 /**
- * FHIRPath Custom Functions
- *
- * Custom function implementations for FHIRPath evaluation in constraint validation.
- * These functions extend the base fhirpath.js library with FHIR-specific operations.
- *
- * Functions:
- *   resolve()    — resolve References (contained, bundle entries, external)
- *   hasValue()   — check if element has a value
- *   conformsTo() — check meta.profile conformance
- *   memberOf()   — **enhanced**: checks against expanded ValueSet cache
- *                   (all ValueSets previously expanded by TerminologyExecutor),
- *                   with ISO-3166 fallback for country codes
- *   subsumes()   — **new**: checks SNOMED-CT subsumption against the
- *                   TerminologyHierarchyValidator's result cache
- *   descendants() — recursively collect descendant elements
- *   aggregate()   — numeric aggregation
- *   subsetOf() / supersetOf() — set operations
- *
- * All functions are synchronous (FHIRPath userInvocationTable constraint).
- * For uncached ValueSets/codes, functions return `[]` which makes the
- * calling constraint report `profile-constraint-evaluation-error` rather
- * than silently passing.
+ * Synchronous FHIRPath custom functions used by fhirpath.js constraints.
+ * Cache misses return `[]` so callers report an undetermined constraint
+ * instead of silently passing.
  */
 
 import { valueSetCache } from './valueset-cache';
 import { getCachedSubsumesOutcome } from './terminology-api-client';
 
-// ============================================================================
-// ISO Country Code Sets for memberOf validation
-// ============================================================================
-
-/**
- * ISO-3166-1 Alpha-2 Codes (Commonly used for country codes)
- */
 export const ISO_3166_1_ALPHA2 = new Set([
     'AD', 'AE', 'AF', 'AG', 'AI', 'AL', 'AM', 'AO', 'AQ', 'AR', 'AS', 'AT', 'AU', 'AW', 'AX', 'AZ',
     'BA', 'BB', 'BD', 'BE', 'BF', 'BG', 'BH', 'BI', 'BJ', 'BL', 'BM', 'BN', 'BO', 'BQ', 'BR', 'BS', 'BT', 'BV', 'BW', 'BY', 'BZ',
@@ -48,9 +22,6 @@ export const ISO_3166_1_ALPHA2 = new Set([
     'WF', 'WS', 'YE', 'YT', 'ZA', 'ZM', 'ZW'
 ]);
 
-/**
- * ISO-3166-1 Alpha-3 Codes
- */
 export const ISO_3166_1_ALPHA3 = new Set([
     'ABW', 'AFG', 'AGO', 'AIA', 'ALA', 'ALB', 'AND', 'ARE', 'ARG', 'ARM', 'ASM', 'ATA', 'ATF', 'ATG', 'AUS', 'AUT', 'AZE',
     'BDI', 'BEL', 'BEN', 'BES', 'BFA', 'BGD', 'BGR', 'BHR', 'BHS', 'BIH', 'BLM', 'BLR', 'BLZ', 'BMU', 'BOL', 'BRA', 'BRB', 'BRN', 'BTN', 'BVT', 'BWA',
@@ -66,22 +37,12 @@ export const ISO_3166_1_ALPHA3 = new Set([
     'WLF', 'WSM', 'YEM', 'ZAF', 'ZMB', 'ZWE'
 ]);
 
-// ============================================================================
-// Custom FHIRPath Function Implementations
-// ============================================================================
-
 /**
  * Context passed to `buildUserInvocationTable` so FHIRPath custom functions
  * can resolve references and check terminology without async I/O.
  */
 export interface FHIRPathEvaluationContext {
-    /** Root FHIR resource (for contained-reference resolution). */
     rootResource: any;
-    /**
-     * If validating inside a Bundle, the full Bundle resource. `resolve()`
-     * will search `bundle.entry[].resource` by matching `fullUrl` or
-     * `ResourceType/id` against the reference string.
-     */
     bundle?: any;
 }
 
@@ -105,7 +66,6 @@ export function resolveFunction(ctx: FHIRPathEvaluationContext) {
             const refString = typeof reference === 'object' ? reference.reference : reference;
             if (!refString || typeof refString !== 'string') return [];
 
-            // 1. Contained references (#id)
             if (refString.startsWith('#') && ctx.rootResource?.contained) {
                 const containedId = refString.substring(1);
                 const contained = ctx.rootResource.contained.find(
@@ -114,13 +74,10 @@ export function resolveFunction(ctx: FHIRPathEvaluationContext) {
                 return contained ? [contained] : [];
             }
 
-            // 2. Bundle-internal references
             if (ctx.bundle?.entry && Array.isArray(ctx.bundle.entry)) {
                 for (const entry of ctx.bundle.entry) {
                     if (!entry.resource) continue;
-                    // Match by fullUrl
                     if (entry.fullUrl === refString) return [entry.resource];
-                    // Match by relative reference (ResourceType/id)
                     const res = entry.resource;
                     if (res.resourceType && res.id) {
                         if (refString === `${res.resourceType}/${res.id}`) {
@@ -130,16 +87,12 @@ export function resolveFunction(ctx: FHIRPathEvaluationContext) {
                 }
             }
 
-            // 3. Unresolvable
             return [];
         },
         arity: { 0: [] },
     };
 }
 
-/**
- * hasValue() - Check if element has a value
- */
 export const hasValueFunction = {
     fn: (inputs: any[]) => {
         if (inputs.length === 0) return [false];
@@ -154,9 +107,6 @@ export const hasValueFunction = {
     arity: { 0: [] }
 };
 
-/**
- * conformsTo() - Check if resource conforms to a profile
- */
 export const conformsToFunction = {
     fn: (inputs: any[], args: any[]) => {
         if (inputs.length === 0) return [false];
@@ -167,11 +117,9 @@ export const conformsToFunction = {
         const profileUrl = Array.isArray(args) ? args[0] : args;
         if (!profileUrl) return [false];
 
-        // Check meta.profile array
         const profiles = resource.meta?.profile || [];
         if (!Array.isArray(profiles)) return [false];
 
-        // Check if any profile matches (exact or starts with for versioned profiles)
         const matches = profiles.some((p: string) =>
             p === profileUrl || p.startsWith(profileUrl + '|')
         );
@@ -199,12 +147,9 @@ export const memberOfFunction = {
         const value = inputs[0];
         const valueSetUrl = Array.isArray(args) ? args[0] : args;
 
-        // Extract code string from whatever FHIRPath gave us:
-        // could be a primitive string, a Coding, or a CodeableConcept.
         const codeInfo = extractCodeForMemberOf(value);
         if (!codeInfo) return [];
 
-        // 1. ISO-3166-1 hardcoded check (fast path)
         if (valueSetUrl && valueSetUrl.includes('iso3166-1-2')) {
             return ISO_3166_1_ALPHA2.has(codeInfo.code) ? [true] : [false];
         }
@@ -212,7 +157,6 @@ export const memberOfFunction = {
             return ISO_3166_1_ALPHA3.has(codeInfo.code) ? [true] : [false];
         }
 
-        // 2. ValueSet expansion cache lookup
         if (valueSetUrl) {
             const baseUrl = valueSetUrl.split('|')[0];
             const expandedCodes = valueSetCache.getExpandedCodes(baseUrl)
@@ -229,9 +173,6 @@ export const memberOfFunction = {
             }
         }
 
-        // 3. Undetermined — return empty so the caller reports a
-        //    profile-constraint-evaluation-error warning instead of a
-        //    silent pass.
         return [];
     },
     arity: { 0: [], 1: ['String'] },
@@ -282,7 +223,6 @@ function extractCodeForMemberOf(
 
     const obj = value as Record<string, unknown>;
 
-    // Coding
     if (typeof obj.code === 'string') {
         return {
             code: obj.code,
@@ -290,7 +230,6 @@ function extractCodeForMemberOf(
         };
     }
 
-    // CodeableConcept — use first coding
     if (Array.isArray(obj.coding) && obj.coding.length > 0) {
         const first = obj.coding[0];
         if (first && typeof first.code === 'string') {
@@ -304,9 +243,6 @@ function extractCodeForMemberOf(
     return null;
 }
 
-/**
- * descendants() - Returns all descendant elements (recursively flattened)
- */
 export const descendantsFunction = {
     fn: (inputs: any[]) => {
         if (inputs.length === 0) return [];
@@ -342,30 +278,21 @@ export const descendantsFunction = {
     arity: { 0: [] }
 };
 
-/**
- * aggregate() - Aggregation function for collections
- */
 export const aggregateFunction = {
     fn: (inputs: any[], args: any[]) => {
         if (inputs.length === 0) return [];
 
-        // Simple sum aggregation for numeric arrays
-        // Full FHIRPath aggregate is complex - this handles common cases
         const init = args?.[0] ?? 0;
 
         if (inputs.every((i: any) => typeof i === 'number')) {
             return [inputs.reduce((acc: number, val: number) => acc + val, init as number)];
         }
 
-        // Default: return input for non-numeric
         return inputs;
     },
     arity: { 1: ['Any'], 2: ['Expression', 'Any'] }
 };
 
-/**
- * subsetOf() - Check if collection is subset of another
- */
 export const subsetOfFunction = {
     fn: (inputs: any[], args: any[]) => {
         if (inputs.length === 0) return [true]; // Empty is subset of everything
@@ -376,9 +303,6 @@ export const subsetOfFunction = {
     arity: { 1: ['Any'] }
 };
 
-/**
- * supersetOf() - Check if collection is superset of another
- */
 export const supersetOfFunction = {
     fn: (inputs: any[], args: any[]) => {
         const other = Array.isArray(args) ? args : [args];
@@ -389,16 +313,8 @@ export const supersetOfFunction = {
     arity: { 1: ['Any'] }
 };
 
-// ============================================================================
-// User Invocation Table Builder
-// ============================================================================
-
 /**
  * Build the `userInvocationTable` for fhirpath.js `evaluate()` options.
- *
- * @param rootResource - The root FHIR resource (for contained-reference resolution)
- * @param bundle       - (optional) The enclosing Bundle, if the resource is a Bundle entry
- * @returns userInvocationTable object compatible with fhirpath.js
  */
 export function buildUserInvocationTable(rootResource: any, bundle?: any) {
     const ctx: FHIRPathEvaluationContext = { rootResource, bundle };

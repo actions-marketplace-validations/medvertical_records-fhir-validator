@@ -1,4 +1,5 @@
 import type { ValidationIssue } from '../types';
+import { getEffectiveIssueRuleId, getSpecificIssueRuleId } from '@records-fhir/validation-types';
 import {
   getConstraintDedupeKeys,
   isBundleDuplicateFullUrlIssue,
@@ -7,8 +8,8 @@ import {
 import {
   compareDisplayMismatchSpecificity,
   compareInvalidUriSpecificity,
+  compareTerminologyCodeInvalidSpecificity,
   getBundleReferenceIssueKey,
-  getDetailsRecord,
   getInvalidProfileCanonicalValue,
   getInvalidQuestionnaireCanonicalReferenceKey,
   getInvalidUriIssueKey,
@@ -18,6 +19,7 @@ import {
   getQuestionnaireReferenceWarningKey,
   getScopedMustSupportPath,
   getTerminologyDisplayMismatchKey,
+  getTerminologyCodeInvalidKey,
   isRedundantMetadataProfileInvalidUrlIssue,
   isRedundantProfileNotResolvedWarning,
   isSliceSpecificMustSupportIssue,
@@ -49,6 +51,18 @@ export interface DedupeIssuesResult {
 }
 
 export function dedupeIssuesWithTrace(issues: ValidationIssue[]): DedupeIssuesResult {
+  return processIssues(issues, true);
+}
+
+/**
+ * Apply only cross-issue semantic suppression. Exact/logical identity remains
+ * the responsibility of callers such as the persistence layer.
+ */
+export function suppressSemanticIssuesWithTrace(issues: ValidationIssue[]): DedupeIssuesResult {
+  return processIssues(issues, false);
+}
+
+function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): DedupeIssuesResult {
   const specificBundleInvariantKeys = new Set<string>();
   const bundleInvariantPresencePaths = new Set<string>();
   const specificConstraintKeys = new Set<string>();
@@ -80,8 +94,16 @@ export function dedupeIssuesWithTrace(issues: ValidationIssue[]): DedupeIssuesRe
   const sliceSpecificMustSupportPaths = new Set<string>();
   const preferredInvalidUriIssues = new Map<string, ValidationIssue>();
   const preferredDisplayMismatchIssues = new Map<string, ValidationIssue>();
+  const preferredTerminologyCodeInvalidIssues = new Map<string, ValidationIssue>();
   const hasGermanGenderExtensionMissing = issues.some(isGermanGenderExtensionMissingIssue);
   for (const issue of issues) {
+    const terminologyCodeInvalidKey = getTerminologyCodeInvalidKey(issue);
+    if (terminologyCodeInvalidKey) {
+      const existing = preferredTerminologyCodeInvalidIssues.get(terminologyCodeInvalidKey);
+      if (!existing || compareTerminologyCodeInvalidSpecificity(issue, existing) > 0) {
+        preferredTerminologyCodeInvalidIssues.set(terminologyCodeInvalidKey, issue);
+      }
+    }
     const displayMismatchKey = getTerminologyDisplayMismatchKey(issue);
     if (displayMismatchKey) {
       const existing = preferredDisplayMismatchIssues.get(displayMismatchKey);
@@ -174,7 +196,9 @@ export function dedupeIssuesWithTrace(issues: ValidationIssue[]): DedupeIssuesRe
       terminologyMissingSystemPaths.add(normalizeIssuePathForDedupe(issue));
     }
     if (isSpecificRequiredElementMissingIssue(issue)) {
-      specificRequiredElementPaths.add(normalizeRequiredElementPath(issue));
+      const path = normalizeRequiredElementPath(issue);
+      specificRequiredElementPaths.add(path);
+      cardinalityMinPaths.add(path);
     }
     if (isStructuralDateTimeMissingTimezoneIssue(issue)) {
       structuralDateTimeMissingTimezonePaths.add(normalizeIssuePathForDedupe(issue));
@@ -205,6 +229,7 @@ export function dedupeIssuesWithTrace(issues: ValidationIssue[]): DedupeIssuesRe
     { id: 'profile-extension-min-over-required', suppress: issue => isRedundantRequiredElementIssue(issue, profileExtensionMinPaths) },
     { id: 'profile-slice-min-over-required', suppress: issue => isRedundantRequiredElementIssue(issue, profileSliceMinPaths) },
     { id: 'cardinality-min-over-best-practice-presence', suppress: issue => isRedundantBestPracticePresenceIssue(issue, cardinalityMinPaths) },
+    { id: 'cardinality-min-over-required-binding', suppress: issue => isRedundantRequiredBindingIssue(issue, cardinalityMinPaths) },
     { id: 'profile-extension-min-over-structural-cardinality', suppress: issue => isRedundantProfileExtensionCardinalityIssue(issue, profileExtensionMinPaths) },
     { id: 'profile-slice-min-over-structural-cardinality', suppress: issue => isRedundantProfileSliceCardinalityIssue(issue, profileSliceMinPaths) },
     { id: 'ref1-over-reference-format', suppress: issue => isRedundantReferenceFormatIssue(issue, ref1InvariantPaths) },
@@ -227,6 +252,7 @@ export function dedupeIssuesWithTrace(issues: ValidationIssue[]): DedupeIssuesRe
     { id: 'terminology-missing-system-over-metadata-tag', suppress: issue => isRedundantMetadataTagCodeWithoutSystemIssue(issue, terminologyMissingSystemPaths) },
     { id: 'specific-invalid-uri-preferred', suppress: issue => isRedundantInvalidUriIssue(issue, preferredInvalidUriIssues) },
     { id: 'specific-display-mismatch-preferred', suppress: issue => isRedundantTerminologyDisplayMismatchIssue(issue, preferredDisplayMismatchIssues) },
+    { id: 'specific-terminology-code-invalid-preferred', suppress: issue => isRedundantTerminologyCodeInvalidIssue(issue, preferredTerminologyCodeInvalidIssues) },
     { id: 'structural-timezone-over-metadata-timezone', suppress: issue => isRedundantMetadataMissingTimezoneIssue(issue, structuralDateTimeMissingTimezonePaths) },
     { id: 'specific-name-invariant-over-generic', suppress: issue => isRedundantNameInvariantIssue(issue, specificNameInvariantPaths) },
     { id: 'que1-over-que1b', suppress: issue => isRedundantQuestionnaireQue1bIssue(issue, questionnaireQue1Paths) },
@@ -255,7 +281,7 @@ export function dedupeIssuesWithTrace(issues: ValidationIssue[]): DedupeIssuesRe
       .filter(value => typeof value === 'string' && value.length > 0)
       .join(':');
     const key = getSemanticDedupeKey(issue, ruleKey);
-    if (!seen.has(key)) {
+    if (!dedupeExactIssues || !seen.has(key)) {
       seen.add(key);
       out.push(issue);
     }
@@ -297,6 +323,16 @@ function isRedundantTerminologyDisplayMismatchIssue(
   preferredIssues: Map<string, ValidationIssue>,
 ): boolean {
   const key = getTerminologyDisplayMismatchKey(issue);
+  if (!key) return false;
+  const preferred = preferredIssues.get(key);
+  return Boolean(preferred && preferred !== issue);
+}
+
+function isRedundantTerminologyCodeInvalidIssue(
+  issue: ValidationIssue,
+  preferredIssues: Map<string, ValidationIssue>,
+): boolean {
+  const key = getTerminologyCodeInvalidKey(issue);
   if (!key) return false;
   const preferred = preferredIssues.get(key);
   return Boolean(preferred && preferred !== issue);
@@ -395,6 +431,12 @@ function isRedundantDom6Issue(issue: ValidationIssue, narrativeMissingDivTextPat
 function isRedundantBestPracticePresenceIssue(issue: ValidationIssue, cardinalityMinPaths: Set<string>): boolean {
   if (cardinalityMinPaths.size === 0) return false;
   if (!issue.code?.startsWith('best-practice-')) return false;
+  return cardinalityMinPaths.has(normalizeRequiredElementPath(issue));
+}
+
+function isRedundantRequiredBindingIssue(issue: ValidationIssue, cardinalityMinPaths: Set<string>): boolean {
+  if (cardinalityMinPaths.size === 0) return false;
+  if (issue.code !== 'binding-required-missing' && issue.code !== 'terminology-binding-missing') return false;
   return cardinalityMinPaths.has(normalizeRequiredElementPath(issue));
 }
 
@@ -638,37 +680,11 @@ function isMiiGenderConstraintIssue(issue: ValidationIssue): boolean {
 }
 
 function getSpecificConstraintKey(issue: ValidationIssue): string | null {
-  const prefix = 'constraint-violation-';
-  if (issue.code?.startsWith(prefix)) {
-    const key = issue.code.slice(prefix.length).trim().toLowerCase();
-    return key.length > 0 ? key : null;
-  }
-
-  if (
-    issue.code === 'profile-constraint-violation' ||
-    issue.code === 'profile-constraint-warning'
-  ) {
-    return null;
-  }
-
-  const explicitRule = issue.ruleId?.trim().toLowerCase();
-  if (explicitRule) return explicitRule;
-
-  const code = issue.code?.trim().toLowerCase();
-  const invariantSpecificKey = code?.match(/^(?:[a-z][a-z0-9]*-)+invariant-(.+)$/)?.[1];
-  if (invariantSpecificKey) return invariantSpecificKey;
-
-  if (code?.endsWith('-violation')) {
-    const key = code.slice(0, -'-violation'.length);
-    return key.length > 0 ? key : null;
-  }
-  return code && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(code) ? code : null;
+  return getSpecificIssueRuleId(issue);
 }
 
 function getEffectiveRuleId(issue: ValidationIssue): string | null {
-  const explicitRule = issue.ruleId?.trim();
-  if (explicitRule) return explicitRule;
-  return getSpecificConstraintKey(issue);
+  return getEffectiveIssueRuleId(issue);
 }
 
 function isRedundantGenericConstraintIssue(issue: ValidationIssue, specificKeys: Set<string>): boolean {

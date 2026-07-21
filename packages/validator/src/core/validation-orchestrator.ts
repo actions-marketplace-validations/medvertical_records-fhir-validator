@@ -6,6 +6,7 @@
  */
 
 import type { ValidationIssue } from '../types';
+import { computeValidationIssueId } from '@records-fhir/validation-types';
 import type { StructureDefinition } from './structure-definition-types';
 import {
   StructuralExecutor,
@@ -30,6 +31,7 @@ export interface ValidationOrchestratorContext {
   settings?: any;
   referenceResolver?: ReferenceResolver | null;
   contextQuestionnaire?: any;
+  organizationId?: number;
 }
 
 /**
@@ -110,10 +112,11 @@ export async function runAllAspectValidations(
   }
 
   // Custom Rule validation (User-defined business rules)
-  if (isAspectEnabled(context.settings, 'custom_rule')) {
+  if (context.settings && isAspectEnabled(context.settings, 'custom_rule')) {
     const customRuleIssues = await customRuleExecutor.validate({
       resource: context.resource,
-      structureDef: context.structureDef
+      structureDef: context.structureDef,
+      organizationId: context.organizationId,
     });
     issues.push(...customRuleIssues);
   }
@@ -139,7 +142,26 @@ export async function runAllAspectValidations(
     issues.push(...metadataIssues);
   }
 
-  return issues;
+  return issues.map(issue => attachAppliedProfile(issue, context.profileUrl));
+}
+
+function attachAppliedProfile(issue: ValidationIssue, appliedProfile: string): ValidationIssue {
+  if (issue.profile || !appliedProfile) return issue;
+  return {
+    ...issue,
+    profile: appliedProfile,
+    id: computeValidationIssueId({
+      aspect: issue.aspect,
+      severity: issue.severity,
+      code: issue.code,
+      path: issue.path,
+      resourceType: issue.resourceType,
+      message: issue.message,
+      profile: appliedProfile,
+      ruleId: issue.ruleId,
+      details: issue.details,
+    }),
+  };
 }
 
 function isAspectEnabled(

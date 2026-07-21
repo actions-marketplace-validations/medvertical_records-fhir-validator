@@ -105,7 +105,7 @@ describe('FHIR Schema validation graph', () => {
     ]));
   });
 
-  it('accepts known canonical aliases for graph fixed-value checks', () => {
+  it('reports fixed URI mismatches in profiled extension values', () => {
     const schema = convertToFHIRSchema({
       url: 'http://example.org/StructureDefinition/ProcedureStellungZurOp',
       name: 'ProcedureStellungZurOp',
@@ -178,24 +178,24 @@ describe('FHIR Schema validation graph', () => {
     };
 
     const issues = validateResourceWithGraph(resource, graph);
-    const wrongSystemIssues = validateResourceWithGraph({
+    const matchingIssues = validateResourceWithGraph({
       ...resource,
       extension: [{
         ...resource.extension[0],
         valueCodeableConcept: {
           coding: [{
-            system: 'https://example.org/CodeSystem/other',
+            system: 'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-therapie-stellungzurop',
             code: 'A',
           }],
         },
       }],
     }, graph);
 
-    expect(issues.find(issue => issue.code === 'profile-fixed-value-mismatch')).toBeUndefined();
-    expect(wrongSystemIssues).toContainEqual(expect.objectContaining({
+    expect(issues).toContainEqual(expect.objectContaining({
       code: 'profile-fixed-value-mismatch',
       path: 'Procedure.extension:StellungZurOp.value.coding.system',
     }));
+    expect(matchingIssues.find(issue => issue.code === 'profile-fixed-value-mismatch')).toBeUndefined();
   });
 
   it('counts primitive sidecar extensions as present for required primitive elements', () => {
@@ -443,6 +443,81 @@ describe('FHIR Schema validation graph', () => {
       'profile-slice-max-cardinality',
       'profile-pattern-mismatch',
     ]));
+  });
+
+  it('does not count broad forbidden slices when a more specific allowed sibling matches', () => {
+    const schema = convertToFHIRSchema({
+      url: 'http://example.org/StructureDefinition/ObservationBroadForbiddenSliceProfile',
+      name: 'ObservationBroadForbiddenSliceProfile',
+      type: 'Observation',
+      kind: 'resource',
+      snapshot: {
+        element: [
+          { path: 'Observation', min: 0, max: '*' },
+          { path: 'Observation.code', min: 1, max: '1', type: [{ code: 'CodeableConcept' }] },
+          {
+            path: 'Observation.code.coding',
+            min: 2,
+            max: '*',
+            type: [{ code: 'Coding' }],
+            slicing: { discriminator: [{ type: 'pattern', path: '$this' }], rules: 'open' },
+          },
+          {
+            id: 'Observation.code.coding:loinc',
+            path: 'Observation.code.coding',
+            sliceName: 'loinc',
+            min: 1,
+            max: '1',
+            patternCoding: { system: 'http://loinc.org', code: '8310-5' },
+          },
+          {
+            id: 'Observation.code.coding:coretemp-loinc',
+            path: 'Observation.code.coding',
+            sliceName: 'coretemp-loinc',
+            min: 1,
+            max: '1',
+            patternCoding: { system: 'http://loinc.org', code: '8329-5' },
+          },
+          {
+            id: 'Observation.code.coding:specific-loinc',
+            path: 'Observation.code.coding',
+            sliceName: 'specific-loinc',
+            min: 0,
+            max: '0',
+            patternCoding: { system: 'http://loinc.org' },
+          },
+        ],
+      },
+    });
+    const graph = compileFHIRSchemaToValidationGraph(schema);
+
+    const validIssues = validateResourceWithGraph({
+      resourceType: 'Observation',
+      code: {
+        coding: [
+          { system: 'http://loinc.org', code: '8310-5' },
+          { system: 'http://loinc.org', code: '8329-5' },
+        ],
+      },
+    }, graph);
+    expect(validIssues).not.toContainEqual(expect.objectContaining({
+      code: 'profile-slice-max-cardinality',
+      path: 'Observation.code.coding',
+    }));
+
+    const invalidIssues = validateResourceWithGraph({
+      resourceType: 'Observation',
+      code: {
+        coding: [
+          { system: 'http://loinc.org', code: '8310-5' },
+          { system: 'http://loinc.org', code: '9999-9' },
+        ],
+      },
+    }, graph);
+    expect(invalidIssues).toContainEqual(expect.objectContaining({
+      code: 'profile-slice-max-cardinality',
+      path: 'Observation.code.coding',
+    }));
   });
 
   it('does not report unmatchable whole-element $this slices from child-only patterns', () => {

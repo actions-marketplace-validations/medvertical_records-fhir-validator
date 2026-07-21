@@ -6,6 +6,8 @@ Generated: 2026-07-01T09:54:50.964Z
 HL7 JSON comparison lane: 496/496 executable comparisons passed (100.0%).
 Report: `conformance-results/report-2026-07-01.json`
 Commit: `431b37cd06cac878bc23b4a8b457c2f2397fdcdc`
+Manifest scope: 974 entries; 438 pre-filtered; 536 candidates.
+Baseline classification: 3 entries have no declared `java` baseline; 40 candidates declare `java` but their outcome artifact is not resolvable locally.
 
 ## MII Reference Lane
 MII mii-2026-reference lane: 231/231 measured cases passed (100.0%), 0 failed, 22 skipped.

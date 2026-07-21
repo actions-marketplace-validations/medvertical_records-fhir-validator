@@ -6,12 +6,13 @@
  */
 
 import type { StructureDefinition } from './structure-definition-types';
-import type { ValidationIssue } from '../types';
+import type { ValidationIssue, ValidationSettings } from '../types';
 import { StructureDefinitionLoader } from './structure-definition-loader';
 import { ProfileCache } from '../cache/profile-cache';
 import { SnapshotGenerator } from './snapshot-generator';
 import { logger } from '../logger';
 import { getIncompatibleProfileResourceType } from './profile-resource-type';
+import type { ProfileSourceContext } from '../persistence';
 
 /** Minimal interface for FHIR client to avoid circular dependencies */
 export interface FhirClientLike {
@@ -97,7 +98,9 @@ export async function loadProfileOrBase(
   resourceType: string,
   fhirVersion: 'R4' | 'R5' | 'R6',
   profileCache?: ProfileCache,
-  fhirClient?: FhirClientLike
+  fhirClient?: FhirClientLike,
+  resolutionContext?: ProfileSourceContext,
+  settings?: ValidationSettings,
 ): Promise<ProfileLoadResult> {
   const declared = await loadProfileForValidation(
     sdLoader,
@@ -105,7 +108,9 @@ export async function loadProfileOrBase(
     declaredProfileUrl,
     fhirVersion,
     profileCache,
-    fhirClient
+    fhirClient,
+    resolutionContext,
+    settings,
   );
   if (declared) {
     const incompatibleProfileType = getIncompatibleProfileResourceType(declared, resourceType);
@@ -119,7 +124,9 @@ export async function loadProfileOrBase(
           baseUrl,
           fhirVersion,
           profileCache,
-          fhirClient
+          fhirClient,
+          resolutionContext,
+          settings,
         );
       return {
         structureDef: base,
@@ -140,7 +147,9 @@ export async function loadProfileOrBase(
     baseUrl,
     fhirVersion,
     profileCache,
-    fhirClient
+    fhirClient,
+    resolutionContext,
+    settings,
   );
   return {
     structureDef: base,
@@ -168,6 +177,9 @@ export function createProfileFallbackIssue(
     resourceType,
     baseProfile,
     validatedAgainstBase: true,
+    profileResolutionStatus: 'unresolved',
+    profileApplicationStatus: 'not-applied',
+    validationComplete: false,
   };
   if (suggestedProfiles.length > 0) {
     details.suggestedProfiles = suggestedProfiles;
@@ -182,6 +194,7 @@ export function createProfileFallbackIssue(
     path: 'meta.profile',
     timestamp: new Date(),
     details,
+    profile: profileUrl,
   };
 }
 
@@ -284,12 +297,17 @@ export async function loadProfileForValidation(
   profileUrl: string,
   fhirVersion: 'R4' | 'R5' | 'R6',
   profileCache?: ProfileCache, // Optional for backward compat, but recommended
-  _fhirClient?: FhirClientLike
+  _fhirClient?: FhirClientLike,
+  resolutionContext?: ProfileSourceContext,
+  _settings?: ValidationSettings,
 ): Promise<StructureDefinition | null> {
   const cacheKey = `${profileUrl}:${fhirVersion}:snapshot`;
+  const effectiveContext = resolutionContext ?? sdLoader.getProfileResolutionContext?.();
+  const tenantScopedProfile = effectiveContext?.organizationId !== undefined &&
+    !profileUrl.split('|')[0].startsWith('http://hl7.org/fhir/StructureDefinition/');
 
   // 1. Check ProfileCache (L1)
-  if (profileCache) {
+  if (profileCache && !tenantScopedProfile) {
     const cached = profileCache.get(cacheKey);
     if (cached) {
       return cached as StructureDefinition;

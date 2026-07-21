@@ -412,6 +412,7 @@ export class ValueSetValidator {
    */
   clearCache(): void {
     this.cache.clear();
+    this.packageLoader.clearLookupState();
     clearValidateCodeCache();
     clearCodeSystemValidateCodeCache();
     clearSubsumesCache();

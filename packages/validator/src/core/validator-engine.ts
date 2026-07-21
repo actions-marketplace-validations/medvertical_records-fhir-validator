@@ -1,17 +1,3 @@
-/**
- * Records Validator Engine
- *
- * Pure JavaScript/TypeScript FHIR Validation Engine
- * No Java dependency, optimized for speed and low memory usage
- *
- * Features:
- * - Profile validation against StructureDefinitions
- * - Structural validation (cardinality, types)
- * - Metadata validation
- * - FHIRPath constraint validation
- * - Extension and slicing support
- */
-
 import type { ValidationIssue, ValidationSettings } from '../types';
 import { StructureDefinitionLoader } from './structure-definition-loader';
 import type { StructureDefinition } from './structure-definition-types';
@@ -50,10 +36,6 @@ import type { ReferenceResolver } from '../validators/slicing-validator';
 
 export type { RecordsValidatorConfig } from './validator-engine-config';
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export interface ValidationContext {
   resource: any;
   resourceType: string;
@@ -61,10 +43,6 @@ export interface ValidationContext {
   fhirVersion: 'R4' | 'R5' | 'R6';
   strictMode: boolean;
 }
-
-// ============================================================================
-// Records Validator Engine
-// ============================================================================
 
 export class RecordsValidator {
   private config: RecordsValidatorConfig;
@@ -76,7 +54,6 @@ export class RecordsValidator {
   private available: boolean = false;
   private initializationPromise: Promise<void>;
 
-  // Executors for per-aspect validation
   private structuralExecutor!: StructuralExecutor;
   private profileExecutor!: ProfileExecutor;
   private terminologyExecutor!: TerminologyExecutor;
@@ -94,43 +71,21 @@ export class RecordsValidator {
     const components = createRecordsValidatorComponents(this.config);
     Object.assign(this, components);
 
-    // Start initialization (async, but store promise for waiting)
     this.initializationPromise = this.initialize();
   }
 
-  /**
-   * Initialize validator and check availability
-   * This waits for profiles to be scanned before checking availability
-   */
   private async initialize(): Promise<void> {
     this.available = await checkRecordsValidatorAvailability(this.sdLoader);
   }
 
-  /**
-   * Wait for initialization to complete
-   * Call this before using the validator to ensure profiles are loaded
-   */
   async waitForInitialization(): Promise<void> {
     await this.initializationPromise;
   }
 
-  /**
-   * Check if validator is available
-   * Note: This returns the current state, but initialization may still be in progress
-   * Use waitForInitialization() to ensure initialization is complete
-   */
   isAvailable(): boolean {
     return this.available;
   }
 
-  /**
-   * Validate multiple resources in batch (optimized)
-   * This is 5-10x faster than calling validate() repeatedly
-   * 
-   * @param resources - Array of resources to validate
-   * @param options - Batch validation options
-   * @returns Map of resource to validation issues
-   */
   async validateBatch(
     resources: any[],
     options: BatchValidationOptions = {}
@@ -151,31 +106,26 @@ export class RecordsValidator {
       metadataExecutor: this.metadataExecutor,
       bestPracticeValidator: this.bestPracticeValidator,
       strictMode: this.config.strictMode || false,
-      validateSingleResource: (resource, profileUrl, fhirVersion, settings, fhirClient) =>
-        this.validate(resource, profileUrl, fhirVersion, settings, fhirClient),
+      validateSingleResource: (resource, profileUrl, fhirVersion, settings, fhirClient, organizationId, serverId) =>
+        this.validate(resource, profileUrl, fhirVersion, settings, fhirClient, undefined, organizationId, serverId),
     });
   }
 
-  // Helper methods for batch validation (deduplication, grouping, preloading, chunking)
-  // have been extracted to batch-utils.ts to keep this orchestrator focused and compliant
-  // with global.mdc file size guidelines.
-
-  /**
-   * Validate resource against a profile
-   */
   async validate(
     resource: any,
     profileUrl?: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
     settings?: ValidationSettings,
     fhirClient?: FhirClientLike,
-    referenceResolver?: ReferenceResolver | null
+    referenceResolver?: ReferenceResolver | null,
+    organizationId?: number,
+    serverId?: number,
   ): Promise<ValidationIssue[]> {
     await this.waitForInitialization();
     this.applyRuntimeSettings(settings as ValidationSettings | undefined);
 
     return validateRecordsResource(
-      { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver },
+      { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver, organizationId, serverId },
       {
         sdLoader: this.sdLoader,
         profileCache: this.profileCache,
@@ -206,13 +156,8 @@ export class RecordsValidator {
     return this.validateBundleEntries(resource, fhirVersion, 1);
   }
 
-  /** Max depth for recursive Bundle.entry[].resource validation */
   private static readonly BUNDLE_ENTRY_MAX_DEPTH = 3;
 
-  /**
-   * Validate basic structure - validates against profiles declared in meta.profile
-   * Falls back to base FHIR profile if no profiles are declared
-   */
   async validateStructure(
     resource: any,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
@@ -233,16 +178,6 @@ export class RecordsValidator {
     });
   }
 
-  /**
-   * Recursively validate each `Bundle.entry[].resource` against its own
-   * profile(s). Phase 5 of the conformance execution plan.
-   *
-   * The Java reference validator runs a full validation pass on every
-   * entry resource and emits issues whose `expression` is prefixed with
-   * `Bundle.entry[i].resource/*ResourceType/id*\/.xyz`. Records matches
-   * that shape by calling `validateStructure` on the entry resource and
-   * rewriting the `path` of each returned issue.
-   */
   private async validateBundleEntries(
     bundle: any,
     fhirVersion: 'R4' | 'R5' | 'R6',
@@ -260,9 +195,6 @@ export class RecordsValidator {
     });
   }
 
-  /**
-   * Validate metadata fields
-   */
   async validateMetadata(
     resource: any
   ): Promise<ValidationIssue[]> {
@@ -270,7 +202,6 @@ export class RecordsValidator {
     await this.waitForInitialization();
 
     try {
-      // Delegate to metadata executor
       return await this.metadataExecutor.validate({ resource });
     } catch (error) {
       logger.error('[RecordsValidator] Metadata validation error:', error);
@@ -282,21 +213,12 @@ export class RecordsValidator {
     }
   }
 
-  /**
-   * Validate references in a FHIR resource
-   * 
-   * @param resource - FHIR resource to validate
-   * @param fhirClient - Optional FHIR client for reference resolution
-   * @param fhirVersion - FHIR version (R4, R5, R6)
-   * @returns Array of validation issues
-   */
   async validateReferences(
     resource: any,
     fhirClient?: FhirClientLike,
     fhirVersion?: 'R4' | 'R5' | 'R6'
   ): Promise<ValidationIssue[]> {
     try {
-      // Delegate to reference executor
       return await this.referenceExecutor.validate({
         resource,
         fhirClient,
@@ -312,11 +234,6 @@ export class RecordsValidator {
     }
   }
 
-  /**
-   * Check if a profile is supported using the same resolution path as
-   * validation: canonical aliases, package pins, local caches, and optional
-   * package auto-downloads all apply.
-   */
   async isProfileSupported(
     profileUrl: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
@@ -325,25 +242,14 @@ export class RecordsValidator {
     return (await this.loadProfileWithSnapshot(profileUrl, fhirVersion)) !== null;
   }
 
-  /**
-   * Get list of all supported profiles
-   */
   getSupportedProfiles(): string[] {
     return this.sdLoader.getAvailableProfiles();
   }
 
-  /**
-   * Get StructureDefinitionLoader instance (for status/configuration access)
-   */
   getSdLoader(): StructureDefinitionLoader {
     return this.sdLoader;
   }
 
-  /**
-   * Resolve a profile URL to a StructureDefinition with a generated snapshot,
-   * using the same cache + snapshot-generation path the validator takes at
-   * run time. Returns null when the profile can't be loaded.
-   */
   async loadProfileWithSnapshot(
     profileUrl: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
@@ -357,30 +263,14 @@ export class RecordsValidator {
     );
   }
 
-  /**
-   * Register a Questionnaire resource so it can be consulted when
-   * validating a QuestionnaireResponse that references it via
-   * `QR.questionnaire`. Used by the conformance runner to preload
-   * supporting Questionnaires and by callers that want to inject a
-   * questionnaire at runtime.
-   */
   registerQuestionnaire(questionnaire: any): boolean {
     return this.questionnaireRegistry.register(questionnaire);
   }
 
-  /**
-   * Look up a previously-registered Questionnaire by its canonical URL,
-   * resource reference, or contained reference. Returns null when
-   * nothing is registered under the given key.
-   */
   getQuestionnaire(canonicalOrRef: string | undefined | null): any | null {
     return this.questionnaireRegistry.get(canonicalOrRef);
   }
 
-  /**
-   * Apply validation settings that affect profile loading at runtime.
-   * This keeps the singleton validator aligned with per-request UI settings.
-   */
   private applyRuntimeSettings(settings?: ValidationSettings): void {
     if (!settings) {
       return;
@@ -390,14 +280,6 @@ export class RecordsValidator {
     this.configureTerminologyResolution(buildTerminologyResolutionConfig(settings));
   }
 
-  /**
-   * Configure terminology resolution strategy
-   * Call this when settings change to update how terminology validation resolves codes
-   * 
-   * @param config - Terminology resolution configuration
-   * @param config.strategy - 'local-first' | 'server-first' | 'local-only'
-   * @param config.serverUrl - URL of terminology server (for server-first)
-   */
   configureTerminologyResolution(config: TerminologyResolutionConfig): void {
     this.terminologyExecutor.configureResolution(config);
     this.structuralExecutor.configureTerminologyResolution(config);
@@ -410,9 +292,6 @@ export class RecordsValidator {
     );
   }
 
-  /**
-   * Clear terminology cache (call on settings change)
-   */
   clearTerminologyCache(): void {
     this.terminologyExecutor.clearCache();
     this.valuesetValidator.clearCache();
@@ -427,20 +306,11 @@ export class RecordsValidator {
     this.constraintValidator.clearDiagnostics();
   }
 
-  /**
-   * Clear the in-memory StructureDefinition cache. Call on profile-source
-   * / package-pin changes so re-resolution picks up new definitions.
-   */
   clearProfileCache(): void {
     this.profileCache.clear();
     logger.info('[RecordsValidator] Profile cache cleared');
   }
 
-  /**
-   * Evict a single profile URL from snapshot + L1 caches.
-   * Used by the conformance runner when re-registering an external profile
-   * with the same URL but different content between test cases.
-   */
   evictProfile(profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'): void {
     this.snapshotGenerator.evict(profileUrl);
     this.profileCache.delete(`${profileUrl}:${fhirVersion}:snapshot`);
@@ -454,24 +324,6 @@ export class RecordsValidator {
     return this.sdLoader.getPinnedCanonicalCount();
   }
 
-  /**
-   * Cross-Resource Anomaly Detection (Phase C differentiator).
-   *
-   * Analyses a batch of resources AFTER per-resource validation and
-   * surfaces cohort-level data-quality issues that single-resource
-   * validators cannot detect:
-   *
-   *   - Missing-field anomalies ("95% have effectiveDateTime, these 12 don't")
-   *   - Duplicate resources (same subject + code + date)
-   *   - Orphan references (target not in batch)
-   *
-   * HAPI cannot do this — it validates one resource at a time. This
-   * is what justifies Records' existence beyond speed.
-   *
-   * @param resources — the full batch (same array you'd pass to validateBatch)
-   * @param config — optional overrides for detection thresholds
-   * @returns array of anomaly findings, sorted by confidence
-   */
   detectAnomalies(
     resources: any[],
     config?: Partial<AnomalyDetectorConfig>,

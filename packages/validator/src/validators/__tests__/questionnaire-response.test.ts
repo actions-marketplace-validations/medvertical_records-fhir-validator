@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { QuestionnaireValidator } from '../questionnaire-validator';
+import { valueSetCache } from '../valueset-cache';
 
 const validator = new QuestionnaireValidator();
 
@@ -65,6 +66,28 @@ describe('QuestionnaireValidator — QuestionnaireResponse', () => {
         severity: 'warning',
       }),
     ]));
+  });
+
+  it('reports a canonical that resolves to the wrong conformance resource type', () => {
+    const canonical = 'http://example.org/ValueSet/not-a-questionnaire';
+    valueSetCache.setValueSetFile(canonical, {
+      resourceType: 'ValueSet',
+      url: canonical,
+      status: 'active',
+    });
+
+    const issues = validator.validateQuestionnaireResponse({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      questionnaire: canonical,
+    }, undefined, { warnOnUnresolvedQuestionnaireReference: true });
+    valueSetCache.clear();
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'questionnaire-reference-wrong-type',
+      severity: 'error',
+      path: 'QuestionnaireResponse.questionnaire',
+    }));
   });
 
   it('applies maxDecimalPlaces to decimal and quantity answers', () => {

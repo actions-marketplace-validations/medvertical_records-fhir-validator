@@ -57,4 +57,19 @@ describe('TerminologyResourceValidator — HL7 concept-property URI allowlist', 
     });
     expect(issues.some(i => i.code === 'business-rule-cs-unknown-hl7-property')).toBe(false);
   });
+
+  it('warns when an HL7 not-present CodeSystem omits caseSensitive', () => {
+    const issues = validator.validate({
+      resourceType: 'CodeSystem',
+      url: 'http://hl7.org/fhir/test/CodeSystem/example',
+      status: 'draft',
+      content: 'not-present',
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'tx-codesystem-missing-casesensitive',
+      severity: 'warning',
+      path: 'CodeSystem',
+    }));
+  });
 });

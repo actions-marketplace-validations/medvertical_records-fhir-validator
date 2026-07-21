@@ -72,8 +72,9 @@ Out of scope (file at the relevant project instead):
   Custom Rule expressions before fhirpath.js runs. Tune with
   `checkFhirpathSandbox(expr, { expressionLength, functionCallCount,
   nestingDepth })` if your invariants legitimately exceed defaults.
-- **`RECORDS_API_TOKEN`** gates every `/api/*` endpoint. Health and
-  observability endpoints are deliberately exempt.
+- The commercial Records app accepts tenant-bound database API keys only on
+  its explicitly allowlisted live-validation endpoints; it has no global
+  cross-tenant bearer token.
 - See `docs/operations/id-redaction-data-flow.md` (Records source
   repo) for an audit of every code path that can write a resource
   identifier.

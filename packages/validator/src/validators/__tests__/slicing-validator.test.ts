@@ -2017,6 +2017,213 @@ describe('SlicingValidator', () => {
       expect(fixedValueErrors[0].code).toBe('profile-slice-fixed-value-mismatch');
     });
 
+    it('validates fixed values merged from profiled Extension slice types', async () => {
+      const extensionUrl = 'http://example.org/fhir/StructureDefinition/therapy-position';
+      const expectedSystem = 'http://example.org/CodeSystem/expected-position';
+      const extensionProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: extensionUrl,
+        name: 'TherapyPositionExtension',
+        status: 'active',
+        kind: 'complex-type',
+        abstract: false,
+        type: 'Extension',
+        snapshot: {
+          element: [
+            { id: 'Extension', path: 'Extension', min: 0, max: '*' } as any,
+            {
+              id: 'Extension.url',
+              path: 'Extension.url',
+              min: 1,
+              max: '1',
+              fixedUri: extensionUrl,
+            } as any,
+            {
+              id: 'Extension.value[x]',
+              path: 'Extension.value[x]',
+              min: 0,
+              max: '1',
+              type: [{ code: 'CodeableConcept' }],
+            } as any,
+            {
+              id: 'Extension.value[x].coding.system',
+              path: 'Extension.value[x].coding.system',
+              min: 1,
+              max: '1',
+              fixedUri: expectedSystem,
+            } as any,
+          ],
+        },
+      };
+      const procedureProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/fhir/StructureDefinition/procedure-with-therapy-position',
+        name: 'ProcedureWithTherapyPosition',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Procedure',
+        snapshot: {
+          element: [
+            {
+              id: 'Procedure.extension',
+              path: 'Procedure.extension',
+              min: 0,
+              max: '*',
+              slicing: { discriminator: [{ type: 'value', path: 'url' }], rules: 'open' },
+            } as any,
+            {
+              id: 'Procedure.extension:therapyPosition',
+              path: 'Procedure.extension',
+              sliceName: 'therapyPosition',
+              min: 0,
+              max: '*',
+              type: [{ code: 'Extension', profile: [extensionUrl] }],
+            } as any,
+          ],
+        },
+      };
+
+      const validatorWithResolver = new SlicingValidator();
+      validatorWithResolver.setTypeProfileResolver(async url =>
+        url === extensionUrl ? extensionProfile : null
+      );
+
+      const issues = await validatorWithResolver.validateSlicing([
+        {
+          url: extensionUrl,
+          valueCodeableConcept: {
+            coding: [{
+              system: 'http://example.org/CodeSystem/wrong-position',
+              code: 'A',
+            }],
+          },
+        },
+      ], 'Procedure.extension', procedureProfile);
+
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'profile-slice-fixed-value-mismatch',
+        path: 'Procedure.extension[0].value[x].coding.system',
+      }));
+    });
+
+    it('does not emit profiled Extension nested slice constraints as flat content paths', async () => {
+      const extensionUrl = 'http://example.org/fhir/StructureDefinition/imaging-parameters';
+      const extensionProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: extensionUrl,
+        name: 'ImagingParametersExtension',
+        status: 'active',
+        kind: 'complex-type',
+        abstract: false,
+        type: 'Extension',
+        snapshot: {
+          element: [
+            { id: 'Extension', path: 'Extension', min: 0, max: '*' } as any,
+            {
+              id: 'Extension.url',
+              path: 'Extension.url',
+              min: 1,
+              max: '1',
+              fixedUri: extensionUrl,
+            } as any,
+            {
+              id: 'Extension.extension',
+              path: 'Extension.extension',
+              min: 0,
+              max: '*',
+              slicing: { discriminator: [{ type: 'value', path: 'url' }], rules: 'open' },
+            } as any,
+            {
+              id: 'Extension.extension:fieldStrength',
+              path: 'Extension.extension',
+              sliceName: 'fieldStrength',
+              min: 0,
+              max: '1',
+              type: [{ code: 'Extension' }],
+            } as any,
+            {
+              id: 'Extension.extension:fieldStrength.url',
+              path: 'Extension.extension.url',
+              min: 1,
+              max: '1',
+              fixedUri: 'fieldStrength',
+            } as any,
+            {
+              id: 'Extension.extension:fieldStrength.value[x].unit',
+              path: 'Extension.extension.value[x].unit',
+              min: 0,
+              max: '1',
+              patternString: 'tesla',
+            } as any,
+            {
+              id: 'Extension.extension:fieldStrength.value[x].system',
+              path: 'Extension.extension.value[x].system',
+              min: 0,
+              max: '1',
+              patternUri: 'http://unitsofmeasure.org',
+            } as any,
+            {
+              id: 'Extension.extension:fieldStrength.value[x].code',
+              path: 'Extension.extension.value[x].code',
+              min: 0,
+              max: '1',
+              patternCode: 'T',
+            } as any,
+          ],
+        },
+      };
+      const procedureProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/fhir/StructureDefinition/procedure-with-imaging-parameters',
+        name: 'ProcedureWithImagingParameters',
+        status: 'active',
+        kind: 'resource',
+        abstract: false,
+        type: 'Procedure',
+        snapshot: {
+          element: [
+            {
+              id: 'Procedure.extension',
+              path: 'Procedure.extension',
+              min: 0,
+              max: '*',
+              slicing: { discriminator: [{ type: 'value', path: 'url' }], rules: 'open' },
+            } as any,
+            {
+              id: 'Procedure.extension:imagingParameters',
+              path: 'Procedure.extension',
+              sliceName: 'imagingParameters',
+              min: 0,
+              max: '*',
+              type: [{ code: 'Extension', profile: [extensionUrl] }],
+            } as any,
+          ],
+        },
+      };
+
+      const validatorWithResolver = new SlicingValidator();
+      validatorWithResolver.setTypeProfileResolver(async url =>
+        url === extensionUrl ? extensionProfile : null
+      );
+
+      const issues = await validatorWithResolver.validateSlicing([
+        {
+          url: extensionUrl,
+          extension: [{
+            url: 'fieldStrength',
+            valueQuantity: {
+              unit: 'tesla',
+              value: 3,
+            },
+          }],
+        },
+      ], 'Procedure.extension', procedureProfile);
+
+      expect(issues.filter(issue => issue.code === 'profile-slice-pattern-mismatch')).toHaveLength(0);
+      expect(issues.filter(issue => issue.code === 'profile-slice-fixed-value-mismatch')).toHaveLength(0);
+    });
+
     it('should pass when nested fixed value matches', async () => {
       const germanProfile: StructureDefinition = {
         resourceType: 'StructureDefinition',

@@ -26,10 +26,11 @@ export class ProfileCache {
   private cache: Map<string, CacheEntry> = new Map();
   private enabled: boolean;
   private ttl: number = 3600000; // 1 hour TTL
-  private maxSize: number = 500; // Max 500 profiles in cache (increased to prevent evictions during batch validation)
+  private maxSize: number;
 
-  constructor(enabled: boolean = true) {
+  constructor(enabled: boolean = true, maxSize: number = 192) {
     this.enabled = enabled;
+    this.maxSize = Math.max(1, Math.trunc(maxSize));
   }
 
   /**
@@ -193,4 +194,3 @@ export class ProfileCache {
     }
   }
 }
-

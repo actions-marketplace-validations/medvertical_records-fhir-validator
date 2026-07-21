@@ -1,6 +1,6 @@
 import type { ValidationIssue } from '../types';
-import { getPrimitiveSidecar } from '../core/fhir-primitive-sidecar';
 import { matchPatternWithDiagnostic } from './validation-graph-pattern-diagnostics';
+import { getDirectValues, getParentValues, isChoiceProperty } from './validation-graph-path-values';
 import { validateReferenceTarget } from './validation-graph-reference-targets';
 import {
   isSliceMatchableByValue,
@@ -142,8 +142,12 @@ function validateSliceChildren(
   }
 
   const matchCounts = new Map<ValidationGraphNode, number>();
+  const allowedSlices = enforceableSlices.filter(slice => slice.max !== 0);
   for (const slice of enforceableSlices) {
-    const matchedValues = values.filter(value => matchesSliceForParent(value, parentNode, slice));
+    const matchedValues = values.filter(value =>
+      matchesSliceForParent(value, parentNode, slice) &&
+      !isShadowedForbiddenSliceMatch(value, parentNode, slice, allowedSlices)
+    );
     matchCounts.set(slice, matchedValues.length);
     for (const child of slice.children ?? []) {
       if (child.sliceName) {
@@ -182,7 +186,6 @@ function validateSliceChildren(
     return;
   }
 
-  const allowedSlices = enforceableSlices.filter(slice => slice.max !== 0);
   for (const value of values) {
     const hasAllowedMatch = allowedSlices.some(slice => matchesSliceForParent(value, parentNode, slice));
     if (!hasAllowedMatch) {
@@ -194,6 +197,51 @@ function validateSliceChildren(
       ));
     }
   }
+}
+
+function isShadowedForbiddenSliceMatch(
+  value: unknown,
+  parentNode: ValidationGraphNode,
+  slice: ValidationGraphNode,
+  allowedSlices: ValidationGraphNode[],
+): boolean {
+  if (slice.max !== 0 || slice.pattern === undefined) {
+    return false;
+  }
+
+  return allowedSlices.some(allowedSlice =>
+    allowedSlice.pattern !== undefined &&
+    patternStrictlyContains(allowedSlice.pattern, slice.pattern) &&
+    matchesSliceForParent(value, parentNode, allowedSlice)
+  );
+}
+
+function patternStrictlyContains(narrower: unknown, broader: unknown): boolean {
+  const comparison = comparePatternContainment(narrower, broader);
+  return comparison.contains && comparison.strict;
+}
+
+function comparePatternContainment(
+  narrower: unknown,
+  broader: unknown,
+): { contains: boolean; strict: boolean } {
+  if (!isRecord(narrower) || !isRecord(broader)) {
+    return { contains: graphValuesMatch(narrower, broader), strict: false };
+  }
+
+  let strict = Object.keys(narrower).length > Object.keys(broader).length;
+  for (const [key, expected] of Object.entries(broader)) {
+    if (!(key in narrower)) {
+      return { contains: false, strict: false };
+    }
+    const child = comparePatternContainment(narrower[key], expected);
+    if (!child.contains) {
+      return { contains: false, strict: false };
+    }
+    strict ||= child.strict;
+  }
+
+  return { contains: true, strict };
 }
 
 function validateChoiceNode(
@@ -290,81 +338,6 @@ function getChoiceEntries(parent: unknown, node: ValidationGraphNode): Array<{ n
   return names.flatMap(name => getDirectValues(parent, name).map(value => ({ name, value })));
 }
 
-function getNodeValues(resource: Record<string, unknown>, node: ValidationGraphNode): unknown[] {
-  if (node.path.includes(':')) {
-    return [];
-  }
-  return getValuesByPath(resource, node.path);
-}
-
-function getParentValues(resource: Record<string, unknown>, node: ValidationGraphNode): unknown[] {
-  const parts = node.path.split('.');
-  if (parts.length <= 2) {
-    return [resource];
-  }
-  return getValuesByPath(resource, parts.slice(0, -1).join('.'));
-}
-
-function getValuesByPath(resource: Record<string, unknown>, path: string): unknown[] {
-  const parts = path.split('.').slice(1);
-  let current: unknown[] = [resource];
-
-  for (const part of parts) {
-    const next: unknown[] = [];
-    for (const value of current) {
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          collectProperty(item, part, next);
-        }
-      } else {
-        collectProperty(value, part, next);
-      }
-    }
-    current = next;
-  }
-
-  return current.flatMap(value => Array.isArray(value) ? value : [value]);
-}
-
-function collectProperty(value: unknown, part: string, out: unknown[]): void {
-  if (!isRecord(value)) {
-    return;
-  }
-
-  if (part in value) {
-    const child = value[part];
-    if (Array.isArray(child)) out.push(...child);
-    else out.push(child);
-    return;
-  }
-
-  const primitiveSidecarKey = `_${part}`;
-  if (primitiveSidecarKey in value) {
-    out.push(...getPrimitiveSidecarValues(value, part));
-    return;
-  }
-
-  for (const [key, child] of Object.entries(value)) {
-    if (!isChoiceProperty(key, part)) continue;
-    if (Array.isArray(child)) out.push(...child);
-    else out.push(child);
-  }
-}
-
-function getDirectValues(parent: unknown, property: string): unknown[] {
-  if (!isRecord(parent) || !(property in parent)) {
-    return getPrimitiveSidecarValues(parent, property);
-  }
-  const value = parent[property];
-  return Array.isArray(value) ? value : [value];
-}
-
-function getPrimitiveSidecarValues(parent: unknown, property: string): unknown[] {
-  const primitiveSidecar = getPrimitiveSidecar(parent, property);
-  if (primitiveSidecar === undefined) return [];
-  return Array.isArray(primitiveSidecar) ? primitiveSidecar : [primitiveSidecar];
-}
-
 function createIssue(code: string, path: string, message: string, graph?: ValidationGraph): ValidationIssue {
   return {
     aspect: 'profile',
@@ -382,10 +355,4 @@ function createIssue(code: string, path: string, message: string, graph?: Valida
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isChoiceProperty(key: string, base: string): boolean {
-  return key.length > base.length
-    && key.startsWith(base)
-    && key[base.length] === key[base.length].toUpperCase();
 }

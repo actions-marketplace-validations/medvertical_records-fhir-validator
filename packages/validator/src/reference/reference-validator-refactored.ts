@@ -1,30 +1,3 @@
-/**
- * Reference Validator (Refactored)
- * 
- * Main orchestrator for reference validation.
- * Coordinates all reference validation sub-components.
- * 
- * Refactored from single 1,083-line file into modular structure following global.mdc guidelines.
- * 
- * REFACTORED STRUCTURE:
- * - reference-validator-refactored.ts (orchestrator, ~400 lines)
- * - reference-types.ts (shared types)
- * - reference-field-definitions.ts (field definitions)
- * - reference-format-validator.ts (format validation)
- * - reference-utils.ts (utility functions)
- * 
- * EXISTING UTILITIES (already modular):
- * - reference-type-extractor.ts
- * - reference-type-constraint-validator.ts
- * - contained-reference-resolver.ts
- * - bundle-reference-resolver.ts
- * - circular-reference-detector.ts
- * - recursive-reference-validator.ts
- * - version-specific-reference-validator.ts
- * - canonical-reference-validator.ts
- * - batched-reference-checker.ts
- */
-
 import type { ValidationResult, ValidationSettings } from '@records-fhir/validation-types';
 import type { IReferenceValidator, ValidationContext, ValidationIssue } from '../types';
 import { addR6WarningIfNeeded } from '../utils/r6-support-warnings';
@@ -51,10 +24,6 @@ import {
 import { createReferenceValidationIssue } from './reference-utils';
 import { logger } from '../logger';
 
-// ============================================================================
-// Reference Validator (Refactored)
-// ============================================================================
-
 export class ReferenceValidator implements IReferenceValidator {
   private referenceTypeExtractor: ReferenceTypeExtractor;
   private constraintValidator = getReferenceTypeConstraintValidator();
@@ -75,9 +44,6 @@ export class ReferenceValidator implements IReferenceValidator {
     });
   }
 
-  /**
-   * Validate references - interface compliant method
-   */
   async validate(
     resource: any,
     context: ValidationContext
@@ -113,9 +79,6 @@ export class ReferenceValidator implements IReferenceValidator {
     };
   }
 
-  /**
-   * Internal validation method (supports multiple signatures for backward compatibility)
-   */
   async validateInternal(
     resource: any,
     resourceType: string,
@@ -221,115 +184,64 @@ export class ReferenceValidator implements IReferenceValidator {
     }
   }
 
-  /**
-   * Validate contained references
-   */
   private async validateContainedReferences(resource: any, resourceType: string): Promise<ValidationIssue[]> {
     return validateContainedReferenceIssues(resource, resourceType);
   }
 
-  /**
-   * Extract resource type from reference (public API)
-   */
   public extractResourceType(reference: string): string | null {
     return this.referenceTypeExtractor.extractResourceType(reference);
   }
 
-  // ============================================================================
-  // Delegation Methods - Expose utility functionality
-  // ============================================================================
-
-  /**
-   * Parse reference (delegates to ReferenceTypeExtractor)
-   */
   public parseReference(reference: string) {
     return this.referenceTypeExtractor.parseReference(reference);
   }
 
-  /**
-   * Validate reference type constraint (delegates to constraint validator)
-   */
   public validateReferenceTypeConstraint(reference: string, resourceType: string, fieldPath: string) {
     return this.constraintValidator.validateReferenceType(reference, resourceType, fieldPath);
   }
 
-  /**
-   * Check if field has type constraints
-   */
   public hasTypeConstraints(resourceType: string, fieldPath: string) {
     return this.constraintValidator.hasConstraints(resourceType, fieldPath);
   }
 
-  /**
-   * Get field constraints
-   */
   public getFieldConstraints(resourceType: string, fieldPath: string) {
     return this.constraintValidator.getConstraintsForField(resourceType, fieldPath);
   }
 
-  /**
-   * Resolve contained reference (delegates to contained resolver)
-   */
   public resolveContainedReference(reference: string, parentResource: any, expectedType?: string) {
     return this.containedResolver.resolveContainedReference(reference, parentResource, expectedType);
   }
 
-  /**
-   * Get contained resources
-   */
   public getContainedResources(resource: any) {
     return this.containedResolver.extractContainedResources(resource);
   }
 
-  /**
-   * Validate contained references in resource synchronously (public method for tests)
-   */
   public validateContainedReferencesSync(resource: any) {
     return validateContainedReferenceIssues(resource);
   }
 
-  /**
-   * Resolve bundle reference (delegates to bundle resolver)
-   */
   public resolveBundleReference(reference: string, bundle: any) {
     return this.bundleResolver.resolveBundleReference(reference, bundle);
   }
 
-  /**
-   * Validate bundle references
-   */
   public validateBundleReferences(bundle: any) {
     const result = this.bundleResolver.validateBundleReferences(bundle);
-    // Return issues array for backward compatibility
     return result.issues || [];
   }
 
-  /**
-   * Detect circular references (delegates to circular detector)
-   */
   public detectCircularReferences(resource: any, startingReferences?: string[]) {
     return this.circularDetector.detectCircularReferences(resource, startingReferences);
   }
 
-  /**
-   * Check if adding reference would create cycle
-   */
   public wouldCreateCircularReference(currentPath: string[], newReference: string) {
     return this.circularDetector.wouldCreateCircularReference(currentPath, newReference);
   }
 
-  /**
-   * Get recursive validation config from settings or defaults
-   */
   public getRecursiveValidationConfig(settings?: ValidationSettings) {
     return getRecursiveValidationConfig(settings);
   }
 
-  /**
-   * Estimate recursive validation cost
-   */
   public estimateRecursiveValidationCost(..._args: any[]) {
-    // Return default cost estimate
     return {
       estimatedResources: 0,
       estimatedReferences: 0,
@@ -339,121 +251,70 @@ export class ReferenceValidator implements IReferenceValidator {
     };
   }
 
-  /**
-   * Validate recursively
-   */
   public validateRecursively(resource: any, config?: any, resourceFetcher?: (ref: string) => Promise<any>) {
     return this.recursiveValidator.validateRecursively(resource, config, resourceFetcher);
   }
 
-  /**
-   * Parse versioned reference
-   */
   public parseVersionedReference(reference: string) {
     return this.versionValidator.parseVersionedReference(reference);
   }
 
-  /**
-   * Validate versioned reference
-   */
   public validateVersionedReference(reference: string) {
     return this.versionValidator.validateVersionedReference(reference);
   }
 
-  /**
-   * Check version consistency
-   */
   public checkVersionConsistency(references: string[]) {
     return this.versionValidator.checkVersionConsistency(references);
   }
 
-  /**
-   * Extract versioned references from resource
-   */
   public extractVersionedReferences(resource: any) {
     return this.versionValidator.extractVersionedReferences(resource);
   }
 
-  /**
-   * Validate bundle version integrity
-   */
   public validateBundleVersionIntegrity(bundle: any) {
     return this.versionValidator.validateBundleVersionIntegrity(bundle);
   }
 
-  /**
-   * Parse canonical URL
-   */
   public parseCanonicalUrl(canonical: string) {
     return this.canonicalValidator.parseCanonicalUrl(canonical);
   }
 
-  /**
-   * Validate canonical URL
-   */
   public validateCanonicalUrl(canonical: string) {
     return this.canonicalValidator.validateCanonicalUrl(canonical);
   }
 
-  /**
-   * Validate profile canonical
-   */
   public validateProfileCanonical(canonical: string) {
     return this.canonicalValidator.validateProfileCanonical(canonical);
   }
 
-  /**
-   * Validate value set canonical
-   */
   public validateValueSetCanonical(canonical: string) {
     return this.canonicalValidator.validateValueSetCanonical(canonical);
   }
 
-  /**
-   * Extract canonical URLs from resource
-   */
   public extractCanonicalUrls(resource: any) {
     return this.canonicalValidator.extractCanonicalUrls(resource);
   }
 
-  /**
-   * Validate resource canonicals
-   */
   public validateResourceCanonicals(resource: any) {
     return this.canonicalValidator.validateResourceCanonicals(resource);
   }
 
-  /**
-   * Validate bundle canonicals
-   */
   public validateBundleCanonicals(bundle: any) {
     return this.canonicalValidator.validateBundleCanonicals(bundle);
   }
 
-  /**
-   * Check batch references (delegates to batched checker)
-   */
   public async checkBatchReferences(references: any[], config?: any) {
     return this.batchedChecker.checkBatch(references, config);
   }
 
-  /**
-   * Check resource references
-   */
   public async checkResourceReferences(resource: any, config?: any) {
     return this.batchedChecker.checkResourceReferences(resource, config);
   }
 
-  /**
-   * Check bundle reference existence
-   */
   public checkBundleReferenceExistence(bundle: any, config?: any) {
     return this.batchedChecker.checkBundleReferences(bundle, config);
   }
 
-  /**
-   * Filter existing references
-   */
   public filterExistingReferences(references: string[], config?: any) {
     return this.batchedChecker.filterExistingReferences(references, config);
   }

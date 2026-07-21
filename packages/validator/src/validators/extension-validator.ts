@@ -1,16 +1,3 @@
-/**
- * Extension Validator
- *
- * Validates FHIR extensions against their StructureDefinitions:
- * - Extension URL validation
- * - Extension cardinality (min/max)
- * - Extension value type validation
- * - Required extension checking
- * - Nested extension validation (modifierExtension)
- * - Complex extensions with sub-extensions, including **deep sub-extension
- *   definition lookup** via the parent extension's profile
- */
-
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import type { StructureDefinition } from '../core/structure-definition-types';
@@ -40,6 +27,7 @@ import {
   filterDefinitionsForFhirVersion,
 } from './extension-version-filter';
 import { selectDefinitionsForResourceContext } from './extension-context-selection';
+import { walkResourceExtensions } from './extension-resource-walk';
 
 export type { ExtensionDefinition, ExtensionValidationContext } from './extension-types';
 
@@ -79,24 +67,6 @@ export class ExtensionValidator {
     private readonly elementRulesValidator: ElementRulesValidator
   ) { }
 
-  /**
-   * Validate all extensions in a resource against profile definition.
-   *
-   * Two complementary passes run here:
-   *
-   * 1. **Resource walk** — every `extension` / `modifierExtension` array
-   *    physically present in the resource is visited. Each instance is
-   *    checked for the universal rules that apply regardless of profile:
-   *    URL present, URL absolute, URL resolvable to a StructureDefinition,
-   *    and the ext-1 "either value[x] or nested extensions" invariant.
-   *    This is what Java does and is what surfaces the
-   *    "The extension X could not be found" error for unknown URLs.
-   *
-   * 2. **Profile walk** — the profile's extension slice definitions are
-   *    consulted to enforce per-slice cardinality and profile-scoped
-   *    value-type / nested-slice constraints. Extensions that happen to
-   *    match a definition also get the richer validation.
-   */
   async validateExtensions(
     resource: any,
     profileSD: StructureDefinition,
@@ -115,13 +85,17 @@ export class ExtensionValidator {
       // Pass 1: walk every extension / modifierExtension occurrence in the
       // resource and validate the universal rules. Tracks visited paths so
       // Pass 2 doesn't re-emit the same ext-1 / url / resolvability issues.
-      await this.walkResourceExtensions(
+      await walkResourceExtensions(
         resource,
         resource?.resourceType || 'Resource',
         context,
         knownUrls,
         visited,
-        issues
+        issues,
+        {
+          maxNestedExtensionDepth: this.maxNestedExtensionDepth,
+          isExtensionUrlResolvable: this.isExtensionUrlResolvable.bind(this),
+        },
       );
 
       // Pass 2: profile-driven cardinality + value/slice checks for slices
@@ -193,74 +167,6 @@ export class ExtensionValidator {
     }
 
     return issues;
-  }
-
-  /**
-   * Depth-first walk over every `extension` / `modifierExtension` array in
-   * the resource. For each extension instance, emit the universal checks:
-   * URL presence, URL absoluteness, URL resolvability, and ext-1.
-   *
-   * `visited` records the emitted path so the profile-driven Pass 2 can
-   * skip re-checking the same instance. Traversal bottoms out when we hit
-   * a non-object, a primitive, or the recursion depth cap.
-   */
-  private async walkResourceExtensions(
-    value: any,
-    basePath: string,
-    context: ExtensionValidationContext,
-    knownUrls: Set<string>,
-    visited: Set<string>,
-    issues: ValidationIssue[],
-    depth = 0
-  ): Promise<void> {
-    if (value == null || typeof value !== 'object') return;
-    if (depth > 20) return; // pathological nesting guard
-
-    if (Array.isArray(value)) {
-      for (let i = 0; i < value.length; i++) {
-        await this.walkResourceExtensions(
-          value[i], `${basePath}[${i}]`, context, knownUrls, visited, issues, depth + 1
-        );
-      }
-      return;
-    }
-
-    for (const key of Object.keys(value)) {
-      // Skip primitives' `_value` sidecar; underscore-prefixed keys carry
-      // primitive extensions which are a separate concern.
-      if (key === 'resourceType') continue;
-
-      const child = value[key];
-      const isExtensionArray = (key === 'extension' || key === 'modifierExtension') && Array.isArray(child);
-
-      if (isExtensionArray) {
-        for (let i = 0; i < child.length; i++) {
-          const ext = child[i];
-          const extPath = `${basePath}.${key}[${i}]`;
-          visited.add(extPath);
-
-          const issuesFromInstance = await validateUniversalExtensionRules({
-            extension: ext,
-            extensionType: key === 'modifierExtension' ? 'modifierExtension' : 'extension',
-            path: extPath,
-            knownUrls,
-            context,
-            visited,
-            depth: depth + 1,
-            maxNestedExtensionDepth: this.maxNestedExtensionDepth,
-            isExtensionUrlResolvable: this.isExtensionUrlResolvable.bind(this),
-          });
-          issues.push(...issuesFromInstance);
-        }
-        continue;
-      }
-
-      // Recurse into non-extension children so we also catch
-      // `Resource.foo.extension[…]`, `Resource.foo.bar[].extension[…]`, etc.
-      await this.walkResourceExtensions(
-        child, `${basePath}.${key}`, context, knownUrls, visited, issues, depth + 1
-      );
-    }
   }
 
   /**

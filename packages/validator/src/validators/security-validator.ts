@@ -1,37 +1,15 @@
-/**
- * Security Validator
- * 
- * Validates FHIR resources for security and compliance concerns:
- * - PHI (Protected Health Information) detection in narrative/text fields
- * - Sensitive identifier patterns (SSN, MRN, credit cards)
- * - Security label requirements
- * - Audit trail metadata validation
- * 
- * Produces INFO/WARNING severity issues to alert developers about potential privacy concerns.
- */
-
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export type PIILocale = 'us' | 'de' | 'all';
 
 export interface SecurityValidationConfig {
-    /** Enable PHI pattern detection */
     detectPHI: boolean;
-    /** Enable sensitive identifier detection */
     detectSensitiveIdentifiers: boolean;
-    /** Check security label requirements */
     requireSecurityLabels: boolean;
-    /** Check audit trail metadata */
     validateAuditTrail: boolean;
-    /** PII pattern locale: 'us' (default), 'de' (German), 'all' (both) */
     piiLocale: PIILocale;
-    /** Custom patterns to detect (regex strings) */
     customPatterns?: { pattern: string; name: string; severity: 'warning' | 'info' }[];
 }
 
@@ -42,95 +20,70 @@ export interface PHIDetectionResult {
     preview?: string;
 }
 
-// ============================================================================
-// Sensitive Data Patterns
-// ============================================================================
-
-/** US Social Security Number patterns */
 const SSN_PATTERNS = [
-    /\b\d{3}-\d{2}-\d{4}\b/,           // 123-45-6789
-    /\b\d{3}\s\d{2}\s\d{4}\b/,         // 123 45 6789
-    /\bSSN[:\s]*\d{9}\b/i,             // SSN: 123456789
+    /\b\d{3}-\d{2}-\d{4}\b/,
+    /\b\d{3}\s\d{2}\s\d{4}\b/,
+    /\bSSN[:\s]*\d{9}\b/i,
 ];
 
-/** Medical Record Number patterns (reserved for future detection use) */
 const _MRN_PATTERNS = [
-    /\bMRN[:\s#]*\d{6,12}\b/i,         // MRN: 123456
-    /\bMedical\s*Record[:\s#]*\d+/i,   // Medical Record: 123456
+    /\bMRN[:\s#]*\d{6,12}\b/i,
+    /\bMedical\s*Record[:\s#]*\d+/i,
 ];
 
-/** Credit Card patterns */
 const CREDIT_CARD_PATTERNS = [
-    /\b4\d{3}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,  // Visa
-    /\b5[1-5]\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/, // Mastercard
-    /\b3[47]\d{2}[\s-]?\d{6}[\s-]?\d{5}\b/,         // Amex
+    /\b4\d{3}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
+    /\b5[1-5]\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/,
+    /\b3[47]\d{2}[\s-]?\d{6}[\s-]?\d{5}\b/,
 ];
 
-/** Phone number patterns (potential PHI in context) */
 const PHONE_PATTERNS = [
-    /\b\(\d{3}\)\s?\d{3}-\d{4}\b/,     // (123) 456-7890
-    /\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/, // 123-456-7890
+    /\b\(\d{3}\)\s?\d{3}-\d{4}\b/,
+    /\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b/,
 ];
 
-/** Email patterns */
 const EMAIL_PATTERN = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
 
-/** Date of birth patterns (potential PHI) */
 const DOB_PATTERNS = [
     /\b(DOB|Date\s*of\s*Birth|Born)[:\s]*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/i,
     /\bBirthdate[:\s]*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/i,
 ];
 
-/** Address patterns (potential PHI in narrative) */
 const ADDRESS_KEYWORDS = [
     /\b\d+\s+[A-Za-z]+\s+(Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln|Court|Ct)\b/i,
 ];
 
-// ============================================================================
-// German (DE) Sensitive Data Patterns
-// ============================================================================
-
-/** German health insurance number (Krankenversichertennummer / KVNR): letter + 9 digits */
 const KVNR_PATTERNS = [
-    /\b[A-Z]\d{9}\b/,                          // A123456789
-    /\bKVNR[:\s]*[A-Z]\d{9}\b/i,              // KVNR: A123456789
-    /\bVersichertennummer[:\s]*[A-Z]\d{9}\b/i, // Versichertennummer: A123456789
+    /\b[A-Z]\d{9}\b/,
+    /\bKVNR[:\s]*[A-Z]\d{9}\b/i,
+    /\bVersichertennummer[:\s]*[A-Z]\d{9}\b/i,
 ];
 
-/** German tax identification number (Steuerliche Identifikationsnummer): 11 digits */
 const STEUER_ID_PATTERNS = [
-    /\bSteuer[-\s]?ID[:\s]*\d{11}\b/i,         // Steuer-ID: 12345678901
-    /\bIdNr[:\s]*\d{11}\b/i,                    // IdNr: 12345678901
-    /\bIdentifikationsnummer[:\s]*\d{11}\b/i,   // Identifikationsnummer: 12345678901
+    /\bSteuer[-\s]?ID[:\s]*\d{11}\b/i,
+    /\bIdNr[:\s]*\d{11}\b/i,
+    /\bIdentifikationsnummer[:\s]*\d{11}\b/i,
 ];
 
-/** German institutional identifier (Institutionskennzeichen / IKNR): 9 digits */
 const IKNR_PATTERNS = [
-    /\bIKNR[:\s]*\d{9}\b/i,                     // IKNR: 123456789
-    /\bIK[:\s]*\d{9}\b/i,                       // IK: 123456789
-    /\bInstitutionskennzeichen[:\s]*\d{9}\b/i,  // Institutionskennzeichen: 123456789
+    /\bIKNR[:\s]*\d{9}\b/i,
+    /\bIK[:\s]*\d{9}\b/i,
+    /\bInstitutionskennzeichen[:\s]*\d{9}\b/i,
 ];
 
-/** IBAN patterns (DE focus but matches any) */
 const IBAN_PATTERNS = [
-    /\bDE\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{2}\b/,  // DE89 3704 0044 0532 0130 00
-    /\bIBAN[:\s]*[A-Z]{2}\d{2}\s?[\d\s]{10,30}\b/i,           // IBAN: DE89...
+    /\bDE\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{2}\b/,
+    /\bIBAN[:\s]*[A-Z]{2}\d{2}\s?[\d\s]{10,30}\b/i,
 ];
 
-/** German phone number patterns */
 const DE_PHONE_PATTERNS = [
-    /(?:^|[\s(])(\+49\s?\(?\d{2,4}\)?\s?[\d\s/-]{6,12})\b/,  // +49 30 1234567
-    /\b0\d{2,4}[\s/-]\d{3,8}[\s/-]?\d{0,5}\b/,               // 030/12345678, 0171-1234567
+    /(?:^|[\s(])(\+49\s?\(?\d{2,4}\)?\s?[\d\s/-]{6,12})\b/,
+    /\b0\d{2,4}[\s/-]\d{3,8}[\s/-]?\d{0,5}\b/,
 ];
 
-/** German address patterns */
 const DE_ADDRESS_KEYWORDS = [
-    /\b[A-ZÄÖÜ][a-zäöüß]+(?:straße|str\.|weg|gasse|platz|allee|ring|damm)\s+\d+/i,  // Hauptstraße 42
+    /\b[A-ZÄÖÜ][a-zäöüß]+(?:straße|str\.|weg|gasse|platz|allee|ring|damm)\s+\d+/i,
 ];
-
-// ============================================================================
-// Security Validator Class
-// ============================================================================
 
 export class SecurityValidator {
     private config: SecurityValidationConfig;
@@ -146,9 +99,6 @@ export class SecurityValidator {
         };
     }
 
-    /**
-     * Configure security validation
-     */
     setConfig(config: Partial<SecurityValidationConfig>): void {
         this.config = { ...this.config, ...config };
     }
@@ -169,7 +119,6 @@ export class SecurityValidator {
 
         logger.debug(`[SecurityValidator] Validating ${resourceType} for security concerns`);
 
-        // 1. PHI Detection in Narrative
         if (this.config.detectPHI && resource?.text?.div) {
             this.runSubCheck(
                 issues,
@@ -179,7 +128,6 @@ export class SecurityValidator {
             );
         }
 
-        // 2. Sensitive Identifier Detection
         if (this.config.detectSensitiveIdentifiers) {
             this.runSubCheck(
                 issues,
@@ -189,7 +137,6 @@ export class SecurityValidator {
             );
         }
 
-        // 3. Security Label Compliance
         if (this.config.requireSecurityLabels) {
             this.runSubCheck(
                 issues,
@@ -199,7 +146,6 @@ export class SecurityValidator {
             );
         }
 
-        // 4. Audit Trail Validation
         if (this.config.validateAuditTrail) {
             this.runSubCheck(
                 issues,
@@ -209,7 +155,6 @@ export class SecurityValidator {
             );
         }
 
-        // 5. Custom Pattern Detection
         if (this.config.customPatterns && this.config.customPatterns.length > 0) {
             this.runSubCheck(
                 issues,
@@ -266,10 +211,6 @@ export class SecurityValidator {
         }
     }
 
-    // ==========================================================================
-    // Locale helpers
-    // ==========================================================================
-
     private get checkUS(): boolean {
         return this.config.piiLocale === 'us' || this.config.piiLocale === 'all';
     }
@@ -278,11 +219,6 @@ export class SecurityValidator {
         return this.config.piiLocale === 'de' || this.config.piiLocale === 'all';
     }
 
-    // ==========================================================================
-    // PHI Detection
-    // ==========================================================================
-
-    /** Test `patterns` against `text`; push an issue on first match. */
     private matchAny(
         issues: ValidationIssue[], text: string, patterns: RegExp[],
         code: string, path: string, resourceType: string,
@@ -316,13 +252,6 @@ export class SecurityValidator {
         return issues;
     }
 
-    // ==========================================================================
-    // Sensitive Identifier Detection
-    // ==========================================================================
-
-    /**
-     * Detect sensitive identifiers in resource
-     */
     private detectSensitiveIdentifiers(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
         if (!resource.identifier || !Array.isArray(resource.identifier)) return issues;
@@ -346,17 +275,9 @@ export class SecurityValidator {
         return issues;
     }
 
-    // ==========================================================================
-    // Security Label Compliance
-    // ==========================================================================
-
-    /**
-     * Validate security labels on resource
-     */
     private validateSecurityLabels(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
-        // Check if meta.security exists
         if (!resource.meta?.security || resource.meta.security.length === 0) {
             issues.push(createValidationIssue({
                 code: 'security-missing-labels',
@@ -368,7 +289,6 @@ export class SecurityValidator {
             return issues;
         }
 
-        // Check for confidentiality code
         const hasConfidentiality = resource.meta.security.some(
             (s: any) => s.system === 'http://terminology.hl7.org/CodeSystem/v3-Confidentiality'
         );
@@ -386,17 +306,9 @@ export class SecurityValidator {
         return issues;
     }
 
-    // ==========================================================================
-    // Audit Trail Validation
-    // ==========================================================================
-
-    /**
-     * Validate audit trail metadata
-     */
     private validateAuditTrail(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
-        // Check for meta.source (provenance tracking)
         if (!resource.meta?.source) {
             issues.push(createValidationIssue({
                 code: 'security-audit-missing-source',
@@ -407,7 +319,6 @@ export class SecurityValidator {
             }));
         }
 
-        // Check for meta.lastUpdated
         if (!resource.meta?.lastUpdated) {
             issues.push(createValidationIssue({
                 code: 'security-audit-missing-lastupdated',
@@ -421,13 +332,6 @@ export class SecurityValidator {
         return issues;
     }
 
-    // ==========================================================================
-    // Custom Pattern Detection
-    // ==========================================================================
-
-    /**
-     * Detect custom patterns in resource
-     */
     private detectCustomPatterns(resource: any, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
         const resourceJson = JSON.stringify(resource);
@@ -453,5 +357,4 @@ export class SecurityValidator {
     }
 }
 
-// Singleton instance
 export const securityValidator = new SecurityValidator();

@@ -47,6 +47,7 @@ export type {
   CustomRulesSource,
   EngineCustomRule,
   ProfileResolutionEntry,
+  ProfileSourceContext,
   ProfileSource,
 } from './persistence';
 export { createFilesystemProfileSource } from './persistence/filesystem-profile-source';
@@ -77,3 +78,11 @@ export {
   type SandboxLimits,
   type SandboxResult,
 } from './validators/fhirpath-sandbox';
+
+export {
+  dedupeIssues,
+  dedupeIssuesWithTrace,
+  suppressSemanticIssuesWithTrace,
+  type DedupeIssuesResult,
+  type DedupeSuppressionTrace,
+} from './dedupe';
