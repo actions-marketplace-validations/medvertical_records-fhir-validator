@@ -31,6 +31,31 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
 }
 
+function buildInvalidResourceIssue(
+  resource: unknown,
+  resourceType: string,
+  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+): ValidationIssue {
+  return {
+    id: `metadata-invalid-resource-${Date.now()}`,
+    aspect: 'metadata',
+    severity: 'error',
+    code: 'metadata-invalid-resource',
+    message: 'Resource must be a valid JSON object',
+    path: resourceType || 'Resource',
+    humanReadable: 'Metadata validation requires a FHIR resource object',
+    details: {
+      actualType: resource === null ? 'null' : Array.isArray(resource) ? 'array' : typeof resource,
+      resourceType,
+      validationType: 'metadata-resource-validation',
+    },
+    validationMethod: 'metadata-resource-validation',
+    timestamp: new Date().toISOString(),
+    resourceType,
+    schemaVersion: fhirVersion,
+  };
+}
+
 async function loadRecordsMetadataValidator(): Promise<RecordsMetadataValidator | null> {
   try {
     // Lazy import to avoid circular dependency with records-validator. Keep the
@@ -120,7 +145,7 @@ export class MetadataValidator {
       const isValid = issues.length === 0 || !issues.some(i => i.severity === 'error');
 
       return {
-        resourceId: context.resourceId || resource.id || 'unknown',
+        resourceId: context.resourceId || resource?.id || 'unknown',
         resourceType: context.resourceType,
         isValid,
         issues,
@@ -157,6 +182,10 @@ export class MetadataValidator {
   ): Promise<ValidationIssue[]> {
     const issues: ValidationIssue[] = [];
     const startTime = Date.now();
+
+    if (typeof resource !== 'object' || resource === null || Array.isArray(resource)) {
+      return [buildInvalidResourceIssue(resource, resourceType, _fhirVersion)];
+    }
 
     logger.debug(`[MetadataValidator] Validating ${resourceType} resource metadata...`);
 
@@ -268,23 +297,7 @@ export class MetadataValidator {
 
     } catch (error) {
       logger.error('[MetadataValidator] Metadata validation failed:', error);
-      issues.push({
-        id: `metadata-validation-error-${Date.now()}`,
-        aspect: 'metadata',
-        severity: 'error',
-        code: 'metadata-validation-error',
-        message: `Metadata validation failed: ${getErrorMessage(error)}`,
-        path: '',
-        humanReadable: 'Metadata validation encountered an error',
-        details: {
-          error: getErrorMessage(error),
-          resourceType: resourceType
-        },
-        validationMethod: 'metadata-validation-error',
-        timestamp: new Date().toISOString(),
-        resourceType: resourceType,
-        schemaVersion: 'R4'
-      });
+      throw error;
     }
 
     return issues;

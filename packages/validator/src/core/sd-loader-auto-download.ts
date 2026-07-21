@@ -185,7 +185,7 @@ async function executeAutoDownload(
         // wires Simplifier.net here; standalone callers skip).
         if (config.simplifier) {
           try {
-            const { getProfileSource } = await import('../persistence');
+            const { getProfileSource } = await import('../persistence/index.js');
             const fetchExternal = getProfileSource().fetchExternalProfile;
             if (fetchExternal) {
               logger.info(`[SDLoader] Trying external-fetch fallback for: ${url}`);

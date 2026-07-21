@@ -126,6 +126,17 @@ describe('applyFixPatch — remove', () => {
 });
 
 describe('applyFixPatch — rejection cases', () => {
+  it.each(['__proto__.polluted', 'constructor.prototype.polluted', 'prototype.polluted'])(
+    'rejects prototype-polluting path %s',
+    (path) => {
+      const result = applyFixPatch(patient(), { action: 'add', path, value: 'true' });
+
+      expect(result.applied).toBe(false);
+      expect(result.resource).toEqual(patient());
+      expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+    },
+  );
+
   it('rejects unresolved templates in the path', () => {
     const r = applyFixPatch(patient(), {
       action: 'replace',

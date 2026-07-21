@@ -56,8 +56,8 @@ interface QuestionnaireLike {
 }
 
 async function createRecordsValidator(): Promise<RecordsValidator> {
-  const { RecordsValidator } = await import('./core/validator-engine');
-  const { logger } = await import('./logger');
+  const { RecordsValidator } = await import('./core/validator-engine.js');
+  const { logger } = await import('./logger.js');
   const instance = new RecordsValidator({
       enableCaching: true,
       strictMode: false,
@@ -114,8 +114,8 @@ async function prewarmAnswerValueSets(questionnaire: QuestionnaireLike): Promise
   if (urls.size === 0) return;
 
   try {
-    const { ValueSetPackageLoader } = await import('./validators/valueset-package-loader');
-    const { valueSetCache } = await import('./validators/valueset-cache');
+    const { ValueSetPackageLoader } = await import('./validators/valueset-package-loader.js');
+    const { valueSetCache } = await import('./validators/valueset-cache.js');
     const loader = new ValueSetPackageLoader(valueSetCache);
     for (const url of urls) {
       await loader.loadValueSet(url);
@@ -297,6 +297,6 @@ export async function ensureRecordsValidatorReady(): Promise<void> {
 }
 
 export async function getRecordsValidatorClass() {
-  const { RecordsValidator } = await import('./core/validator-engine');
+  const { RecordsValidator } = await import('./core/validator-engine.js');
   return RecordsValidator;
 }

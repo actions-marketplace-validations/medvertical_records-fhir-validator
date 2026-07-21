@@ -47,7 +47,7 @@ jobs:
 For production CI, pin an immutable patch tag:
 
 ```yaml
-- uses: medvertical/records-fhir-validator@v0.4.3
+- uses: medvertical/records-fhir-validator@v0.4.4
   with:
     paths: resources/**/*.json
     profile-url: http://hl7.org/fhir/StructureDefinition/Patient
@@ -60,7 +60,7 @@ Action pinning:
 | Goal | Pin in `uses:` | Notes |
 |---|---|---|
 | Latest stable in current major | `medvertical/records-fhir-validator@v0` | Floating tag, force-moved on stable releases only |
-| Exact released version | `medvertical/records-fhir-validator@v0.4.3` | Immutable consumer tag |
+| Exact released version | `medvertical/records-fhir-validator@v0.4.4` | Immutable consumer tag |
 | Bit-exact reproducibility | `medvertical/records-fhir-validator@<commit-sha>` | Best for audit and forensics |
 
 The `validator-v<semver>` tag is the npm mirror/release-page tag. Use
@@ -69,7 +69,7 @@ The `validator-v<semver>` tag is the npm mirror/release-page tag. Use
 ### npm Package
 
 ```sh
-npm install @records-fhir/validator@0.4.3 @records-fhir/validation-types@0.1.5
+npm install @records-fhir/validator@0.4.4 @records-fhir/validation-types@0.1.5
 ```
 
 Run the CLI against one file or a folder:
@@ -139,7 +139,7 @@ includes `file`, `resourceType`, `profileUrl`, and `issues`. With
 
 ## What Is Included
 
-- `@records-fhir/validator` 0.4.3 - Apache-2.0 validation engine.
+- `@records-fhir/validator` 0.4.4 - Apache-2.0 validation engine.
 - `@records-fhir/validation-types` 0.1.5 - Apache-2.0 validation-domain types.
 - Composite GitHub Action at repository root.
 - Standalone examples under `packages/validator/examples/`.

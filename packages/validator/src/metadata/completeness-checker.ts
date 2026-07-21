@@ -12,6 +12,9 @@ import { RESOURCE_METADATA_REQUIREMENTS } from './metadata-types';
  */
 export function validateRequiredMetadata(resource: any, resourceType: string): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  const meta = resource?.meta && typeof resource.meta === 'object' && !Array.isArray(resource.meta)
+    ? resource.meta
+    : null;
 
   // Get requirements for this resource type
   const requirements = RESOURCE_METADATA_REQUIREMENTS[resourceType];
@@ -30,22 +33,22 @@ export function validateRequiredMetadata(resource: any, resourceType: string): V
     
     switch (field) {
       case 'versionId':
-        isPresent = !!(resource.meta && 'versionId' in resource.meta && resource.meta.versionId);
+        isPresent = !!(meta && 'versionId' in meta && meta.versionId);
         break;
       case 'lastUpdated':
-        isPresent = !!(resource.meta && resource.meta.lastUpdated);
+        isPresent = !!meta?.lastUpdated;
         break;
       case 'profile':
-        isPresent = !!(resource.meta && resource.meta.profile && Array.isArray(resource.meta.profile) && resource.meta.profile.length > 0);
+        isPresent = !!(meta?.profile && Array.isArray(meta.profile) && meta.profile.length > 0);
         break;
       case 'security':
-        isPresent = !!(resource.meta && resource.meta.security && Array.isArray(resource.meta.security) && resource.meta.security.length > 0);
+        isPresent = !!(meta?.security && Array.isArray(meta.security) && meta.security.length > 0);
         break;
       case 'tag':
-        isPresent = !!(resource.meta && resource.meta.tag && Array.isArray(resource.meta.tag) && resource.meta.tag.length > 0);
+        isPresent = !!(meta?.tag && Array.isArray(meta.tag) && meta.tag.length > 0);
         break;
       case 'source':
-        isPresent = !!(resource.meta && resource.meta.source);
+        isPresent = !!meta?.source;
         break;
     }
 
@@ -76,4 +79,3 @@ export function validateRequiredMetadata(resource: any, resourceType: string): V
 
   return issues;
 }
-

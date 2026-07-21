@@ -148,15 +148,7 @@ export class MetadataExecutor {
 
     } catch (error) {
       logger.error('[MetadataExecutor] Validation error:', error);
-      return [{
-        id: `metadata-executor-error-${Date.now()}`,
-        aspect: 'metadata',
-        severity: 'error',
-        code: 'validation-error',
-        message: `Metadata validation failed: ${error instanceof Error ? error.message : String(error)}`,
-        path: '',
-        timestamp: new Date()
-      }];
+      throw error;
     }
   }
 

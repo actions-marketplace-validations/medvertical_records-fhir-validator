@@ -157,13 +157,19 @@ export class TerminologyApiClient {
 
             if (response.data?.expansion?.contains) {
                 const codes = new Set<string>();
-                for (const item of response.data.expansion.contains) {
+                const pending = [...response.data.expansion.contains];
+                while (pending.length > 0) {
+                    const item = pending.pop();
+                    if (!item || typeof item !== 'object') continue;
                     if (item.code) {
                         // Add both bare code and system|code format
                         codes.add(item.code);
                         if (item.system) {
                             codes.add(`${item.system}|${item.code}`);
                         }
+                    }
+                    if (Array.isArray(item.contains)) {
+                        pending.push(...item.contains);
                     }
                 }
 

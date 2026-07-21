@@ -114,7 +114,7 @@ export class ProfileValidator {
     // resolveProfile is wired up — typical for CLI / npm-package
     // callers — this check silently degrades to "not validated" and
     // produces no issues.
-    const { getProfileSource } = await import('../persistence');
+    const { getProfileSource } = await import('../persistence/index.js');
     const source = getProfileSource();
     if (!source.resolveProfile) {
       return issues;

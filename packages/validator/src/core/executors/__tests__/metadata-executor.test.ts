@@ -189,7 +189,7 @@ describe('MetadataExecutor', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('should handle error during validation gracefully', async () => {
+    it('should propagate engine failures instead of reporting them as resource findings', async () => {
       mockContext.resource = {
         resourceType: 'Patient',
         get meta() {
@@ -197,12 +197,7 @@ describe('MetadataExecutor', () => {
         }
       };
 
-      const issues = await executor.validate(mockContext);
-
-      expect(issues.length).toBeGreaterThan(0);
-      expect(issues[0].aspect).toBe('metadata');
-      expect(issues[0].severity).toBe('error');
-      expect(issues[0].code).toBe('validation-error');
+      await expect(executor.validate(mockContext)).rejects.toThrow('Test error');
     });
 
     it('should handle different resource types', async () => {

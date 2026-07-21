@@ -205,11 +205,7 @@ export class RecordsValidator {
       return await this.metadataExecutor.validate({ resource });
     } catch (error) {
       logger.error('[RecordsValidator] Metadata validation error:', error);
-      return [createValidationErrorIssue(
-        'metadata',
-        'validation-error',
-        `Metadata validation failed: ${error instanceof Error ? error.message : String(error)}`
-      )];
+      throw error;
     }
   }
 

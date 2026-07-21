@@ -8,6 +8,40 @@ import {
 } from '../sd-to-fhir-schema';
 
 describe('convertToFHIRSchema', () => {
+  it('ignores prototype-polluting element and slice paths', () => {
+    const objectPrototype = Object.prototype as Record<string, unknown>;
+    delete objectPrototype.elements;
+
+    try {
+      const schema = convertToFHIRSchema({
+        url: 'http://test/Patient',
+        name: 'Patient',
+        type: 'Patient',
+        kind: 'resource',
+        snapshot: {
+          element: [
+            { path: 'Patient', min: 0, max: '*' },
+            { path: 'Patient.identifier', min: 0, max: '*', type: [{ code: 'Identifier' }] },
+            { path: 'Patient.__proto__.polluted', min: 0, max: '1', type: [{ code: 'string' }] },
+            {
+              path: 'Patient.identifier',
+              min: 0,
+              max: '*',
+              sliceName: '__proto__',
+              type: [{ code: 'Identifier' }],
+            },
+          ],
+        },
+      });
+
+      expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'elements')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(schema.elements, '__proto__')).toBe(false);
+      expect(Object.prototype.hasOwnProperty.call(schema.elements?.identifier.slices ?? {}, '__proto__')).toBe(false);
+    } finally {
+      delete objectPrototype.elements;
+    }
+  });
+
   it('converts a minimal Patient SD', () => {
     const sd = {
       url: 'http://hl7.org/fhir/StructureDefinition/Patient',

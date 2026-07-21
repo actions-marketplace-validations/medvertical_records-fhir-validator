@@ -10,6 +10,30 @@ ship together; package-only changes are noted under each release.
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-07-21
+
+Patch release hardening production metadata validation and terminology
+expansion without changing the public validation API.
+
+### Fixed
+
+- Replaced runtime directory imports with explicit ESM entry files so packaged
+  metadata validation works in the production Node.js container.
+- Propagated metadata-engine exceptions to the host instead of representing
+  runtime failures as FHIR resource findings.
+- Traversed hierarchical terminology-server `$expand` results recursively, so
+  nested valid codes such as Questionnaire item types are recognized.
+- Accepted malformed primitive `meta` input as a normal structural metadata
+  finding instead of allowing completeness checks to throw.
+
+### Verification
+
+- HL7 JSON parity: 536/536 (100.0%), 0 failed, 0 skipped, 0 errors.
+- MII 2026 reference parity: 231/231 measured (100.0%), 22 classified skips,
+  128/128 profiles prewarmed, and 0 FHIRPath constraint skips.
+- Verified the packed public package by executing real metadata validation and
+  rejecting any internal-error or directory-import finding.
+
 ## [0.4.3] — 2026-07-21
 
 Patch release completing the executable HL7 JSON and scoped MII 2026 parity
@@ -749,7 +773,8 @@ extracted from the Records DataOps Control Plane.
   are explicitly out of scope for this package and are not blended
   into the headline conformance score.
 
-[Unreleased]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.3...HEAD
+[Unreleased]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.4...HEAD
+[0.4.4]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.3...validator-v0.4.4
 [0.4.3]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.2...validator-v0.4.3
 [0.4.2]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.1...validator-v0.4.2
 [0.4.1]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.0...validator-v0.4.1

@@ -187,6 +187,22 @@ if (typeof validator.validate !== 'function') {
   throw new Error('RecordsValidator.validate is not available');
 }
 
+const metadataIssues = await validator.validateMetadata({
+  resourceType: 'Patient',
+  id: 'metadata-runtime-smoke',
+  meta: {
+    profile: ['http://hl7.org/fhir/StructureDefinition/Patient'],
+    tag: [{ code: 'smoke' }],
+  },
+});
+if (metadataIssues.some((issue) => (
+  issue.code === 'validation-error' ||
+  issue.code === 'metadata-validation-error' ||
+  issue.message?.includes('Directory import')
+))) {
+  throw new Error('Metadata runtime smoke returned an engine failure: ' + JSON.stringify(metadataIssues));
+}
+
 const valueSetValidator = new ValueSetValidator();
 const issues = await valueSetValidator.validateBinding(
   'definitely-not-a-fhir-observation-status',

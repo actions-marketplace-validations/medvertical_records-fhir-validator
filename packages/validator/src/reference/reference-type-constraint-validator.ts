@@ -18,6 +18,17 @@ export interface ReferenceTypeValidationResult {
   parseResult?: ReferenceParseResult;
 }
 
+const UNSAFE_CONSTRAINT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function isSafeConstraintKey(key: string): boolean {
+  return key.length > 0 && !UNSAFE_CONSTRAINT_KEYS.has(key);
+}
+
+function getOwnConstraintMap(constraints: Record<string, Record<string, ReferenceTypeConstraint>>, resourceType: string): Record<string, ReferenceTypeConstraint> | undefined {
+  if (!isSafeConstraintKey(resourceType)) return undefined;
+  return Object.prototype.hasOwnProperty.call(constraints, resourceType) ? constraints[resourceType] : undefined;
+}
+
 export const REFERENCE_TYPE_CONSTRAINTS: Record<string, Record<string, ReferenceTypeConstraint>> = {
   Patient: {
     'generalPractitioner': {
@@ -217,7 +228,7 @@ export class ReferenceTypeConstraintValidator {
     resourceType: string,
     fieldPath: string
   ): ReferenceTypeValidationResult {
-    const resourceConstraints = this.constraints[resourceType];
+    const resourceConstraints = getOwnConstraintMap(this.constraints, resourceType);
     if (!resourceConstraints) {
       return {
         isValid: true,
@@ -226,7 +237,10 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    const fieldConstraints = resourceConstraints[fieldPath];
+    const fieldConstraints = isSafeConstraintKey(fieldPath)
+      && Object.prototype.hasOwnProperty.call(resourceConstraints, fieldPath)
+      ? resourceConstraints[fieldPath]
+      : undefined;
     if (!fieldConstraints) {
       return {
         isValid: true,
@@ -334,20 +348,27 @@ export class ReferenceTypeConstraintValidator {
   }
 
   getConstraintsForField(resourceType: string, fieldPath: string): ReferenceTypeConstraint | null {
-    return this.constraints[resourceType]?.[fieldPath] || null;
+    if (!isSafeConstraintKey(fieldPath)) return null;
+    const resourceConstraints = getOwnConstraintMap(this.constraints, resourceType);
+    return resourceConstraints && Object.prototype.hasOwnProperty.call(resourceConstraints, fieldPath)
+      ? resourceConstraints[fieldPath]
+      : null;
   }
 
   hasConstraints(resourceType: string, fieldPath: string): boolean {
-    return !!this.constraints[resourceType]?.[fieldPath];
+    return this.getConstraintsForField(resourceType, fieldPath) !== null;
   }
 
   getConstrainedFields(resourceType: string): string[] {
-    const resourceConstraints = this.constraints[resourceType];
+    const resourceConstraints = getOwnConstraintMap(this.constraints, resourceType);
     return resourceConstraints ? Object.keys(resourceConstraints) : [];
   }
 
   setConstraints(resourceType: string, fieldPath: string, constraints: ReferenceTypeConstraint): void {
-    if (!this.constraints[resourceType]) {
+    if (!isSafeConstraintKey(resourceType) || !isSafeConstraintKey(fieldPath)) {
+      throw new TypeError('Constraint keys must not modify object prototypes');
+    }
+    if (!Object.prototype.hasOwnProperty.call(this.constraints, resourceType)) {
       this.constraints[resourceType] = {};
     }
     this.constraints[resourceType][fieldPath] = constraints;

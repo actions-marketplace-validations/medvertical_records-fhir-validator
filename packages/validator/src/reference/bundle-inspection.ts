@@ -42,14 +42,16 @@ export function validateBundleStructure(bundle: any): BundleIssue[] {
 export function getBundleStatistics(bundle: any): BundleStatistics {
   const entries = extractBundleEntries(bundle);
   const allReferences = findAllBundleReferences(bundle);
-  const resourceTypes: Record<string, number> = {};
+  const resourceTypeCounts = new Map<string, number>();
 
   entries.forEach(entry => {
     if (entry.resource?.resourceType) {
-      const type = entry.resource.resourceType;
-      resourceTypes[type] = (resourceTypes[type] || 0) + 1;
+      const type = String(entry.resource.resourceType);
+      resourceTypeCounts.set(type, (resourceTypeCounts.get(type) ?? 0) + 1);
     }
   });
+
+  const resourceTypes = Object.fromEntries(resourceTypeCounts);
 
   return {
     totalEntries: entries.length,

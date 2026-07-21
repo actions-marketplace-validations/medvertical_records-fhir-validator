@@ -12,6 +12,12 @@ interface SlicingDefinition {
   ordered?: boolean;
 }
 
+const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function isSafeObjectKey(key: string | undefined): key is string {
+  return typeof key === 'string' && key.length > 0 && !UNSAFE_OBJECT_KEYS.has(key);
+}
+
 export function populateSchemaElements(
   schema: FHIRSchema,
   childElements: SDElement[],
@@ -53,12 +59,14 @@ function addSliceElement(
   slicingDefs: Map<string, SlicingDefinition>,
   resolveTargetProfile?: TargetProfileTypeResolver,
 ): void {
+  if (!isSafeObjectKey(el.sliceName)) return;
   const relativePath = getRelativePath(el, rootType);
   if (!relativePath) {
     return;
   }
 
   const placement = getElementPlacement(rootElements, el, rootType, relativePath);
+  if (!placement) return;
   const { fieldName, originalFieldName, target } = placement;
   target[fieldName] ??= {};
   const parent = target[fieldName];
@@ -104,6 +112,7 @@ function addRegularElement(
   }
 
   const placement = getElementPlacement(rootElements, el, rootType, relativePath);
+  if (!placement) return;
   const target = placement.target;
   let fieldName = placement.fieldName;
   const originalFieldName = placement.originalFieldName;
@@ -133,7 +142,8 @@ function getRelativePath(el: SDElement, rootType: string): string[] | null {
   if (pathParts.length < 2 || pathParts[0] !== rootType) {
     return null;
   }
-  return pathParts.slice(1).map(normalizeChoicePathSegment);
+  const relativePath = pathParts.slice(1).map(normalizeChoicePathSegment);
+  return relativePath.every(isSafeObjectKey) ? relativePath : null;
 }
 
 function getOriginalFieldName(el: SDElement): string {
@@ -155,7 +165,7 @@ function getElementPlacement(
   fieldName: string;
   originalFieldName: string;
   relativePath: string[];
-} {
+} | null {
   const idParts = typeof el.id === 'string' ? el.id.split('.') : [];
   if (idParts.length < 2 || idParts[0] !== rootType) {
     return {
@@ -167,11 +177,16 @@ function getElementPlacement(
   }
 
   const relativeIdParts = idParts.slice(1);
-  const relativePath = relativeIdParts.map(part => normalizeChoicePathSegment(part.split(':')[0]));
+  const parsedIdParts = relativeIdParts.map(parseIdPart);
+  if (parsedIdParts.some(part => (
+    !isSafeObjectKey(part.fieldName)
+    || (part.sliceName !== undefined && !isSafeObjectKey(part.sliceName))
+  ))) return null;
+  const relativePath = parsedIdParts.map(part => part.fieldName);
   let target = rootElements;
 
   for (let i = 0; i < relativeIdParts.length - 1; i += 1) {
-    const parsed = parseIdPart(relativeIdParts[i]);
+    const parsed = parsedIdParts[i];
     target[parsed.fieldName] ??= { elements: {} };
 
     if (parsed.sliceName) {
@@ -186,7 +201,7 @@ function getElementPlacement(
     }
   }
 
-  const terminal = parseIdPart(relativeIdParts[relativeIdParts.length - 1]);
+  const terminal = parsedIdParts[parsedIdParts.length - 1];
   return {
     target,
     fieldName: terminal.fieldName,
