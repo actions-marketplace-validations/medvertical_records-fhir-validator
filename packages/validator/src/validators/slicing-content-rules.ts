@@ -42,7 +42,14 @@ export function validateSliceContentConstraints(
     const fixedValue = extractFixedValue(elementDef);
     if (fixedValue !== undefined) {
       checkedFixedPaths.add(relativePath);
-      issues.push(...validateSliceFixedValue(element, slice, elementPath, relativePath, fixedValue));
+      issues.push(...validateSliceFixedValue(
+        element,
+        slice,
+        elementPath,
+        relativePath,
+        fixedValue,
+        (elementDef.min ?? 0) > 0 && allAncestorsPresent(element, relativePath),
+      ));
     }
 
     const patternValue = extractPatternValue(elementDef);
@@ -58,6 +65,28 @@ export function validateSliceContentConstraints(
     issues.push(...validateSliceFixedValue(element, slice, elementPath, relativePath, fixedValue));
   }
 
+  for (const [relativePath, minimum] of slice.childMin ?? []) {
+    if (!isContentConstraintPath(relativePath)) continue;
+    if (!allAncestorsPresent(element, relativePath)) continue;
+    const actualValue = getValueAtPath(element, relativePath);
+    const actualCount = Array.isArray(actualValue)
+      ? actualValue.length
+      : actualValue === undefined || actualValue === null ? 0 : 1;
+    if (actualCount >= minimum) continue;
+    issues.push(createValidationIssue({
+      code: 'structural-cardinality-min',
+      path: `${elementPath}.${relativePath}`,
+      resourceType: resourceTypeFromPath(elementPath),
+      customMessage: `Element ${elementPath}.${relativePath} has too few values: expected at least ${minimum}, found ${actualCount}`,
+      details: {
+        sliceName: slice.sliceName,
+        relativePath,
+        expectedMin: minimum,
+        actualCount,
+      },
+    }));
+  }
+
   for (const [relativePath, patternValue] of slice.childPatterns ?? []) {
     if (checkedPatternPaths.has(relativePath)) continue;
     if (!isContentConstraintPath(relativePath)) continue;
@@ -65,6 +94,18 @@ export function validateSliceContentConstraints(
   }
 
   return issues;
+}
+
+function allAncestorsPresent(element: any, relativePath: string): boolean {
+  const segments = relativePath.split('.');
+  if (segments.length <= 1) return true;
+
+  for (let length = 1; length < segments.length; length += 1) {
+    const ancestor = getValueAtPath(element, segments.slice(0, length).join('.'));
+    if (ancestor === undefined || ancestor === null) return false;
+    if (Array.isArray(ancestor) && ancestor.length === 0) return false;
+  }
+  return true;
 }
 
 export function validateSliceRootConstraints(
@@ -238,21 +279,25 @@ function validateSliceFixedValue(
   elementPath: string,
   relativePath: string,
   fixedValue: any,
+  required = false,
 ): ValidationIssue[] {
   const actualValue = getValueAtPath(element, relativePath);
   if (actualValue === undefined || actualValue === null) {
-    return [createValidationIssue({
-      code: 'profile-slice-fixed-value-missing',
+    // fixed[x] constrains a value when present; it does not change the
+    // element's cardinality. Missing required children are reported from the
+    // element's min cardinality, not as a second fixed-value violation.
+    return required ? [createValidationIssue({
+      code: 'structural-cardinality-min',
       path: `${elementPath}.${relativePath}`,
       resourceType: resourceTypeFromPath(elementPath),
-      customMessage: `Slice '${slice.sliceName}' requires fixed value '${JSON.stringify(fixedValue)}' at ${relativePath}`,
+      customMessage: `Element ${elementPath}.${relativePath} has too few values: expected at least 1, found 0`,
       details: {
         sliceName: slice.sliceName,
         relativePath,
-        expectedValue: fixedValue,
-        actualValue: null,
+        expectedMin: 1,
+        actualCount: 0,
       },
-    })];
+    })] : [];
   }
 
   if (valuesMatch(actualValue, fixedValue)) return [];

@@ -17,6 +17,26 @@ export const ProfileCodes = {
         severity: 'error',
         description: 'Element does not match a fixed value declared by the profile',
     },
+    'profile-pattern-mismatch': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Element does not match a pattern declared by the profile',
+    },
+    'profile-slice-fixed-value-missing': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'A required fixed-value element is missing from a matched slice',
+    },
+    'profile-slice-fixed-value-mismatch': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'A matched slice does not satisfy a fixed value',
+    },
+    'profile-slice-pattern-mismatch': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'A matched slice does not satisfy a pattern',
+    },
     'profile-slice-min-cardinality': {
         aspect: 'profile',
         severity: 'error',

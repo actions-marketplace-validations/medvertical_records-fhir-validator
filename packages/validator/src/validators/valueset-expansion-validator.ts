@@ -5,7 +5,7 @@ import { stripVersion } from './terminology-resource-utils';
 /**
  * Apply the best-practice rules Java raises against `ValueSet.expansion`.
  */
-export function validateValueSetExpansion(expansion: any): ValidationIssue[] {
+export function validateValueSetExpansion(expansion: any, compose?: any): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const params: any[] = Array.isArray(expansion?.parameter) ? expansion.parameter : [];
 
@@ -36,8 +36,66 @@ export function validateValueSetExpansion(expansion: any): ValidationIssue[] {
 
   const declaredUsedCodesystems = collectDeclaredUsedCodesystems(params);
   issues.push(...validateUnversionedExpansionSystems(expansion, declaredUsedCodesystems));
+  issues.push(...validateHierarchicalFilterExpansionConsistency(expansion, compose));
 
   return issues;
+}
+
+/**
+ * A `parent = X` include selects concepts whose parent is X; it does not
+ * select X itself. This consistency check catches an expansion that includes
+ * the filter anchor as an extra code without requiring a terminology server.
+ */
+function validateHierarchicalFilterExpansionConsistency(
+  expansion: any,
+  compose: any,
+): ValidationIssue[] {
+  const contains = flattenContains(expansion?.contains);
+  const issues: ValidationIssue[] = [];
+  const seen = new Set<string>();
+
+  for (const include of compose?.include ?? []) {
+    if (typeof include?.system !== 'string' || !Array.isArray(include?.filter)) continue;
+    for (const filter of include.filter) {
+      if (filter?.property !== 'parent' || filter?.op !== '=' || typeof filter?.value !== 'string') continue;
+      const extra = contains.find(item =>
+        item?.system === include.system && item?.code === filter.value
+      );
+      if (!extra) continue;
+
+      const key = `${include.system}|${filter.value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      issues.push(createValidationIssue({
+        code: 'tx-valueset-expansion-extra-code',
+        path: 'ValueSet.expansion',
+        resourceType: 'ValueSet',
+        customMessage:
+          `The expansion provided has an extra code ${filter.value} that is not ` +
+          'selected by the compose parent filter',
+        severityOverride: 'warning',
+        details: {
+          system: include.system,
+          code: filter.value,
+          filterProperty: filter.property,
+          filterOperator: filter.op,
+        },
+      }));
+    }
+  }
+
+  return issues;
+}
+
+function flattenContains(value: unknown): any[] {
+  if (!Array.isArray(value)) return [];
+  const out: any[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    out.push(item);
+    out.push(...flattenContains((item as any).contains));
+  }
+  return out;
 }
 
 function collectDeclaredUsedCodesystems(params: any[]): Set<string> {

@@ -53,7 +53,7 @@ export async function validateResourceStructure(
     const baseUrl = `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`;
     const profilesToValidate = declaredProfiles.length > 0 ? declaredProfiles : [baseUrl];
 
-    logger.info(`[RecordsValidator] Validating ${resource.resourceType} structure against ${profilesToValidate.length} profile(s)`);
+    logger.debug(`[RecordsValidator] Validating ${resource.resourceType} structure against ${profilesToValidate.length} profile(s)`);
 
     for (const profileUrl of profilesToValidate) {
       issues.push(...await validateStructureProfile(resource, profileUrl, fhirVersion, deps));
@@ -62,7 +62,7 @@ export async function validateResourceStructure(
     issues.push(...await validatePostStructureRules(resource, fhirVersion, recursionDepth, deps));
 
     const validationTime = Date.now() - startTime;
-    logger.info(`[RecordsValidator] Validated structure in ${validationTime}ms (${issues.length} issues)`);
+    logger.debug(`[RecordsValidator] Validated structure in ${validationTime}ms (${issues.length} issues)`);
 
     return withIssuesSchemaVersion(issues, fhirVersion);
   } catch (error) {
@@ -81,7 +81,7 @@ async function validateStructureProfile(
   fhirVersion: 'R4' | 'R5' | 'R6',
   deps: ValidateStructureDeps
 ): Promise<ValidationIssue[]> {
-  logger.info(`[RecordsValidator]   - Checking profile: ${profileUrl}`);
+  logger.debug(`[RecordsValidator]   - Checking profile: ${profileUrl}`);
 
   const loadedStructureDef = await loadProfileWithSnapshot(
     deps.sdLoader,

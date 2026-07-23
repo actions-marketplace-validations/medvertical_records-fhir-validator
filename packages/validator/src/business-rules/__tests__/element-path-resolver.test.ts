@@ -522,6 +522,32 @@ describe('Element Path Resolver', () => {
           }],
         });
       });
+
+      it('should traverse a sidecar when a populated primitive path continues', () => {
+        const subscription = {
+          resourceType: 'Subscription',
+          channel: {
+            payload: 'application/fhir+json',
+            _payload: {
+              extension: [{
+                url: 'http://hl7.org/fhir/uv/subscriptions-backport/StructureDefinition/backport-payload-content',
+                valueCode: 'full-resource',
+              }],
+            },
+          },
+        };
+
+        const targets = getValidationTargets(
+          subscription,
+          'Subscription.channel.payload.extension',
+        );
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].fullPath).toBe('Subscription.channel.payload.extension[0]');
+        expect(targets[0].value).toEqual(expect.objectContaining({
+          valueCode: 'full-resource',
+        }));
+      });
     });
 
     describe('Real-World Array Scenarios', () => {

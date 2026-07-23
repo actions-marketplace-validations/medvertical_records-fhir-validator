@@ -33,13 +33,14 @@ export class QuestionnaireValidator {
         resource: any,
         contextQuestionnaire?: any,
         options: QuestionnaireValidationOptions = {},
+        fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
     ): ValidationIssue[] {
         if (!resource || typeof resource !== 'object') return [];
         const issues: ValidationIssue[] = [];
 
         const rt = resource.resourceType;
         if (rt === 'Questionnaire') {
-            issues.push(...this.validateQuestionnaire(resource, 'Questionnaire'));
+            issues.push(...this.validateQuestionnaire(resource, 'Questionnaire', fhirVersion));
         } else if (rt === 'QuestionnaireResponse') {
             let q = contextQuestionnaire;
             if (!q && typeof resource.questionnaire === 'string' && resource.questionnaire.startsWith('#')) {
@@ -55,7 +56,7 @@ export class QuestionnaireValidator {
                 const c = resource.contained[i];
                 const cPath = `${rt}.contained[${i}]`;
                 if (c?.resourceType === 'Questionnaire') {
-                    issues.push(...this.validateQuestionnaire(c, cPath));
+                    issues.push(...this.validateQuestionnaire(c, cPath, fhirVersion));
                 }
             }
         }
@@ -63,7 +64,11 @@ export class QuestionnaireValidator {
         return issues;
     }
 
-    validateQuestionnaire(questionnaire: any, basePath: string = 'Questionnaire'): ValidationIssue[] {
+    validateQuestionnaire(
+        questionnaire: any,
+        basePath: string = 'Questionnaire',
+        fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+    ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         if (questionnaire?.resourceType !== 'Questionnaire') {
@@ -100,7 +105,12 @@ export class QuestionnaireValidator {
 
         if (questionnaire.item && Array.isArray(questionnaire.item)) {
             const linkIdSet = new Set<string>();
-            issues.push(...validateQuestionnaireItems(questionnaire.item, linkIdSet, `${basePath}.item`));
+            issues.push(...validateQuestionnaireItems(
+                questionnaire.item,
+                linkIdSet,
+                `${basePath}.item`,
+                fhirVersion,
+            ));
         }
 
         return issues;

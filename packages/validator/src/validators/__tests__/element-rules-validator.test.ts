@@ -128,4 +128,18 @@ describe('ElementRulesValidator', () => {
 
     expect(issues).toHaveLength(0);
   });
+
+  it('ignores a typed pattern that is incompatible with the declared element type', () => {
+    const elementDef = {
+      path: 'Location.mode',
+      type: [{ code: 'code' }],
+      patternCodeableConcept: {
+        coding: [{ system: 'http://hl7.org/fhir/location-mode', code: 'instance' }],
+      },
+    } as ElementDefinition;
+
+    const issues = validator.validate('instance', elementDef, 'Location.mode');
+
+    expect(issues).toHaveLength(0);
+  });
 });

@@ -160,6 +160,52 @@ describe('unknown-property-walker', () => {
     expect(issues[0].severity).toBe('error');
   });
 
+  it('flags unknown fields inside primitive extension sidecars', async () => {
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'TestRes',
+        id: 'a',
+        _id: { fhir_comments: ['not a legal Element property'] },
+      },
+      index, 'TestRes', sd.url,
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: 'structural-unknown-element',
+      path: 'TestRes.id',
+      severity: 'error',
+    });
+  });
+
+  it('accepts id and extension in primitive extension sidecars', async () => {
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'TestRes',
+        id: 'a',
+        _id: {
+          id: 'primitive-element-id',
+          extension: [{ url: 'http://example.org/ext', valueString: 'ok' }],
+        },
+      },
+      index, 'TestRes', sd.url,
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it('leaves malformed orphan sidecars to the canonical structural sanity diagnostic', async () => {
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'TestRes',
+        _valueString: { value: 'not a legal primitive sidecar field' },
+      },
+      index, 'TestRes', sd.url,
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
   it('flags nested unknown keys inside BackboneElements as warning', async () => {
     const issues = await detectUnknownProperties(
       {

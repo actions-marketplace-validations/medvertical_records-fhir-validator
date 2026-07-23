@@ -13,14 +13,11 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import {
-  getValueAtPath,
-  codingMatchesBindingCodes,
-  matchesPattern,
-} from './slice-utils';
-import { matchDiscriminator as externalMatchDiscriminator } from './slice-discriminator-matcher';
+  sliceHasDiscriminatorEvidence,
+} from './slice-discriminator-matcher';
 import { extractSlicingInfo as externalExtractSlicingInfo } from './slice-info-extractor';
-import type { SliceDefinition } from './slice-types';
-import type { StructureDefinition, SlicingDefinition, SlicingDiscriminator } from '../core/structure-definition-types';
+import type { ReferenceResolver, SliceDefinition } from './slice-types';
+import type { StructureDefinition, SlicingDefinition } from '../core/structure-definition-types';
 import { ValueSetPackageLoader } from './valueset-package-loader';
 import { logger } from '../logger';
 import {
@@ -31,8 +28,17 @@ import {
 } from './slicing-content-rules';
 import { validateSliceOrdering } from './slicing-ordering';
 import { createIsolatedSlicingValueSetLoader } from './slicing-valueset-loader';
-import { urlMatchesRequestedFhirVersion, type FhirVersionFamily } from '../core/sd-loader-version-utils';
-import { isRelaxedCodingIdentityCardinalityMatch } from './slicing-cardinality-relaxation';
+import { type FhirVersionFamily } from '../core/sd-loader-version-utils';
+import { ConstraintValidator } from './constraint-validator';
+import { getValueAtPath } from './slice-utils';
+import {
+  elementCountsForSliceCardinality,
+  isSliceCompatibleWithFhirVersion,
+  matchElementToSlice,
+  referenceDiscriminatorCouldNotBeResolved,
+  shouldSuppressUnresolvedBindingClosedUnmatched,
+  shouldSuppressUnresolvedBindingOnlyMin,
+} from './slicing-match-policy';
 
 // ============================================================================
 // Types
@@ -41,7 +47,7 @@ import { isRelaxedCodingIdentityCardinalityMatch } from './slicing-cardinality-r
 // Re-export slicing types from core types
 export type { SlicingDiscriminator, SlicingDefinition } from '../core/structure-definition-types';
 
-export type { SliceDefinition } from './slice-types';
+export type { ReferenceResolver, SliceDefinition } from './slice-types';
 
 /**
  * Callback used by the slicing validator to resolve a FHIR reference to the
@@ -57,8 +63,6 @@ export type { SliceDefinition } from './slice-types';
  * Returning `null` means "not resolvable" — the validator will then fall
  * back to matching against `value.meta.profile` as before.
  */
-export type ReferenceResolver = (reference: string) => any | null;
-
 /**
  * Callback that resolves a profile URL to its StructureDefinition. Used by
  * the slicing validator to follow `type[].profile` on slice elements and
@@ -72,6 +76,8 @@ export type TypeProfileResolver = (profileUrl: string) => Promise<StructureDefin
 // ============================================================================
 
 export class SlicingValidator {
+  private typeProfileConstraintValidator = new ConstraintValidator();
+
   /**
    * Optional reference resolver used by the discriminator-by-profile matcher
    * to chase references inside Bundles / contained resources. Set via
@@ -133,12 +139,72 @@ export class SlicingValidator {
         // No slicing defined for this element
         return issues;
       }
-      const compatibleSlices = slicingInfo.slices.filter(slice => this.isSliceCompatibleWithFhirVersion(slice, fhirVersion));
+      const compatibleSlices = slicingInfo.slices.filter(slice => isSliceCompatibleWithFhirVersion(slice, fhirVersion));
       if (compatibleSlices.length === 0) {
         return issues;
       }
 
+      // A discriminator child omitted by one slice is a wildcard for that
+      // slice, not necessarily missing inherited metadata. The metadata is
+      // unresolved only when no compatible slice carries evidence for the
+      // discriminator at all. This matters for compound discriminators such
+      // as (type, appliesTo), where a treatment slice intentionally accepts
+      // every appliesTo value.
+      const unresolvedDiscriminators = (slicingInfo.slicing.discriminator ?? [])
+        .filter(discriminator => !compatibleSlices.some(slice =>
+          sliceHasDiscriminatorEvidence(slice, discriminator)
+        ))
+        .map(discriminator => `${discriminator.type}:${discriminator.path || '$this'}`);
+      if (unresolvedDiscriminators.length > 0) {
+        return [createValidationIssue({
+          code: 'profile-slice-validation-error',
+          path: elementPath,
+          resourceType: resourceTypeFromPath(elementPath),
+          severityOverride: 'information',
+          customMessage:
+            `Slicing at '${elementPath}' could not be verified because inherited discriminator metadata ` +
+            'was not resolved from the profile dependency.',
+          details: {
+            reason: 'unresolved-discriminator-metadata',
+            unresolvedDiscriminators,
+          },
+        })];
+      }
+
+      const unresolvedSliceNames = compatibleSlices
+        .filter(slice => !(slicingInfo.slicing.discriminator ?? []).some(discriminator =>
+          sliceHasDiscriminatorEvidence(slice, discriminator)
+        ))
+        .map(slice => slice.sliceName);
+      const hasUnresolvedSliceIdentity = unresolvedSliceNames.length > 0;
+      if (hasUnresolvedSliceIdentity) {
+        issues.push(createValidationIssue({
+          code: 'profile-slice-validation-error',
+          path: elementPath,
+          resourceType: resourceTypeFromPath(elementPath),
+          severityOverride: 'information',
+          customMessage:
+            `Slicing at '${elementPath}' could not be fully verified because inherited discriminator ` +
+            'metadata was not resolved for one or more slices.',
+          details: {
+            reason: 'unresolved-slice-discriminator-metadata',
+            unresolvedSliceNames,
+          },
+        }));
+      }
+
       logger.debug(`[SlicingValidator] Validating ${elements.length} elements for path ${elementPath} with ${compatibleSlices.length} slices`);
+
+      const effectiveReferenceResolver = referenceResolverOverride ?? this.referenceResolver ?? null;
+      const hasUnresolvedReferenceDiscriminator = elements.some(element =>
+        (slicingInfo.slicing.discriminator ?? []).some(discriminator =>
+          referenceDiscriminatorCouldNotBeResolved(
+            element,
+            discriminator,
+            effectiveReferenceResolver,
+          )
+        )
+      );
 
       // Match each element to its slice
       const sliceMatches = new Map<string, Array<{ element: any; index: number }>>(); // sliceName -> matched elements with original index
@@ -147,11 +213,11 @@ export class SlicingValidator {
 
       for (let index = 0; index < elements.length; index++) {
         const element = elements[index];
-        const matchedSlice = this.matchElementToSlice(
+        const matchedSlice = matchElementToSlice(
           element,
           compatibleSlices,
           slicingInfo.slicing,
-          referenceResolverOverride,
+          effectiveReferenceResolver,
         );
 
         if (matchedSlice) {
@@ -160,12 +226,12 @@ export class SlicingValidator {
           }
           sliceMatches.get(matchedSlice.sliceName)!.push({ element, index });
 
-          if (this.elementCountsForSliceCardinality(
+          if (elementCountsForSliceCardinality(
             element,
             matchedSlice,
             slicingInfo.slicing.discriminator || [],
             compatibleSlices,
-            referenceResolverOverride,
+            effectiveReferenceResolver,
             slicingInfo.slicing.rules,
           )) {
             if (!cardinalityMatches.has(matchedSlice.sliceName)) {
@@ -180,6 +246,9 @@ export class SlicingValidator {
 
       // Validate cardinality for each slice
       for (const slice of compatibleSlices) {
+        if (unresolvedSliceNames.includes(slice.sliceName)) {
+          continue;
+        }
         const matchedElements = sliceMatches.get(slice.sliceName) || [];
         const countedElements = cardinalityMatches.get(slice.sliceName) || [];
         const count = countedElements.length;
@@ -188,7 +257,8 @@ export class SlicingValidator {
         // Check min cardinality
         if (
           count < slice.min &&
-          !this.shouldSuppressUnresolvedBindingOnlyMin(slice, elements)
+          !hasUnresolvedReferenceDiscriminator &&
+          !shouldSuppressUnresolvedBindingOnlyMin(slice, elements)
         ) {
           issues.push(createValidationIssue({
             code: 'profile-slice-min-cardinality',
@@ -247,14 +317,41 @@ export class SlicingValidator {
             profileSD
           );
           issues.push(...childIssues);
+
+          issues.push(...await this.validateSliceTypeProfileConstraints(
+            matched.element,
+            slice,
+            `${elementPath}[${matched.index}]`,
+            fhirVersion,
+          ));
         }
+      }
+
+      if (
+        hasUnresolvedReferenceDiscriminator &&
+        compatibleSlices.some(slice => (cardinalityMatches.get(slice.sliceName)?.length ?? 0) < slice.min)
+      ) {
+        issues.push(createValidationIssue({
+          code: 'profile-slice-validation-error',
+          path: elementPath,
+          resourceType: resourceTypeFromPath(elementPath),
+          severityOverride: 'information',
+          customMessage:
+            `Slicing at '${elementPath}' could not be verified because a reference used by its ` +
+            'discriminator could not be resolved.',
+          details: {
+            reason: 'unresolved-reference-discriminator',
+          },
+        }));
       }
 
       // Check unmatched elements
       if (
         unmatchedElements.length > 0 &&
         slicingInfo.slicing.rules === 'closed' &&
-        !this.shouldSuppressUnresolvedBindingClosedUnmatched(compatibleSlices, slicingInfo.slicing)
+        !hasUnresolvedReferenceDiscriminator &&
+        !hasUnresolvedSliceIdentity &&
+        !shouldSuppressUnresolvedBindingClosedUnmatched(compatibleSlices, slicingInfo.slicing)
       ) {
         issues.push(createValidationIssue({
           code: 'profile-slice-closed-unmatched',
@@ -279,10 +376,11 @@ export class SlicingValidator {
         const orderIssues = validateSliceOrdering(
           elements,
           compatibleSlices,
-          element => this.matchElementToSlice(
+          element => matchElementToSlice(
             element,
             compatibleSlices,
             { discriminator: compatibleSlices[0].discriminator },
+            effectiveReferenceResolver,
           ),
           elementPath,
         );
@@ -304,169 +402,6 @@ export class SlicingValidator {
   }
 
   /**
-   * Match an element to a slice based on discriminators
-   */
-  private matchElementToSlice(
-    element: any,
-    slices: SliceDefinition[],
-    slicingDef: SlicingDefinition,
-    referenceResolverOverride?: ReferenceResolver | null,
-  ): SliceDefinition | null {
-    // Try to match element against each slice
-    for (const slice of slices) {
-      if (this.elementMatchesSlice(
-        element,
-        slice,
-        slicingDef.discriminator || [],
-        slices,
-        referenceResolverOverride,
-      )) {
-        return slice;
-      }
-    }
-
-    return null;
-  }
-
-  private shouldSuppressUnresolvedBindingOnlyMin(slice: SliceDefinition, elements: any[]): boolean {
-    if (elements.length === 0) return false;
-    if (!this.isUnresolvedBindingOnlySlice(slice)) return false;
-
-    const discriminators = slice.discriminator ?? [];
-    if (discriminators.length === 0) return false;
-
-    return discriminators.every(discriminator =>
-      (discriminator.type === 'pattern' || discriminator.type === 'value') &&
-      (!discriminator.path || discriminator.path === '$this'),
-    );
-  }
-
-  private shouldSuppressUnresolvedBindingClosedUnmatched(
-    slices: SliceDefinition[],
-    slicingDef: SlicingDefinition,
-  ): boolean {
-    const discriminators = slicingDef.discriminator ?? [];
-    if (slices.length === 0) return false;
-    if (discriminators.length === 0) return false;
-    if (!discriminators.every(discriminator =>
-      (discriminator.type === 'pattern' || discriminator.type === 'value') &&
-      (!discriminator.path || discriminator.path === '$this'),
-    )) {
-      return false;
-    }
-
-    return slices.some(slice => this.isUnresolvedBindingOnlySlice(slice));
-  }
-
-  private isUnresolvedBindingOnlySlice(slice: SliceDefinition): boolean {
-    return Boolean(slice.bindingValueSet) &&
-      !slice.bindingCodes?.size &&
-      slice.pattern === undefined &&
-      slice.fixed === undefined &&
-      (slice.childPatterns?.size ?? 0) === 0 &&
-      (slice.childFixed?.size ?? 0) === 0;
-  }
-
-  private isSliceCompatibleWithFhirVersion(slice: SliceDefinition, fhirVersion: FhirVersionFamily): boolean {
-    const urls: string[] = [];
-    for (const typeSpec of slice.type ?? []) {
-      urls.push(...(typeSpec.profile ?? []), ...(typeSpec.targetProfile ?? []));
-    }
-
-    for (const typeSpecs of slice.childTypes?.values() ?? []) {
-      for (const typeSpec of typeSpecs) {
-        urls.push(...(typeSpec.profile ?? []), ...(typeSpec.targetProfile ?? []));
-      }
-    }
-
-    return urls.every(url => urlMatchesRequestedFhirVersion(url, fhirVersion));
-  }
-
-  /**
-   * Check if element matches slice definition
-   */
-  private elementMatchesSlice(
-    element: any,
-    slice: SliceDefinition,
-    discriminators: SlicingDiscriminator[],
-    allSlices?: SliceDefinition[],
-    referenceResolverOverride?: ReferenceResolver | null,
-  ): boolean {
-    // If no discriminators, we can't match
-    if (discriminators.length === 0) {
-      return false;
-    }
-
-    // All discriminators must match
-    for (const discriminator of discriminators) {
-      if (!this.matchDiscriminator(element, slice, discriminator, allSlices, referenceResolverOverride)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  private elementCountsForSliceCardinality(
-    element: any,
-    slice: SliceDefinition,
-    discriminators: SlicingDiscriminator[],
-    allSlices: SliceDefinition[],
-    referenceResolverOverride?: ReferenceResolver | null,
-    slicingRules?: string,
-  ): boolean {
-    if (slicingRules !== 'closed') return true;
-
-    return !this.isRelaxedCodingIdentityMatch(
-      element,
-      slice,
-      discriminators,
-      allSlices,
-      referenceResolverOverride,
-    );
-  }
-
-  private isRelaxedCodingIdentityMatch(
-    element: any,
-    slice: SliceDefinition,
-    discriminators: SlicingDiscriminator[],
-    allSlices: SliceDefinition[],
-    referenceResolverOverride?: ReferenceResolver | null,
-  ): boolean {
-    return isRelaxedCodingIdentityCardinalityMatch(
-      element,
-      slice,
-      discriminators,
-      (candidate, candidateSlice, discriminator) =>
-        this.matchDiscriminator(candidate, candidateSlice, discriminator, allSlices, referenceResolverOverride),
-    );
-  }
-
-  /**
-   * Match a single discriminator.
-   *
-   * When the discriminator path starts with `resolve()`, the element is
-   * treated as a FHIR Reference, the reference is resolved via the
-   * configured `ReferenceResolver`, and the remaining path (after
-   * `resolve()`) is applied to the resolved resource. This closes gap
-   * K-4 from the strategic roadmap.
-   */
-  private matchDiscriminator(
-    element: any,
-    slice: SliceDefinition,
-    discriminator: SlicingDiscriminator,
-    allSlices?: SliceDefinition[],
-    referenceResolverOverride?: ReferenceResolver | null,
-  ): boolean {
-    return externalMatchDiscriminator(
-      element, slice, discriminator,
-      referenceResolverOverride ?? this.referenceResolver ?? null,
-      matchesPattern,
-      codingMatchesBindingCodes,
-      allSlices,
-    );
-  }
-  /**
    * Resolve type profiles on a slice element and merge their pattern/fixed
    * values into the child maps. When a slice's type carries a profile
    * (e.g. ISiKLoincCoding), the distinguishing value lives inside that
@@ -484,6 +419,61 @@ export class SlicingValidator {
       this.getValueSetLoader(),
       slicingElementId,
     );
+  }
+
+  private async validateSliceTypeProfileConstraints(
+    element: any,
+    slice: SliceDefinition,
+    elementPath: string,
+    fhirVersion: FhirVersionFamily,
+  ): Promise<ValidationIssue[]> {
+    if (!this.typeProfileResolver) return [];
+    const issues: ValidationIssue[] = [];
+    const visitedProfiles = new Set<string>();
+
+    for (const typeSpec of slice.type ?? []) {
+      for (const versionedProfileUrl of typeSpec.profile ?? []) {
+        const profileUrl = versionedProfileUrl.split('|')[0];
+        if (visitedProfiles.has(profileUrl)) continue;
+        visitedProfiles.add(profileUrl);
+
+        try {
+          const typeProfile = await this.typeProfileResolver(versionedProfileUrl);
+          const constraintElements = (typeProfile?.snapshot?.element ?? typeProfile?.differential?.element ?? [])
+            .filter(candidate => (candidate.constraint?.length ?? 0) > 0);
+          const typeRoot = typeProfile?.type;
+          if (!typeProfile || !typeRoot || constraintElements.length === 0) continue;
+
+          const syntheticDatatype = { ...element, resourceType: typeRoot };
+          const profileIssues = await this.typeProfileConstraintValidator.validate(
+            syntheticDatatype,
+            constraintElements,
+            typeProfile.url,
+            { fhirVersion },
+          );
+          issues.push(...profileIssues.map(issue => {
+            const sourcePath = issue.path ?? typeRoot;
+            return {
+              ...issue,
+              path: sourcePath === typeRoot
+                ? elementPath
+                : sourcePath.startsWith(`${typeRoot}.`)
+                  ? `${elementPath}${sourcePath.slice(typeRoot.length)}`
+                  : elementPath,
+              resourceType: resourceTypeFromPath(elementPath),
+              profile: typeProfile.url,
+            };
+          }));
+        } catch (error) {
+          logger.debug(
+            `[SlicingValidator] Failed to validate type profile constraints for ${profileUrl}:`,
+            error,
+          );
+        }
+      }
+    }
+
+    return issues;
   }
   /**
    * Open value slicing can otherwise hide an intended slice when the

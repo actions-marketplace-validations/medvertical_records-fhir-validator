@@ -42,6 +42,7 @@ export type ProfileApplicationSource =
   | 'resource-meta'
   | 'explicit-run'
   | 'imposed-policy'
+  | 'code-inferred'
   | 'structuredefinition-imposeProfile'
   | 'base-fallback';
 

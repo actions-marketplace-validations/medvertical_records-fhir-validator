@@ -68,10 +68,20 @@ export const TerminologyCodes = {
         severity: 'warning',
         description: 'CodeSystem concept is inactive',
     },
+    'terminology-code-system-version-mismatch': {
+        aspect: 'terminology',
+        severity: 'error',
+        description: 'Coding.version conflicts with the CodeSystem version constrained by the bound ValueSet',
+    },
     'terminology-coding-system-valueset': {
         aspect: 'terminology',
         severity: 'error',
         description: 'Coding.system references a ValueSet instead of a CodeSystem',
+    },
+    'terminology-code-system-canonical-mismatch': {
+        aspect: 'terminology',
+        severity: 'error',
+        description: 'Coding.system uses a known incorrect canonical URL for a CodeSystem',
     },
     'terminology-codesystem-unresolvable': {
         aspect: 'terminology',

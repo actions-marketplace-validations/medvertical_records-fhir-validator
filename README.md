@@ -47,7 +47,7 @@ jobs:
 For production CI, pin an immutable patch tag:
 
 ```yaml
-- uses: medvertical/records-fhir-validator@v0.4.4
+- uses: medvertical/records-fhir-validator@v0.5.0
   with:
     paths: resources/**/*.json
     profile-url: http://hl7.org/fhir/StructureDefinition/Patient
@@ -60,7 +60,7 @@ Action pinning:
 | Goal | Pin in `uses:` | Notes |
 |---|---|---|
 | Latest stable in current major | `medvertical/records-fhir-validator@v0` | Floating tag, force-moved on stable releases only |
-| Exact released version | `medvertical/records-fhir-validator@v0.4.4` | Immutable consumer tag |
+| Exact released version | `medvertical/records-fhir-validator@v0.5.0` | Immutable consumer tag |
 | Bit-exact reproducibility | `medvertical/records-fhir-validator@<commit-sha>` | Best for audit and forensics |
 
 The `validator-v<semver>` tag is the npm mirror/release-page tag. Use
@@ -69,7 +69,7 @@ The `validator-v<semver>` tag is the npm mirror/release-page tag. Use
 ### npm Package
 
 ```sh
-npm install @records-fhir/validator@0.4.4 @records-fhir/validation-types@0.1.5
+npm install @records-fhir/validator@0.5.0 @records-fhir/validation-types@0.1.6
 ```
 
 Run the CLI against one file or a folder:
@@ -139,8 +139,8 @@ includes `file`, `resourceType`, `profileUrl`, and `issues`. With
 
 ## What Is Included
 
-- `@records-fhir/validator` 0.4.4 - Apache-2.0 validation engine.
-- `@records-fhir/validation-types` 0.1.5 - Apache-2.0 validation-domain types.
+- `@records-fhir/validator` 0.5.0 - Apache-2.0 validation engine.
+- `@records-fhir/validation-types` 0.1.6 - Apache-2.0 validation-domain types.
 - Composite GitHub Action at repository root.
 - Standalone examples under `packages/validator/examples/`.
 - Boundary audit and smoke-test scripts.
@@ -189,7 +189,8 @@ Current HL7 `FHIR/fhir-test-cases` JSON resource validation status:
 - Upstream manifest entries: 969 at pinned commit
   `8923095fc5e3750025f7dd71988c9e89083b1487`.
 - Pre-filtered out before validation: 433, including one entry without a
-  declared `java` baseline: `(default)/zzz`.
+  declared `java` baseline: `(default)/zzz`, an upstream platform-specific
+  teardown workaround rather than a validator comparison case.
 - Candidate JSON comparison set: 536 entries with a declared `java` baseline.
 - Runtime skipped from the headline lane: 0.
 - Executed and compared against Java `OperationOutcome`: 536.
@@ -204,10 +205,10 @@ npm run conformance -- --tx-server none --output-file conformance-results/report
 
 Current and scoped evidence artifacts:
 
-- [`conformance-results/validator-claims-2026-07-21.md`](./conformance-results/validator-claims-2026-07-21.md)
-- [`conformance-results/report-2026-07-21.json`](./conformance-results/report-2026-07-21.json)
-- [`conformance-results/mii-triangulation-2026-07-21.json`](./conformance-results/mii-triangulation-2026-07-21.json)
-- [`conformance-results/fhir-schema-dual-path-all-2026-07-01.json`](./conformance-results/fhir-schema-dual-path-all-2026-07-01.json)
+- [`conformance-results/validator-claims-2026-07-23.md`](./conformance-results/validator-claims-2026-07-23.md)
+- [`conformance-results/report-2026-07-23.json`](./conformance-results/report-2026-07-23.json)
+- [`conformance-results/mii-triangulation-2026-07-23.json`](./conformance-results/mii-triangulation-2026-07-23.json)
+- [`conformance-results/fhir-schema-dual-path-all-2026-07-23.json`](./conformance-results/fhir-schema-dual-path-all-2026-07-23.json)
 - [`conformance-results/fhir-schema-dual-path-actions-2026-07-01.md`](./conformance-results/fhir-schema-dual-path-actions-2026-07-01.md)
 - [`conformance-results/hl7-validator-testkit-2026-05-20.json`](./conformance-results/hl7-validator-testkit-2026-05-20.json)
 - [`conformance-results/baseline-backlog-discovery-2026-05-03.json`](./conformance-results/baseline-backlog-discovery-2026-05-03.json)
@@ -261,14 +262,14 @@ Spec dispatch coverage for the measured R4 base package constraints is 100%.
 
 MII conformance is measured in a separate lane from the HL7
 `FHIR/fhir-test-cases` score. The current scoped MII-2026 reference run was
-generated on 2026-07-21 against the official MII FHIR Validator container
-`mii-fhir-validator:0.0.1-alpha.7` at `http://localhost:8081`. It matches the
+generated on 2026-07-23 against the official MII FHIR Validator container
+`mii-fhir-validator:0.0.1-alpha.7`. It matches the
 reference validator on 231/231 measured resources from the refreshed MII 2026
 corpus under the `mii-2026-reference` profile scope and `mii-local-blaze`
 terminology mode, with 22 classified skips: 12 corpus/profile-drift skips and
 10 reference-terminology-incomplete skips. The run prewarmed 128/128
 reference-scope profiles before executing the cases. The source-repository
-report is `conformance-results/mii-triangulation-2026-07-21.json`.
+report is `conformance-results/mii-triangulation-2026-07-23.json`.
 
 This is a scoped parity claim for the measured package-example corpus. It is
 not an MII certification claim and does not imply full site-level MII
@@ -287,13 +288,17 @@ The current all-scope MII dual-path lane covers 555 real fixtures. Of those, 512
 have Java/reference coverage through the attached Java CLI supplement
 `conformance-results/fhir-schema-reference-cli-supplement-all-2026-07-01.json`.
 The final report is
-`conformance-results/fhir-schema-dual-path-all-2026-07-01.json`.
+`conformance-results/fhir-schema-dual-path-all-2026-07-23.json`.
 
-The lane reports 416 clean cases, 58 exact Graph/Records comparable matches, 26
+The lane reports 418 clean cases, 71 exact Graph/Records comparable matches, 11
 graph-only cases, 0 Records-only cases, 0 divergent cases, 55 missing-profile
-cases, and 0 execution errors. This lane is an implementation-reduction and
-convergence signal; it does not broaden the public headline parity claim beyond
-the explicitly measured FHIR JSON comparison lanes.
+cases, and 0 execution errors. Twelve normalized issue-key gaps across the 11
+graph-only cases are explicitly deferred because their reference-slice
+discriminators require external targets unavailable to the standalone fixture;
+Records reports those slices as unverifiable instead of declaring the resources
+invalid. No other Java-confirmed runtime gap remains. This lane is an
+implementation-reduction and convergence signal; it does not broaden the public
+headline parity claim beyond the explicitly measured FHIR JSON comparison lanes.
 
 ## Examples
 

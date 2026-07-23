@@ -41,7 +41,11 @@ import { shouldValidateBundleEntryResources } from './single-resource-validation
 import { BatchValidationAbortedError } from './batch-validator';
 import { withIssuesSchemaVersion } from './issue-schema-version';
 import { normalizeIssuesByAspect } from './multi-aspect-issue-normalization';
-import { computeValidationIssueId } from '@records-fhir/validation-types';
+import {
+  appendContainedResourceValidationResults,
+  attachAppliedProfile,
+  combineReferenceResolvers,
+} from './multi-aspect-contained-validation';
 
 interface MultiAspectDeps {
   sdLoader: StructureDefinitionLoader;
@@ -62,16 +66,6 @@ interface MultiAspectDeps {
 const BUNDLE_ENTRY_MAX_DEPTH = 3;
 
 const targetProfileConformanceEnumerator = new ReferenceTargetValidator();
-
-function combineReferenceResolvers(
-  primary: ReferenceResolver | null,
-  fallback?: ReferenceResolver,
-): ReferenceResolver | null {
-  if (!primary) return fallback ?? null;
-  if (!fallback) return primary;
-
-  return reference => primary(reference) ?? fallback(reference);
-}
 
 export function buildMultiAspectValidateCallback(
   deps: MultiAspectDeps,
@@ -106,6 +100,7 @@ export function buildMultiAspectValidateCallback(
     recursionDepth: number,
     enclosingBundle?: Record<string, unknown>,
     skipTargetProfileConformance?: boolean,
+    containingResource?: Record<string, unknown>,
   ) => {
     throwIfStopped();
     const res = resource as Record<string, unknown>;
@@ -204,7 +199,7 @@ export function buildMultiAspectValidateCallback(
 
     const bundleReferenceResolver = createBundleReferenceResolver(
       enclosingBundle ?? (resourceType === 'Bundle' ? res : undefined),
-      res,
+      containingResource ?? res,
     );
     const ctx = {
       resource: res,
@@ -317,7 +312,15 @@ export function buildMultiAspectValidateCallback(
           referenceTargetValidator: targetProfileConformanceEnumerator,
           resolveReference: ctx.referenceResolver ?? undefined,
           validateProfile: async (target, profile) => {
-            const result = await validateOne(target, profile, ctx.fhirVersion, recursionDepth + 1, enclosingBundle, true);
+            const result = await validateOne(
+              target,
+              profile,
+              ctx.fhirVersion,
+              recursionDepth + 1,
+              enclosingBundle,
+              true,
+              containingResource ?? res,
+            );
             return result.aspects.flatMap(aspect => aspect.issues);
           },
         });
@@ -337,7 +340,7 @@ export function buildMultiAspectValidateCallback(
           ...invariantIssues,
           ...containedResourceValidator.validate(ctx.resource),
           ...universalConstraintsValidator.validate(ctx.resource),
-          ...terminologyResourceValidator.validate(ctx.resource)
+          ...terminologyResourceValidator.validate(ctx.resource, ctx.fhirVersion)
         ];
       }));
     }
@@ -361,6 +364,19 @@ export function buildMultiAspectValidateCallback(
 
     if (parallelAspects.length > 0) {
       await Promise.all(parallelAspects);
+      throwIfStopped();
+    }
+
+    if (Array.isArray(res.contained) && recursionDepth < BUNDLE_ENTRY_MAX_DEPTH) {
+      await appendContainedResourceValidationResults(
+        res,
+        fhirVersion,
+        recursionDepth,
+        validateOne,
+        collectedAspects,
+        enclosingBundle,
+        shouldStop,
+      );
       throwIfStopped();
     }
 
@@ -399,23 +415,4 @@ export function buildMultiAspectValidateCallback(
   };
 
   return (resource, profileUrl, fhirVersion) => validateOne(resource, profileUrl, fhirVersion, 0);
-}
-
-function attachAppliedProfile(issue: ValidationIssue, appliedProfile: string): ValidationIssue {
-  if (issue.profile || !appliedProfile) return issue;
-  return {
-    ...issue,
-    profile: appliedProfile,
-    id: computeValidationIssueId({
-      aspect: issue.aspect,
-      severity: issue.severity,
-      code: issue.code,
-      path: issue.path,
-      resourceType: issue.resourceType,
-      message: issue.message,
-      profile: appliedProfile,
-      ruleId: issue.ruleId,
-      details: issue.details,
-    }),
-  };
 }

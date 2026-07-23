@@ -1,5 +1,4 @@
 import type { ValidationIssue } from '../types';
-import { getEffectiveIssueRuleId, getSpecificIssueRuleId } from '@records-fhir/validation-types';
 import {
   getConstraintDedupeKeys,
   isBundleDuplicateFullUrlIssue,
@@ -29,6 +28,23 @@ import {
   normalizeQuestionnairePathWithIndices,
   normalizeRequiredElementPath,
 } from './validation-issue-dedupe-utils';
+import {
+  getEffectiveRuleId,
+  getSpecificConstraintKey,
+  isGermanGenderExtensionMissingIssue,
+  isInvariantSpecificConstraintIssue,
+  isMiiGenderConstraintIssue,
+  isRedundantBundleInvariantIssue,
+  isRedundantBundleInvariantPresenceIssue,
+  isRedundantGenericConstraintIssue,
+  isRedundantMetadataMissingTimezoneIssue,
+  isRedundantNameInvariantIssue,
+  isRedundantProfileSpecificConstraintIssue,
+  isRedundantQuestionnaireQue1bIssue,
+  isRedundantRequiredElementIssue,
+  isSpecificNameInvariantIssue,
+  isStructuralDateTimeMissingTimezoneIssue,
+} from './validation-issue-dedupe-profile-suppressions';
 
 /**
  * Dedupe issues by (code, path, severity, rule). Prevents reporting the same
@@ -38,6 +54,82 @@ import {
  */
 export function dedupeIssues(issues: ValidationIssue[]): ValidationIssue[] {
   return dedupeIssuesWithTrace(issues).issues;
+}
+
+/**
+ * Remove only logically identical diagnostics without applying cross-code
+ * suppression. This is used when independently validated child resources are
+ * appended after the parent's semantic suppression pass: re-running semantic
+ * suppression over the combined list can create cycles where two legitimate
+ * representations suppress each other.
+ */
+export function dedupeExactIssues(issues: ValidationIssue[]): ValidationIssue[] {
+  const seen = new Set<string>();
+  const out: ValidationIssue[] = [];
+  for (const issue of issues) {
+    const details = issue.details;
+    const detailRuleKey = details && typeof details === 'object' && !Array.isArray(details)
+      ? [
+        (details as Record<string, unknown>).constraintKey ?? (details as Record<string, unknown>).sliceName,
+        (details as Record<string, unknown>).sourceProfile,
+      ].filter(value => typeof value === 'string' && value.length > 0).join(':')
+      : undefined;
+    const ruleKey = [getEffectiveRuleId(issue), detailRuleKey]
+      .filter(value => typeof value === 'string' && value.length > 0)
+      .join(':');
+    const key = getSemanticDedupeKey(issue, ruleKey);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(issue);
+  }
+  return out;
+}
+
+/**
+ * Final resource-tree cleanup after recursively validated contained resources
+ * have been appended. Keep this deliberately narrower than the normal
+ * semantic suppression pass: only exact copies and the known parent/child
+ * canonical-URI duplicate are removed.
+ */
+export function dedupeResourceTreeIssues(issues: ValidationIssue[]): ValidationIssue[] {
+  const seen = new Set<string>();
+  const exact = issues.filter(issue => {
+    const details = issue.details;
+    const detailRuleKey = details && typeof details === 'object' && !Array.isArray(details)
+      ? (details as Record<string, unknown>).constraintKey ?? (details as Record<string, unknown>).sliceName
+      : undefined;
+    const ruleKey = [getEffectiveRuleId(issue), detailRuleKey]
+      .filter(value => typeof value === 'string' && value.length > 0)
+      .join(':');
+    const key = [
+      issue.code,
+      normalizeResourceTreePath(issue),
+      issue.severity,
+      ruleKey,
+      issue.message,
+    ].join(':');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const specificCanonicalPaths = new Set(
+    exact
+      .filter(issue => issue.code === 'tx-codesystem-url-not-absolute')
+      .map(normalizeResourceTreePath),
+  );
+  return exact.filter(issue =>
+    issue.code !== 'structural-invalid-uri' ||
+    !specificCanonicalPaths.has(normalizeResourceTreePath(issue))
+  );
+}
+
+function normalizeResourceTreePath(issue: ValidationIssue): string {
+  return (issue.path || getIssuePath(issue))
+    .trim()
+    .replace(/\/\*[^*]*\*\//g, '')
+    .replace(/\.+/g, '.')
+    .replace(/\.$/, '')
+    .toLowerCase();
 }
 
 export interface DedupeSuppressionTrace {
@@ -70,6 +162,8 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
   const cardinalityMinPaths = new Set<string>();
   const profileExtensionMinPaths = new Set<string>();
   const profileSliceMinPaths = new Set<string>();
+  const profileExtensionMaxKeys = new Set<string>();
+  const mustSupportPaths = new Set<string>();
   const ref1InvariantPaths = new Set<string>();
   const invalidUriPaths = new Set<string>();
   const invalidTerminologySystemPaths = new Set<string>();
@@ -80,7 +174,7 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
   const extensionNoValuePaths = new Set<string>();
   const narrativeMissingDivPaths = new Set<string>();
   const narrativeMissingDivTextPaths = new Set<string>();
-  const profileDom3ContainedKeys = new Set<string>();
+  const structuralDom3ContainedKeys = new Set<string>();
   const structuralInvalidReferenceValues = new Set<string>();
   const structuralReferenceTargetValues = new Set<string>();
   const bundleRequestMissingUrlPaths = new Set<string>();
@@ -88,6 +182,7 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
   const terminologyMissingSystemPaths = new Set<string>();
   const specificRequiredElementPaths = new Set<string>();
   const structuralDateTimeMissingTimezonePaths = new Set<string>();
+  const specificCanonicalInvalidPaths = new Set<string>();
   const specificNameInvariantPaths = new Set<string>();
   const questionnaireQue1Paths = new Set<string>();
   const questionnaireAnswerOptionDisallowedPaths = new Set<string>();
@@ -147,6 +242,13 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
     if (issue.code === 'profile-slice-min-cardinality') {
       profileSliceMinPaths.add(normalizeRequiredElementPath(issue));
     }
+    const extensionMaxKey = getExtensionMaxCardinalityKey(issue);
+    if (issue.code === 'profile-extension-max-cardinality' && extensionMaxKey) {
+      profileExtensionMaxKeys.add(extensionMaxKey);
+    }
+    if (issue.code === 'profile-mustsupport-missing') {
+      mustSupportPaths.add(normalizeRequiredElementPath(issue));
+    }
     if (issue.code === 'ref-1-violation') {
       ref1InvariantPaths.add(normalizeRequiredElementPath(issue));
     }
@@ -156,6 +258,9 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
       if (profileCanonical) invalidProfileCanonicalValues.add(profileCanonical);
       const key = getInvalidQuestionnaireCanonicalReferenceKey(issue);
       if (key) invalidQuestionnaireCanonicalReferences.add(key);
+    }
+    if (issue.code === 'tx-codesystem-url-not-absolute') {
+      specificCanonicalInvalidPaths.add(normalizeRequiredElementPath(issue));
     }
     if (isTerminologySystemInvalidIssue(issue)) {
       invalidTerminologySystemPaths.add(normalizeRequiredElementPath(issue));
@@ -173,9 +278,9 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
       narrativeMissingDivPaths.add(normalizeNarrativeMissingDivPath(issue));
       narrativeMissingDivTextPaths.add(normalizeNarrativeTextPath(issue));
     }
-    const profileDom3ContainedKey = getProfileDom3ContainedIssueKey(issue);
-    if (profileDom3ContainedKey) {
-      profileDom3ContainedKeys.add(profileDom3ContainedKey);
+    const structuralDom3ContainedKey = getStructuralDom3ContainedIssueKey(issue);
+    if (structuralDom3ContainedKey) {
+      structuralDom3ContainedKeys.add(structuralDom3ContainedKey);
     }
     if (issue.code === 'reference-invalid-format') {
       const reference = getIssueReferenceValue(issue);
@@ -232,8 +337,12 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
     { id: 'cardinality-min-over-required-binding', suppress: issue => isRedundantRequiredBindingIssue(issue, cardinalityMinPaths) },
     { id: 'profile-extension-min-over-structural-cardinality', suppress: issue => isRedundantProfileExtensionCardinalityIssue(issue, profileExtensionMinPaths) },
     { id: 'profile-slice-min-over-structural-cardinality', suppress: issue => isRedundantProfileSliceCardinalityIssue(issue, profileSliceMinPaths) },
+    { id: 'extension-max-over-slice-max', suppress: issue => isRedundantExtensionSliceMaxIssue(issue, profileExtensionMaxKeys) },
+    { id: 'mustsupport-over-best-practice-presence', suppress: issue => isRedundantMustSupportBestPracticeIssue(issue, mustSupportPaths) },
     { id: 'ref1-over-reference-format', suppress: issue => isRedundantReferenceFormatIssue(issue, ref1InvariantPaths) },
     { id: 'invalid-system-over-terminology-not-found', suppress: issue => isRedundantTerminologyNotFoundIssue(issue, invalidUriPaths, invalidTerminologySystemPaths) },
+    { id: 'specific-canonical-over-structural-uri', suppress: issue =>
+      issue.code === 'structural-invalid-uri' && specificCanonicalInvalidPaths.has(normalizeRequiredElementPath(issue)) },
     { id: 'invalid-questionnaire-canonical-over-reference-warning', suppress: issue => isRedundantQuestionnaireReferenceWarning(issue, invalidQuestionnaireCanonicalReferences) },
     { id: 'invalid-profile-canonical-over-profile-unresolved', suppress: issue => isRedundantProfileNotResolvedWarning(issue, invalidProfileCanonicalValues) },
     { id: 'invalid-profile-canonical-over-metadata-profile-url', suppress: issue => isRedundantMetadataProfileInvalidUrlIssue(issue, invalidProfileCanonicalValues) },
@@ -242,7 +351,7 @@ function processIssues(issues: ValidationIssue[], dedupeExactIssues: boolean): D
     { id: 'extension-no-value-over-ext1', suppress: issue => isRedundantExtensionConstraintIssue(issue, extensionNoValuePaths) },
     { id: 'narrative-div-over-required', suppress: issue => isRedundantNarrativeRequiredElementIssue(issue, narrativeMissingDivPaths) },
     { id: 'narrative-text-over-dom6', suppress: issue => isRedundantDom6Issue(issue, narrativeMissingDivTextPaths) },
-    { id: 'profile-dom3-over-contained-invalid', suppress: issue => isRedundantContainedDom3InvalidIssue(issue, profileDom3ContainedKeys) },
+    { id: 'contained-invalid-over-profile-dom3', suppress: issue => isRedundantProfileDom3Issue(issue, structuralDom3ContainedKeys) },
     { id: 'structural-invalid-reference-over-generic', suppress: issue => isRedundantGenericInvalidReferenceIssue(issue, structuralInvalidReferenceValues) },
     { id: 'structural-invalid-reference-over-unresolved', suppress: issue => isRedundantUnresolvedInvalidReferenceIssue(issue, structuralInvalidReferenceValues) },
     { id: 'structural-reference-target-over-type-mismatch', suppress: issue => isRedundantReferenceTypeMismatchIssue(issue, structuralReferenceTargetValues) },
@@ -308,7 +417,21 @@ function getSemanticDedupeKey(issue: ValidationIssue, ruleKey: string): string {
   if (issue.code === 'dom-6') {
     return `${issue.code}:${pathKey}:${issue.severity}`;
   }
-  return `${issue.code}:${pathKey}:${issue.severity}:${ruleKey}`;
+  // A required child can be discovered both by the structural snapshot walk
+  // and by the matched-slice content walk. The latter adds `sliceName` to the
+  // rule key, but both diagnostics still describe the same missing value at
+  // the same concrete instance path. Keep one row while preserving distinct
+  // cardinalities/messages at that path.
+  if (issue.code === 'structural-cardinality-min') {
+    return `${issue.code}:${pathKey}:${issue.severity}:${issue.message}`;
+  }
+  // Generic HL7 issue codes (and other diagnostics without an explicit rule)
+  // can legitimately describe multiple failures at the same element. The
+  // message is their only rule identity; omitting it collapsed, for example,
+  // a missing contained-resource id and an unreferenced-contained dom-3 error
+  // into one `invalid` issue at the same normalized path.
+  const effectiveRuleKey = ruleKey || issue.message;
+  return `${issue.code}:${pathKey}:${issue.severity}:${effectiveRuleKey}`;
 }
 
 function isRedundantInvalidUriIssue(issue: ValidationIssue, preferredIssues: Map<string, ValidationIssue>): boolean {
@@ -452,6 +575,49 @@ function isRedundantProfileSliceCardinalityIssue(issue: ValidationIssue, profile
   return profileSliceMinPaths.has(normalizeRequiredElementPath(issue));
 }
 
+function isRedundantExtensionSliceMaxIssue(
+  issue: ValidationIssue,
+  extensionMaxKeys: Set<string>,
+): boolean {
+  if (issue.code !== 'profile-slice-max-cardinality') return false;
+  const key = getExtensionMaxCardinalityKey(issue);
+  return Boolean(key && extensionMaxKeys.has(key));
+}
+
+function getExtensionMaxCardinalityKey(issue: ValidationIssue): string | null {
+  if (
+    issue.code !== 'profile-extension-max-cardinality' &&
+    issue.code !== 'profile-slice-max-cardinality'
+  ) return null;
+
+  const details = issue.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const record = details as Record<string, unknown>;
+  const rawName = issue.code === 'profile-extension-max-cardinality'
+    ? record.url
+    : record.sliceName ?? record.slice;
+  if (typeof rawName !== 'string' || rawName.trim().length === 0) return null;
+  const normalizedName = rawName.split('/').filter(Boolean).pop()?.toLowerCase();
+  if (!normalizedName) return null;
+
+  const max = record.max;
+  const found = record.found ?? record.actual;
+  return [
+    normalizeRequiredElementPath(issue),
+    normalizedName,
+    String(max ?? ''),
+    String(found ?? ''),
+  ].join('|');
+}
+
+function isRedundantMustSupportBestPracticeIssue(
+  issue: ValidationIssue,
+  mustSupportPaths: Set<string>,
+): boolean {
+  if (!issue.code?.startsWith('best-practice-')) return false;
+  return mustSupportPaths.has(normalizeRequiredElementPath(issue));
+}
+
 function isRedundantReferenceFormatIssue(issue: ValidationIssue, ref1InvariantPaths: Set<string>): boolean {
   if (ref1InvariantPaths.size === 0) return false;
   if (issue.code !== 'reference-invalid-format') return false;
@@ -515,11 +681,15 @@ function isContainedUnreferencedInvalidIssue(issue: ValidationIssue): boolean {
   return normalizeRequiredElementPath(issue).includes('contained');
 }
 
-function isRedundantContainedDom3InvalidIssue(issue: ValidationIssue, profileDom3ContainedKeys: Set<string>): boolean {
-  if (profileDom3ContainedKeys.size === 0) return false;
-  if (!isContainedUnreferencedInvalidIssue(issue)) return false;
-  const key = getContainedUnreferencedIssueKey(issue);
-  return Boolean(key && profileDom3ContainedKeys.has(key));
+function isRedundantProfileDom3Issue(issue: ValidationIssue, structuralDom3ContainedKeys: Set<string>): boolean {
+  if (structuralDom3ContainedKeys.size === 0) return false;
+  const key = getProfileDom3ContainedIssueKey(issue);
+  return Boolean(key && structuralDom3ContainedKeys.has(key));
+}
+
+function getStructuralDom3ContainedIssueKey(issue: ValidationIssue): string | null {
+  if (!isContainedUnreferencedInvalidIssue(issue)) return null;
+  return getContainedUnreferencedIssueKey(issue);
 }
 
 function getProfileDom3ContainedIssueKey(issue: ValidationIssue): string | null {
@@ -576,171 +746,4 @@ function normalizeContainedParentPath(issue: ValidationIssue): string {
     .replace(/\.contained(?:\[\d+\])?(?:\..*)?$/i, '')
     .replace(/\.$/, '')
     .toLowerCase();
-}
-
-function isStructuralDateTimeMissingTimezoneIssue(issue: ValidationIssue): boolean {
-  if (issue.code !== 'invalid' || issue.aspect !== 'structural') return false;
-  const details = issue.details;
-  const expectedType = details && typeof details === 'object' && !Array.isArray(details)
-    ? (details as Record<string, unknown>).expectedType
-    : undefined;
-  if (expectedType !== 'dateTime' && expectedType !== 'instant') return false;
-  const message = issue.message?.toLowerCase() ?? '';
-  return message.includes('date has a time') && message.includes('timezone');
-}
-
-function isSpecificNameInvariantIssue(issue: ValidationIssue): boolean {
-  if (
-    !issue.code?.startsWith('constraint-violation-') &&
-    issue.code !== 'profile-constraint-warning' &&
-    issue.code !== 'profile-constraint-violation'
-  ) {
-    return false;
-  }
-  const message = issue.message?.toLowerCase() ?? '';
-  return message.includes('name should be usable as an identifier');
-}
-
-function isRedundantNameInvariantIssue(
-  issue: ValidationIssue,
-  specificNameInvariantPaths: Set<string>,
-): boolean {
-  if (specificNameInvariantPaths.size === 0) return false;
-  if (!isGenericNameInvariantIssue(issue)) return false;
-  return specificNameInvariantPaths.has(normalizeRequiredElementPath(issue));
-}
-
-function isGenericNameInvariantIssue(issue: ValidationIssue): boolean {
-  const code = issue.code?.trim().toLowerCase();
-  if (code === 'questionnaire-invariant-que-0') return true;
-  if (!code?.startsWith('canonical-resource-invariant-')) return false;
-  const message = issue.message?.toLowerCase() ?? '';
-  return message.includes('name should be usable as an identifier');
-}
-
-function isRedundantQuestionnaireQue1bIssue(
-  issue: ValidationIssue,
-  questionnaireQue1Paths: Set<string>,
-): boolean {
-  if (questionnaireQue1Paths.size === 0) return false;
-  if (issue.code !== 'constraint-violation-que-1b') return false;
-  return questionnaireQue1Paths.has(normalizeRequiredElementPath(issue));
-}
-
-function isRedundantMetadataMissingTimezoneIssue(
-  issue: ValidationIssue,
-  structuralDateTimeMissingTimezonePaths: Set<string>,
-): boolean {
-  if (structuralDateTimeMissingTimezonePaths.size === 0) return false;
-  if (issue.code !== 'metadata-last-updated-missing-timezone') return false;
-  const path = normalizeIssuePathForDedupe(issue);
-  const lowerPath = path.toLowerCase();
-  if (lowerPath !== 'meta.lastupdated' && !lowerPath.endsWith('.meta.lastupdated')) return false;
-  return structuralDateTimeMissingTimezonePaths.has(path);
-}
-
-function isRedundantRequiredElementIssue(issue: ValidationIssue, cardinalityMinPaths: Set<string>): boolean {
-  if (cardinalityMinPaths.size === 0) return false;
-  if (
-    issue.code !== 'structural-required-element-missing' &&
-    issue.code !== 'required-element-missing' &&
-    issue.code !== 'profile-mustsupport-missing'
-  ) {
-    return false;
-  }
-  return cardinalityMinPaths.has(normalizeRequiredElementPath(issue));
-}
-
-function isRedundantBundleInvariantPresenceIssue(issue: ValidationIssue, bundleInvariantPresencePaths: Set<string>): boolean {
-  if (bundleInvariantPresencePaths.size === 0) return false;
-  if (
-    issue.code !== 'structural-cardinality-min' &&
-    issue.code !== 'structural-required-element-missing' &&
-    issue.code !== 'required-element-missing' &&
-    issue.code !== 'profile-mustsupport-missing'
-  ) {
-    return false;
-  }
-  return bundleInvariantPresencePaths.has(normalizeRequiredElementPath(issue));
-}
-
-function isGermanGenderExtensionMissingIssue(issue: ValidationIssue): boolean {
-  if (issue.code !== 'profile-extension-missing') return false;
-  const details = issue.details;
-  if (!details || typeof details !== 'object' || Array.isArray(details)) return false;
-  return (details as Record<string, unknown>).expectedExtension === 'http://fhir.de/StructureDefinition/gender-amtlich-de';
-}
-
-function isMiiGenderConstraintIssue(issue: ValidationIssue): boolean {
-  if (issue.code === 'constraint-violation-mii-pat-1') return true;
-  if (issue.code !== 'profile-constraint-violation') return false;
-  const details = issue.details;
-  if (!details || typeof details !== 'object' || Array.isArray(details)) return false;
-  return (details as Record<string, unknown>).constraintKey === 'mii-pat-1';
-}
-
-function getSpecificConstraintKey(issue: ValidationIssue): string | null {
-  return getSpecificIssueRuleId(issue);
-}
-
-function getEffectiveRuleId(issue: ValidationIssue): string | null {
-  return getEffectiveIssueRuleId(issue);
-}
-
-function isRedundantGenericConstraintIssue(issue: ValidationIssue, specificKeys: Set<string>): boolean {
-  if (
-    issue.code !== 'profile-constraint-violation' &&
-    issue.code !== 'profile-constraint-warning'
-  ) return false;
-  if (specificKeys.size === 0) return false;
-
-  const details = issue.details;
-  const constraintKey = details && typeof details === 'object' && !Array.isArray(details)
-    ? (details as Record<string, unknown>).constraintKey
-    : undefined;
-  if (typeof constraintKey !== 'string' || constraintKey.length === 0) return false;
-
-  return getConstraintDedupeKeys(issue, constraintKey).some(key => specificKeys.has(key));
-}
-
-function isRedundantProfileSpecificConstraintIssue(
-  issue: ValidationIssue,
-  invariantSpecificKeys: Set<string>,
-): boolean {
-  if (invariantSpecificKeys.size === 0) return false;
-  if (!issue.code?.startsWith('constraint-violation-')) return false;
-  const constraintKey = getSpecificConstraintKey(issue);
-  if (!constraintKey) return false;
-  return getConstraintDedupeKeys(issue, constraintKey).some(key => invariantSpecificKeys.has(key));
-}
-
-function isInvariantSpecificConstraintIssue(issue: ValidationIssue): boolean {
-  const code = issue.code?.trim().toLowerCase();
-  return Boolean(code?.match(/^(?:[a-z][a-z0-9]*-)+invariant-(.+)$/));
-}
-
-function isRedundantBundleInvariantIssue(issue: ValidationIssue, specificKeys: Set<string>): boolean {
-  if (
-    issue.code !== 'profile-constraint-violation' &&
-    issue.code !== 'profile-constraint-warning'
-  ) return false;
-  if (specificKeys.size === 0) return false;
-
-  const details = issue.details;
-  const detailConstraint = details && typeof details === 'object' && !Array.isArray(details)
-    ? (details as Record<string, unknown>).constraintKey
-    : undefined;
-  const message = issue.message ?? '';
-
-  const constraintKey = typeof detailConstraint === 'string'
-    ? detailConstraint
-    : message.includes("Constraint 'bdl-7'")
-      ? 'bdl-7'
-      : message.includes("Constraint 'bdl-9'")
-      ? 'bdl-9'
-      : message.includes("Constraint 'bdl-10'")
-        ? 'bdl-10'
-        : undefined;
-
-  return Boolean(constraintKey && specificKeys.has(constraintKey));
 }

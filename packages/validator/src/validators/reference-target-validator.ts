@@ -332,16 +332,27 @@ export class ReferenceTargetValidator {
       const next: Frame[] = [];
       for (const frame of frames) {
         if (frame.obj === null || frame.obj === undefined) continue;
-        const v = frame.obj[seg];
-        if (v === undefined || v === null) continue;
-        if (Array.isArray(v)) {
-          for (let i = 0; i < v.length; i++) {
-            if (v[i] !== undefined && v[i] !== null) {
-              next.push({ obj: v[i], path: `${frame.path}.${seg}[${i}]` });
+        const concreteSegments = seg.endsWith('[x]') && typeof frame.obj === 'object'
+          ? Object.keys(frame.obj).filter(key => {
+            const base = seg.slice(0, -3);
+            return key.startsWith(base) &&
+              key.length > base.length &&
+              key[base.length] === key[base.length].toUpperCase();
+          })
+          : [seg];
+
+        for (const concreteSegment of concreteSegments) {
+          const v = frame.obj[concreteSegment];
+          if (v === undefined || v === null) continue;
+          if (Array.isArray(v)) {
+            for (let i = 0; i < v.length; i++) {
+              if (v[i] !== undefined && v[i] !== null) {
+                next.push({ obj: v[i], path: `${frame.path}.${concreteSegment}[${i}]` });
+              }
             }
+          } else {
+            next.push({ obj: v, path: `${frame.path}.${concreteSegment}` });
           }
-        } else {
-          next.push({ obj: v, path: `${frame.path}.${seg}` });
         }
       }
       frames = next;

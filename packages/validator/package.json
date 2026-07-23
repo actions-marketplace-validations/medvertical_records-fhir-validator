@@ -1,6 +1,6 @@
 {
   "name": "@records-fhir/validator",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "description": "Pure-TypeScript FHIR R4/R4B/R5/R6 validation engine. Validates resources against StructureDefinitions, terminology, references, and custom rules with no database required.",
   "type": "module",
   "license": "Apache-2.0",
@@ -121,6 +121,10 @@
       "types": "./dist/validators/invariant-registry.d.ts",
       "import": "./dist/validators/invariant-registry.js"
     },
+    "./validators/fhirpath-sandbox": {
+      "types": "./dist/validators/fhirpath-sandbox.d.ts",
+      "import": "./dist/validators/fhirpath-sandbox.js"
+    },
     "./validators/valueset-cache": {
       "types": "./dist/validators/valueset-cache.d.ts",
       "import": "./dist/validators/valueset-cache.js"
@@ -134,7 +138,7 @@
   },
   "dependencies": {
     "@lhncbc/ucum-lhc": "^5.0.0",
-    "@records-fhir/validation-types": "^0.1.5",
+    "@records-fhir/validation-types": "^0.1.6",
     "axios": "^1.16.1",
     "date-fns": "^4.4.0",
     "fhirpath": "^4.11.0",

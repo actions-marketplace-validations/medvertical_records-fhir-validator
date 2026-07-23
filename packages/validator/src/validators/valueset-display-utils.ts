@@ -5,6 +5,7 @@ export type BindingStrength = 'required' | 'extensible' | 'preferred' | 'example
 export interface CodeInfo {
   code: string;
   system?: string;
+  version?: string;
   display?: string;
   codingIndex?: number;
 }
@@ -45,10 +46,6 @@ export function displaysEquivalentForCodeInfo(
     return stripIdentifierNumberSuffix(normalizeDisplay(expected)) === normalizeDisplay(actual);
   }
 
-  if (codeInfo.system?.startsWith('http://terminology.hl7.org/CodeSystem/v2-')) {
-    return stripHl7V2CommentSuffix(normalizeDisplay(expected)) === normalizeDisplay(actual);
-  }
-
   if (codeInfo.system === 'http://loinc.org') {
     return loincDisplaysCompatible(expected, actual);
   }
@@ -76,10 +73,6 @@ function stripTrailingSemanticTag(display: string): string {
 
 function stripIdentifierNumberSuffix(display: string): string {
   return display.replace(/\s+number$/i, '');
-}
-
-function stripHl7V2CommentSuffix(display: string): string {
-  return display.replace(/\s+(?:default if not valued|if not valued|default)$/i, '').trim();
 }
 
 const LOINC_STOPWORDS = new Set([

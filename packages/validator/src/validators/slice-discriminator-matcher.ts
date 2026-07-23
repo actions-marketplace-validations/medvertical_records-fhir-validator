@@ -25,8 +25,57 @@ import {
   toProfileArray,
   type ReferenceResolverFn,
 } from './slice-profile-discriminator-matcher';
+import {
+  canPatternCoreIdentifyCodingSlice,
+  matchExistsDiscriminator,
+  matchWholeElementChildConstraints,
+  resolvedResourceMatchesSliceTargetProfile,
+  resolveDiscriminatorPath,
+} from './slice-discriminator-complex-matchers';
 
 export type { ReferenceResolverFn } from './slice-profile-discriminator-matcher';
+
+/**
+ * Whether a slice carries enough resolved metadata to evaluate a
+ * discriminator. Differential-only snapshots can retain the slicing header
+ * while losing the inherited fixed/pattern/type constraints from their base
+ * profile. Treating such a slice as a match (or a mismatch) creates resource
+ * errors from a profile-resolution gap.
+ */
+export function sliceHasDiscriminatorEvidence(
+  slice: SliceDefinition,
+  discriminator: SlicingDiscriminator,
+): boolean {
+  const path = normalizeDiscriminatorPath(discriminator.path);
+  const childPath = normalizeChildConstraintPath(path);
+
+  // Some generated snapshots retain a max=0 placeholder slice with an empty
+  // pattern at `$this`. Java renders its discriminator as `$this.empty()`:
+  // it is deterministically incapable of matching an actual array item. Do
+  // not treat the empty object as a wildcard pattern, and do not classify it
+  // as missing inherited metadata either.
+  if (isProhibitedEmptyWholeElementSlice(slice, discriminator.type, path)) {
+    return true;
+  }
+
+  if (discriminator.type === 'type') {
+    return getTypeSpecsForDiscriminator(slice, path).length > 0;
+  }
+  if (discriminator.type === 'profile') {
+    return getTypeSpecsForDiscriminator(slice, path).some(spec =>
+      (spec.profile?.length ?? 0) > 0 || (spec.targetProfile?.length ?? 0) > 0
+    );
+  }
+  if (discriminator.type === 'exists') {
+    return candidateChildConstraintPaths(childPath).some(candidatePath =>
+      slice.childMin?.has(candidatePath) ||
+      slice.childFixed?.has(candidatePath) ||
+      slice.childPatterns?.has(candidatePath)
+    );
+  }
+  if (path === 'url' && getExtensionProfileUrls(slice).length > 0) return true;
+  return hasDirectDiscriminatorEvidence(slice, path);
+}
 
 export function matchDiscriminator(
   element: any,
@@ -92,6 +141,7 @@ function matchValueDiscriminator(
   matchesPatternFn: (value: any, pattern: any) => boolean,
   codingMatchesBindingCodesFn: (value: any, codes: Set<string>) => boolean,
 ): boolean {
+  if (isProhibitedEmptyWholeElementSlice(slice, 'value', path)) return false;
   const elementValue = getValueAtPath(element, path);
   const childPath = normalizeChildConstraintPath(path);
 
@@ -104,11 +154,11 @@ function matchValueDiscriminator(
 
   if (path && path !== '$this') {
     if (slice.childFixed) {
-      const childFixed = slice.childFixed.get(childPath);
+      const childFixed = getChildConstraint(slice.childFixed, childPath);
       if (childFixed !== undefined) return valuesMatch(elementValue, childFixed);
     }
     if (slice.childPatterns) {
-      const childPattern = slice.childPatterns.get(childPath);
+      const childPattern = getChildConstraint(slice.childPatterns, childPath);
       if (childPattern !== undefined) return matchesPatternFn(elementValue, childPattern);
     }
     const childBindingMatch = matchChildBindingDiscriminator(
@@ -164,6 +214,7 @@ function matchPatternDiscriminator(
   codingMatchesBindingCodesFn: (value: any, codes: Set<string>) => boolean,
   allSlices?: SliceDefinition[],
 ): boolean {
+  if (isProhibitedEmptyWholeElementSlice(slice, 'pattern', path)) return false;
   const elementValue = getValueAtPath(element, path);
   const childPath = normalizeChildConstraintPath(path);
 
@@ -174,11 +225,11 @@ function matchPatternDiscriminator(
 
   if (path && path !== '$this') {
     if (slice.childPatterns) {
-      const childPattern = slice.childPatterns.get(childPath);
+      const childPattern = getChildConstraint(slice.childPatterns, childPath);
       if (childPattern !== undefined) return matchesPatternFn(elementValue, childPattern);
     }
     if (slice.childFixed) {
-      const childFixed = slice.childFixed.get(childPath);
+      const childFixed = getChildConstraint(slice.childFixed, childPath);
       if (childFixed !== undefined) return matchesPatternFn(elementValue, childFixed);
     }
     const childBindingMatch = matchChildBindingDiscriminator(
@@ -239,8 +290,8 @@ function candidateChildConstraintPaths(childPath: string): string[] {
 function hasDirectDiscriminatorEvidence(slice: SliceDefinition, path: string): boolean {
   const childPath = normalizeChildConstraintPath(path);
   for (const candidatePath of candidateChildConstraintPaths(childPath)) {
-    if (slice.childFixed?.has(candidatePath)) return true;
-    if (slice.childPatterns?.has(candidatePath)) return true;
+    if (slice.childFixed && getChildConstraint(slice.childFixed, candidatePath) !== undefined) return true;
+    if (slice.childPatterns && getChildConstraint(slice.childPatterns, candidatePath) !== undefined) return true;
     if (slice.childBindingCodes?.has(candidatePath)) return true;
     if (slice.childBindingValueSets?.has(candidatePath)) return true;
   }
@@ -251,98 +302,56 @@ function hasDirectDiscriminatorEvidence(slice: SliceDefinition, path: string): b
   return Boolean(slice.bindingValueSet);
 }
 
-function resolvedResourceMatchesSliceTargetProfile(
-  resolvedElement: any,
+function isProhibitedEmptyWholeElementSlice(
   slice: SliceDefinition,
+  discriminatorType: string,
+  path: string,
 ): boolean {
-  if (!resolvedElement || typeof resolvedElement !== 'object') return false;
+  if (slice.max !== '0') return false;
+  if (discriminatorType !== 'pattern' && discriminatorType !== 'value') return false;
+  if (path && path !== '$this') return false;
 
-  const targetProfiles = getTypeSpecsForDiscriminator(slice, '$this')
-    .flatMap(spec => spec.targetProfile ?? []);
-  if (targetProfiles.length === 0) return false;
-
-  const profiles = toProfileArray(resolvedElement.meta?.profile);
-  return profiles.some(profile => profileListContains(targetProfiles, profile));
+  return !hasMeaningfulConstraintValue(slice.pattern) &&
+    !hasMeaningfulConstraintValue(slice.fixed) &&
+    (slice.childPatterns?.size ?? 0) === 0 &&
+    (slice.childFixed?.size ?? 0) === 0 &&
+    (slice.bindingCodes?.size ?? 0) === 0 &&
+    !slice.bindingValueSet;
 }
 
-function canPatternCoreIdentifyCodingSlice(
-  elementValue: any,
-  slice: SliceDefinition,
-  patternValue: any,
-  allSlices: SliceDefinition[] | undefined,
-  matchesPatternFn: (value: any, pattern: any) => boolean,
-): boolean {
-  if (slice.patternKind !== 'patternCoding') return false;
-  if (!codingIdentityMatchesPattern(elementValue, patternValue)) return false;
-
-  const candidateSlices = allSlices?.length ? allSlices : [slice];
-  const matchingIdentitySlices = candidateSlices.filter(candidate =>
-    candidate.patternKind === 'patternCoding' &&
-    candidate.pattern !== undefined &&
-    codingIdentityMatchesPattern(elementValue, candidate.pattern),
-  );
-
-  if (matchingIdentitySlices.length !== 1 || matchingIdentitySlices[0] !== slice) {
-    return false;
-  }
-
-  return !candidateSlices.some(candidate =>
-    candidate !== slice &&
-    candidate.pattern !== undefined &&
-    matchesPatternFn(elementValue, candidate.pattern),
-  );
+function hasMeaningfulConstraintValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
 }
 
-function codingIdentityMatchesPattern(elementValue: any, patternValue: any): boolean {
-  if (!isRecord(elementValue) || !isRecord(patternValue)) return false;
-  if (typeof patternValue.system !== 'string' || typeof patternValue.code !== 'string') {
-    return false;
-  }
-  return elementValue.system === patternValue.system && elementValue.code === patternValue.code;
+/**
+ * A discriminator on a parent slice may be constrained inside a nested child
+ * slice. For example, the core blood-pressure profile discriminates
+ * `Observation.component` by `code.coding.code` while the fixed value lives at
+ * `code.coding:SBPCode.code`. StructureDefinition slice labels are not
+ * instance path segments, so compare an alias with those labels removed.
+ *
+ * Only return an aliased value when it is unambiguous. A parent containing two
+ * child slices with different fixed values cannot be identified from that
+ * discriminator alone.
+ */
+function getChildConstraint(map: Map<string, any>, requestedPath: string): any | undefined {
+  if (map.has(requestedPath)) return map.get(requestedPath);
+
+  const matches = Array.from(map.entries())
+    .filter(([candidatePath]) => stripSliceLabels(candidatePath) === requestedPath)
+    .map(([, value]) => value);
+  if (matches.length === 0) return undefined;
+
+  const first = matches[0];
+  return matches.every(value => valuesMatch(value, first)) ? first : undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function matchWholeElementChildConstraints(
-  elementValue: any,
-  slice: SliceDefinition,
-  matchesPatternFn: (value: any, pattern: any) => boolean,
-): boolean | null {
-  let hasConstraint = false;
-
-  if (slice.childPatterns) {
-    for (const [childPath, childPattern] of slice.childPatterns) {
-      hasConstraint = true;
-      if (!matchesPatternFn(getValueAtPath(elementValue, childPath), childPattern)) {
-        return false;
-      }
-    }
-  }
-
-  if (slice.childFixed) {
-    for (const [childPath, childFixed] of slice.childFixed) {
-      hasConstraint = true;
-      if (!matchesPatternFn(getValueAtPath(elementValue, childPath), childFixed)) {
-        return false;
-      }
-    }
-  }
-
-  return hasConstraint ? true : null;
-}
-
-function matchExistsDiscriminator(element: any, path: string): boolean {
-  const value = getValueAtPath(element, path);
-  return value !== null && value !== undefined;
-}
-
-function resolveDiscriminatorPath(element: any, _path: string, resolver: ReferenceResolverFn): any | null {
-  const refString = typeof element === 'object' && element?.reference
-    ? element.reference
-    : typeof element === 'string' ? element : null;
-
-  if (!refString || !resolver) return null;
-  try { return resolver(refString) ?? null; } catch { return null; }
+function stripSliceLabels(path: string): string {
+  return path
+    .split('.')
+    .map(segment => segment.split(':')[0])
+    .join('.');
 }

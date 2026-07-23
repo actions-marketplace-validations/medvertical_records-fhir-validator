@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { validateNarrativeDiv } from '../narrative-xhtml-rules';
 
 describe('Narrative XHTML attribute validation', () => {
+  it('reports a non-string div as a primitive type mismatch without throwing', () => {
+    const issues = validateNarrativeDiv(
+      { invalidType: true },
+      'Composition.text',
+      'Composition',
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      severity: 'error',
+      code: 'structural-primitive-type-mismatch',
+      path: 'Composition.text.div',
+    }));
+  });
+
   it('allows HTML 4 strike-through formatting elements used by FHIR narratives', () => {
     const div =
       '<div xmlns="http://www.w3.org/1999/xhtml">' +

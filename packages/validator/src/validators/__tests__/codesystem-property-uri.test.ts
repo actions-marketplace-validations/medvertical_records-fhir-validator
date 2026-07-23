@@ -28,6 +28,18 @@ describe('TerminologyResourceValidator — HL7 concept-property URI allowlist', 
     expect(unknown[0].message).toContain('do not create it in the HL7 namespace');
   });
 
+  it('also reports the unresolved property URI warning in R5', () => {
+    const issues = validator.validate(cs([
+      { code: 'order', uri: 'http://hl7.org/fhir/concept-properties#order', type: 'decimal' },
+    ]), 'R5');
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'tx-codesystem-property-uri-unresolvable',
+      severity: 'warning',
+      path: 'CodeSystem.property[0]',
+    }));
+  });
+
   it('accepts the spec-listed property URIs', () => {
     const allowed = ['status', 'inactive', 'effectiveDate', 'deprecationDate', 'parent',
                      'child', 'partOf', 'synonym', 'comment', 'notSelectable'];

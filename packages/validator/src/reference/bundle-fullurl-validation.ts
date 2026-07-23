@@ -22,7 +22,7 @@ function validateFullUrlUniqueness(entries: BundleEntry[]): BundleIssue[] {
   const fullUrlMap = new Map<string, number[]>();
 
   entries.forEach((entry, index) => {
-    if (!entry.fullUrl) return;
+    if (typeof entry.fullUrl !== 'string' || entry.fullUrl.length === 0) return;
 
     const versionId = entry.resource?.meta?.versionId;
     const key = versionId ? `${entry.fullUrl}|${versionId}` : entry.fullUrl;
@@ -50,7 +50,7 @@ function validateFullUrlConsistency(entries: BundleEntry[]): BundleIssue[] {
   const issues: BundleIssue[] = [];
 
   entries.forEach((entry, index) => {
-    if (!entry.fullUrl || !entry.resource) return;
+    if (typeof entry.fullUrl !== 'string' || entry.fullUrl.length === 0 || !entry.resource) return;
     if (entry.fullUrl.startsWith('urn:uuid:')) return;
 
     const parsedFullUrlIdentity = parseRestfulFullUrlResourceIdentity(entry.fullUrl);

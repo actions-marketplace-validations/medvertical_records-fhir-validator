@@ -127,7 +127,7 @@ export class StructuralExecutor {
       // profile snapshot)
       issues.push(...this.validateResourceIdAndArrays(resource, ctx.contextQuestionnaire, {
         warnOnUnresolvedQuestionnaireReference: true,
-      }));
+      }, fhirVersion || 'R4'));
 
       // Eighth pass: choice-type property shape. Catches `value: true` where
       // the SD declares `value[x]` and `valueInteger` where integer is not
@@ -286,6 +286,7 @@ export class StructuralExecutor {
     resource: any,
     contextQuestionnaire?: any,
     options: { warnOnUnresolvedQuestionnaireReference?: boolean } = {},
+    fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
   ): ValidationIssue[] {
     return validateResourceSanity(
       resource,
@@ -299,6 +300,7 @@ export class StructuralExecutor {
       },
       contextQuestionnaire,
       options,
+      fhirVersion,
     );
   }
 

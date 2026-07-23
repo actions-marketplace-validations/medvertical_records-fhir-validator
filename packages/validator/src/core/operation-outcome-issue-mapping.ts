@@ -38,6 +38,13 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['structural-resource-type-mismatch', 'value'],
   ['structural-invalid-json', 'structure'],
   ['structural-cardinality', 'structure'],
+  // JSON representation errors are invalid instance values rather than
+  // profile cardinality failures (for example, an object supplied where a
+  // repeating element requires an array).
+  ['structural-validation-error', 'invalid'],
+  ['structural-primitive-type-mismatch', 'invalid'],
+  ['structural-primitive-array-alignment', 'invalid'],
+  ['structural-resource-id-extension', 'business-rule'],
   // Java emits `structure` when a profile-allowed type does not match
   // the actual type ("found type string, expected Quantity"), see
   // bb-obs-value-is-not-quantity baseline.
@@ -50,6 +57,9 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['structural-empty-array', 'invalid'],
   ['structural-empty-object', 'invalid'],
   ['structural-invalid-uri', 'invalid'],
+  // Java classifies malformed Attachment.data as a structural base64 error,
+  // while other primitive lexical format failures remain `invalid`.
+  ['structural-invalid-base64-format', 'structure'],
   ['structural-bundle-fullurl-duplicate', 'business-rule'],
   ['structural-bundle-fullurl-', 'invalid'],
   // Java emits `structure` for Attachment size/data byte length mismatches,
@@ -65,6 +75,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['structural-', 'structure'],
 
   // Profile
+  ['constraint-violation-', 'invariant'],
   ['profile-constraint-violation', 'invariant'],
   ['profile-min-value-duration-violation', 'processing'],
   ['profile-max-value-duration-violation', 'processing'],
@@ -87,6 +98,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['profile-extension-', 'extension'],
   ['profile-slicing-', 'structure'],
   ['profile-mustsupport-', 'structure'],
+  ['profile-not-resolved', 'structure'],
   ['profile-not-found', 'structure'],
   ['profile-download', 'transient'],
   ['profile-load-error', 'transient'],
@@ -138,6 +150,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['sd-complies-with-', 'invalid'],
   // Pattern-as-instance type constraints (ident-1 etc.) — Java emits
   // these as `invariant` (see R5.cw-slice-adds-base baseline).
+  ['sd-pattern-coding-missing-code', 'value'],
   ['sd-pattern-', 'invariant'],
 
   // Bundle-type semantics (bdl-11 document first-entry, bdl-12 message
@@ -185,6 +198,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['tx-codesystem-supplement-content', 'business-rule'],
   ['tx-codesystem-concept-no-definition', 'business-rule'],
   ['tx-codesystem-property-no-uri', 'business-rule'],
+  ['tx-codesystem-property-uri-unresolvable', 'invalid'],
   ['tx-valueset-url-not-absolute', 'invalid'],
   ['tx-valueset-url-invalid-uuid', 'invalid'],
   ['tx-valueset-compose-system-fragment', 'invalid'],
@@ -200,6 +214,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['tx-valueset-expansion-no-parameters', 'business-rule'],
   ['tx-valueset-expansion-no-identifier', 'business-rule'],
   ['tx-valueset-expansion-system-no-version', 'invalid'],
+  ['tx-valueset-expansion-extra-code', 'invalid'],
   // ConceptMap target-display validation — see R5.cs-val-cm-base.
   // The tx-only-source info uses `business-rule`; the target-display
   // mismatch uses `required` (Java's category for "expected display").
@@ -212,7 +227,11 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['narrative-xxe-detected', 'structure'],
   ['narrative-malformed-xhtml', 'structure'],
   ['narrative-missing-xhtml-namespace', 'structure'],
-  ['narrative-invalid-root', 'structure'],
+  ['narrative-invalid-root', 'invalid'],
+  ['narrative-missing-xmllang', 'business-rule'],
+  ['narrative-missing-htmllang', 'business-rule'],
+  ['narrative-missing-lang', 'business-rule'],
+  ['narrative-lang-mismatch', 'business-rule'],
   // textLink extension diagnostics — Java emits each at a distinct
   // category (see ips-link baseline).
   ['narrative-textlink-htmlid-not-found', 'structure'],
@@ -248,6 +267,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
 
   // Questionnaire / QuestionnaireResponse
   ['questionnaire-invariant-', 'invariant'],
+  ['questionnaire-reference-wrong-type', 'invalid'],
   ['questionnaire-missing-', 'structure'],
   ['questionnaire-duplicate-', 'invariant'],
   // SDC minOccurs/maxOccurs → invalid (Java uses code=invalid for count violations)

@@ -22,4 +22,6 @@ export type ValidateOneFn = (
   enclosingBundle?: Record<string, unknown>,
   /** Suppress the reference target-profile-conformance pass to prevent cycles. */
   skipTargetProfileConformance?: boolean,
+  /** Resource that owns the contained[] collection for sibling #reference resolution. */
+  containingResource?: Record<string, unknown>,
 ) => Promise<MultiAspectValidateResult>;

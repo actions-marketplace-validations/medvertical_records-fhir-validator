@@ -141,8 +141,10 @@ export function createValidationInfoIssue(
 }
 
 export {
+  dedupeExactIssues,
   dedupeIssues,
   dedupeIssuesWithTrace,
+  dedupeResourceTreeIssues,
   type DedupeIssuesResult,
   type DedupeSuppressionTrace,
 } from './validation-issue-dedupe';

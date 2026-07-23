@@ -167,4 +167,37 @@ describe('DeepProfileValidator', () => {
 
     expect(issues.filter(issue => issue.code === 'profile-fixed-value-mismatch')).toHaveLength(0);
   });
+
+  it('does not apply an incompatible complex pattern to a primitive element', () => {
+    const profile: StructureDefinition = {
+      resourceType: 'StructureDefinition',
+      url: 'https://gematik.de/fhir/isik/StructureDefinition/ISiKStandort',
+      name: 'ISiKStandort',
+      status: 'active',
+      kind: 'resource',
+      abstract: false,
+      type: 'Location',
+      snapshot: {
+        element: [
+          { id: 'Location', path: 'Location' },
+          {
+            id: 'Location.mode',
+            path: 'Location.mode',
+            type: [{ code: 'code' }],
+            patternCodeableConcept: {
+              coding: [{ system: 'http://hl7.org/fhir/location-mode', code: 'instance' }],
+            },
+          },
+        ],
+      },
+    };
+
+    const issues = deepProfileValidator.validate({
+      resource: { resourceType: 'Location', mode: 'instance' },
+      resourceType: 'Location',
+      structureDef: profile,
+    });
+
+    expect(issues.filter(issue => issue.code === 'profile-pattern-mismatch')).toHaveLength(0);
+  });
 });

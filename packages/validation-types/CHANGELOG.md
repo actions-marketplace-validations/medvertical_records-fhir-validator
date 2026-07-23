@@ -11,6 +11,16 @@ captures changes that affect type-package consumers directly.
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-07-23
+
+Released alongside `@records-fhir/validator` 0.5.0.
+
+### Surface
+
+- Added `code-inferred` to `ProfileApplicationSource` so consumers can
+  distinguish FHIR-implied Observation profile selection from explicit,
+  resource-declared, imposed-policy, and base-fallback application.
+
 ## [0.1.5] — 2026-06-23
 
 Released alongside `@records-fhir/validator` 0.1.14.

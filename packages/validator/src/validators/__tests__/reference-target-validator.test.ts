@@ -49,6 +49,38 @@ describe('ReferenceTargetValidator', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('flags a disallowed target behind a Reference choice element', () => {
+    const validator = new ReferenceTargetValidator();
+    const profile: StructureDefinition = {
+      ...observationSubjectPatientProfile,
+      snapshot: {
+        element: [
+          { id: 'Observation', path: 'Observation' },
+          {
+            id: 'Observation.note.author[x]',
+            path: 'Observation.note.author[x]',
+            type: [{
+              code: 'Reference',
+              targetProfile: ['http://hl7.org/fhir/StructureDefinition/Patient'],
+            }],
+          } as any,
+        ],
+      },
+    };
+    const issues = validator.validate(
+      {
+        resourceType: 'Observation',
+        note: [{ authorReference: { reference: 'Organization/o1' } }],
+      },
+      profile,
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'reference-target-type-invalid',
+      path: 'Observation.note[0].authorReference',
+    }));
+  });
+
   it('flags a contained reference whose target type is disallowed', () => {
     const validator = new ReferenceTargetValidator();
     const issues = validator.validate(

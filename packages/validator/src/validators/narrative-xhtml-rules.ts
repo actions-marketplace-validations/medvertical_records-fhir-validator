@@ -44,8 +44,22 @@ const VOID_ELEMENTS = new Set([
     'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
 ]);
 
-export function validateNarrativeDiv(div: string, basePath: string, resourceType: string): ValidationIssue[] {
+export function validateNarrativeDiv(div: unknown, basePath: string, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
+
+    if (typeof div !== 'string') {
+        return [createValidationIssue({
+            code: 'structural-primitive-type-mismatch',
+            path: `${basePath}.div`,
+            resourceType,
+            customMessage: `Element ${basePath}.div has invalid type: expected xhtml, found ${Array.isArray(div) ? 'array' : typeof div}`,
+            severityOverride: 'error',
+            details: {
+                expectedType: 'xhtml',
+                actualType: Array.isArray(div) ? 'array' : typeof div,
+            },
+        })];
+    }
 
     const xxeIssues = checkXxeDeclarations(div, basePath, resourceType);
     issues.push(...xxeIssues);

@@ -164,6 +164,23 @@ describe('QuestionnaireValidator — Questionnaire', () => {
     expect(dupIssues).toHaveLength(1);
   });
 
+  it('uses the R5 que-1b warning for an empty group', () => {
+    const q = {
+      resourceType: 'Questionnaire',
+      id: 'q-r5-empty-group',
+      status: 'active',
+      item: [{ linkId: 'group', type: 'group' }],
+    };
+
+    const issues = validator.validateQuestionnaire(q, 'Questionnaire', 'R5');
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'constraint-violation-que-1b',
+      severity: 'warning',
+      path: 'Questionnaire.item[0]',
+    }));
+    expect(issues.some(issue => issue.code === 'questionnaire-invariant-que-1')).toBe(false);
+  });
+
   it('returns no issues for valid Questionnaire', () => {
     const q = {
       resourceType: 'Questionnaire',

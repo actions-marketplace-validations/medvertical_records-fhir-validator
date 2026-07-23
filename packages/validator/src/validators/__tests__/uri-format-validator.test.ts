@@ -19,6 +19,49 @@ describe('validateUriFormat', () => {
     }));
   });
 
+  it.each(['urn:oid:1.2', 'urn:oid:1.7', 'urn:oid:1.40.3', 'urn:oid:2.03.4'])(
+    'rejects syntactically invalid OID URIs: %s',
+    (value) => {
+      expect(validateUriFormat(
+        value,
+        'DocumentReference.contained[1].identifier[0].system',
+        'DocumentReference',
+      )).toEqual(expect.objectContaining({
+        code: 'structural-invalid-uri',
+        severity: 'error',
+        details: expect.objectContaining({
+          value,
+          expectedUriType: 'OID URN',
+        }),
+      }));
+    },
+  );
+
+  it('accepts valid OID URIs', () => {
+    expect(validateUriFormat(
+      'urn:oid:1.2.840.10008.2.16.4',
+      'DocumentReference.identifier[0].system',
+      'DocumentReference',
+    )).toBeNull();
+
+    expect(validateUriFormat(
+      'urn:oid:2.999.3',
+      'DocumentReference.identifier[0].system',
+      'DocumentReference',
+    )).toBeNull();
+  });
+
+  it('does not hide invalid OIDs in Coding.system relative-URI paths', () => {
+    expect(validateUriFormat(
+      'urn:oid:1.2',
+      'Observation.code.coding[0].system',
+      'Observation',
+    )).toEqual(expect.objectContaining({
+      code: 'structural-invalid-uri',
+      severity: 'error',
+    }));
+  });
+
   it('suggests an https URI for www-prefixed values without a scheme', () => {
     const issue = validateUriFormat(
       'www.uwearme.com/measures',
@@ -76,6 +119,18 @@ describe('validateUriFormat', () => {
       'Custom',
       'Questionnaire.item[0].answerOption[0].valueCoding.system',
       'Questionnaire',
+    )).toBeNull();
+
+    expect(validateUriFormat(
+      'docattr_documentsubtype',
+      'DocumentReference.meta.tag[2].system',
+      'DocumentReference',
+    )).toBeNull();
+
+    expect(validateUriFormat(
+      'local-security-labels',
+      'Patient.meta.security[0].system',
+      'Patient',
     )).toBeNull();
   });
 

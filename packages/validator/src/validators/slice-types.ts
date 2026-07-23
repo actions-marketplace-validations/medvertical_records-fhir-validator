@@ -7,6 +7,14 @@ import type { SlicingDiscriminator, ElementDefinition } from '../core/structure-
 
 export type { SlicingDiscriminator, ElementDefinition } from '../core/structure-definition-types';
 
+/**
+ * Resolves an in-memory FHIR reference for slicing discriminators.
+ *
+ * Keeping this contract with the other shared slicing types prevents policy
+ * helpers from depending on the concrete `SlicingValidator` implementation.
+ */
+export type ReferenceResolver = (reference: string) => any | null;
+
 export interface SliceDefinition {
   sliceName: string;
   path: string;
@@ -20,6 +28,7 @@ export interface SliceDefinition {
   type?: Array<{ code: string; profile?: string[]; targetProfile?: string[] }>;
   childPatterns?: Map<string, any>;
   childFixed?: Map<string, any>;
+  childMin?: Map<string, number>;
   childTypes?: Map<string, Array<{ code: string; profile?: string[]; targetProfile?: string[] }>>;
   childBindingValueSets?: Map<string, string>;
   childBindingCodes?: Map<string, Set<string>>;

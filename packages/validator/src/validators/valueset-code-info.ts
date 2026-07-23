@@ -3,12 +3,14 @@ import type { CodeInfo } from './valueset-display-utils';
 type CodingLike = {
   code?: unknown;
   system?: unknown;
+  version?: unknown;
   display?: unknown;
 };
 
 type CodeValueLike = {
   code?: unknown;
   system?: unknown;
+  version?: unknown;
   display?: unknown;
   coding?: unknown;
 };
@@ -31,6 +33,7 @@ export function extractCodeInfos(code: unknown): CodeInfo[] {
     return [{
       code: codeValue.code,
       system: typeof codeValue.system === 'string' ? codeValue.system : undefined,
+      version: typeof codeValue.version === 'string' ? codeValue.version : undefined,
       display: typeof codeValue.display === 'string' ? codeValue.display : undefined,
     }];
   }
@@ -42,6 +45,7 @@ export function extractCodeInfos(code: unknown): CodeInfo[] {
         return {
           code: coding.code,
           system: typeof coding.system === 'string' ? coding.system : undefined,
+          version: typeof coding.version === 'string' ? coding.version : undefined,
           display: typeof coding.display === 'string' ? coding.display : undefined,
           codingIndex: index,
         };

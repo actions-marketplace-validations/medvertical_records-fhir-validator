@@ -96,6 +96,7 @@ export async function runAllAspectValidations(
     // caseSensitive, concept definitions, compose.include validation)
     const terminologyResourceIssues = terminologyResourceValidator.validate(
       context.resource,
+      context.fhirVersion,
     );
     issues.push(...terminologyResourceIssues);
   }

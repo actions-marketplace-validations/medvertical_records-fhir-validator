@@ -222,6 +222,8 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
 
     'profile-constraint-violation':
         "Constraint '{key}' violated: {message}",
+    'profile-fixed-value-mismatch':
+        "Element {path} must match the fixed profile value {expected}; found {actual}",
     'profile-slice-min-cardinality':
         "Slice '{slice}' minimum cardinality not met: expected at least {min}, found {actual}",
     'profile-slice-max-cardinality':

@@ -3,10 +3,26 @@ import type { ElementDefinition, StructureDefinition } from '../structure-defini
 import { matchesPattern } from '../../validators/slice-utils';
 import { UCUM_BEARING_TYPES } from './terminology-ucum-rules';
 import { isResolvedPrimitiveSidecarValue } from '../fhir-primitive-sidecar';
-
-/** Quantity unit bindings: required -> extensible. HAPI-aligned; avoids false positives on derived profiles. */
+const TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED =
+  process.env.FHIR_TERMINOLOGY_SLICE_PLAN_CACHE !== 'false';
+const sliceChildConstraintsCache = new WeakMap<
+  StructureDefinition,
+  WeakMap<ElementDefinition, ElementDefinition[]>
+>();
+const owningSliceElementCache = new WeakMap<
+  StructureDefinition,
+  WeakMap<ElementDefinition, ElementDefinition | null>
+>();
+const siblingSlicePatternsCache = new WeakMap<
+  StructureDefinition,
+  WeakMap<ElementDefinition, ElementDefinition[]>
+>();
+const valueSetDiscriminatedSliceCache = new WeakMap<
+  StructureDefinition,
+  WeakMap<ElementDefinition, boolean>
+>();
 export function effectiveBindingForElement(elementDef: { binding?: any; type?: { code: string }[] }): any {
-  const binding = elementDef.binding;
+  const binding = elementDef.binding; // Quantity bindings are downgraded to HAPI-aligned extensible strength.
   if (binding?.strength !== 'required') return binding;
   const hasQuantityType = elementDef.type?.some(t => UCUM_BEARING_TYPES.has(t.code));
   return hasQuantityType ? { ...binding, strength: 'extensible' } : binding;
@@ -103,12 +119,24 @@ function getValueAtRelativePath(value: unknown, path: string): unknown {
 
 function getSliceChildConstraints(structureDef: StructureDefinition, elementDef: ElementDefinition): ElementDefinition[] {
   if (!elementDef.id || !elementDef.sliceName) return [];
+  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
+    ? sliceChildConstraintsCache.get(structureDef)
+    : undefined;
+  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
+    byElement = new WeakMap();
+    sliceChildConstraintsCache.set(structureDef, byElement);
+  }
+  const cached = byElement?.get(elementDef);
+  if (cached) return cached;
+
   const prefix = `${elementDef.id}.`;
-  return structureDef.snapshot?.element.filter(candidate =>
+  const constraints = structureDef.snapshot?.element.filter(candidate =>
     typeof candidate.id === 'string' &&
     candidate.id.startsWith(prefix) &&
     getPatternOrFixedValue(candidate) !== undefined,
   ) ?? [];
+  byElement?.set(elementDef, constraints);
+  return constraints;
 }
 
 function elementMatchesSliceChildConstraints(
@@ -132,13 +160,24 @@ function getOwningSliceElement(
   if (!elementDef.id || !elementDef.id.includes(':')) return null;
   if (elementDef.sliceName) return elementDef;
 
-  return structureDef.snapshot?.element
+  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
+    ? owningSliceElementCache.get(structureDef)
+    : undefined;
+  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
+    byElement = new WeakMap();
+    owningSliceElementCache.set(structureDef, byElement);
+  }
+  if (byElement?.has(elementDef)) return byElement.get(elementDef) ?? null;
+
+  const owner = structureDef.snapshot?.element
     .filter(candidate =>
       Boolean(candidate.sliceName) &&
       typeof candidate.id === 'string' &&
       elementDef.id!.startsWith(`${candidate.id}.`),
     )
     .sort((a, b) => b.id!.length - a.id!.length)[0] ?? null;
+  byElement?.set(elementDef, owner);
+  return owner;
 }
 
 function getRelativePathWithinSlice(elementDef: ElementDefinition, sliceElement: ElementDefinition): string {
@@ -223,6 +262,15 @@ function isValueSetDiscriminatedSliceRoot(
 ): boolean {
   if (!isSliceRootElement(elementDef) || !elementDef.binding?.valueSet) return false;
 
+  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
+    ? valueSetDiscriminatedSliceCache.get(structureDef)
+    : undefined;
+  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
+    byElement = new WeakMap();
+    valueSetDiscriminatedSliceCache.set(structureDef, byElement);
+  }
+  if (byElement?.has(elementDef)) return byElement.get(elementDef) ?? false;
+
   const siblingSlices = structureDef.snapshot?.element.filter(candidate =>
     candidate !== elementDef &&
     candidate.path === elementDef.path &&
@@ -230,7 +278,9 @@ function isValueSetDiscriminatedSliceRoot(
     Boolean(candidate.binding?.valueSet),
   ) ?? [];
 
-  return siblingSlices.length > 0;
+  const result = siblingSlices.length > 0;
+  byElement?.set(elementDef, result);
+  return result;
 }
 
 export function shouldSuppressValueSetSliceMembershipIssue(
@@ -269,8 +319,18 @@ function getSiblingSlicePatterns(structureDef: StructureDefinition, elementDef: 
   const elementId = elementDef.id;
   if (!elementId || !elementDef.sliceName) return [];
 
+  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
+    ? siblingSlicePatternsCache.get(structureDef)
+    : undefined;
+  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
+    byElement = new WeakMap();
+    siblingSlicePatternsCache.set(structureDef, byElement);
+  }
+  const cached = byElement?.get(elementDef);
+  if (cached) return cached;
+
   const slicePrefix = elementId.slice(0, elementId.lastIndexOf(':') + 1);
-  return structureDef.snapshot?.element.filter(candidate =>
+  const siblings = structureDef.snapshot?.element.filter(candidate =>
     candidate.id !== elementId &&
     candidate.id?.startsWith(slicePrefix) &&
     candidate.path === elementDef.path &&
@@ -279,6 +339,8 @@ function getSiblingSlicePatterns(structureDef: StructureDefinition, elementDef: 
       (candidate as ElementDefinition & { patternCodeableConcept?: unknown }).patternCodeableConcept
     ),
   ) ?? [];
+  byElement?.set(elementDef, siblings);
+  return siblings;
 }
 
 export function selectValuesForBinding(

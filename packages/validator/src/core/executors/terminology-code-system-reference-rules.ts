@@ -6,6 +6,14 @@ type CodeSystemReferenceMode = 'syntax' | 'not-found';
 
 const localCodeSystemKnownCache = new Map<string, Promise<boolean>>();
 
+const KNOWN_INCORRECT_CODE_SYSTEM_URLS: Readonly<Record<string, string>> = {
+  // R4 Observation.category uses the terminology.hl7.org CodeSystem. The
+  // similarly-shaped hl7.org URL has never identified that CodeSystem and is
+  // rejected by the HL7 reference validator as an undefined canonical URL.
+  'http://hl7.org/fhir/observation-category':
+    'http://terminology.hl7.org/CodeSystem/observation-category',
+};
+
 export async function validateCodeSystemReference(
   coding: any,
   path: string,
@@ -17,7 +25,30 @@ export async function validateCodeSystemReference(
   const issues: ValidationIssue[] = [];
   const systemPath = isArrayInput ? `${path}[${index}].system` : `${path}.system`;
 
-  if (mode === 'syntax' && /\/ValueSet\//i.test(coding.system)) {
+  // Structural validation owns datatype errors. Terminology checks must stay
+  // total over malformed JSON so one non-string system cannot abort the
+  // remaining validation aspects.
+  if (typeof coding?.system !== 'string') return issues;
+
+  const correctedSystem = KNOWN_INCORRECT_CODE_SYSTEM_URLS[coding.system];
+  if (mode === 'syntax' && correctedSystem) {
+    issues.push({
+      id: `terminology-codesystem-canonical-mismatch-${Date.now()}-${index}`,
+      aspect: 'terminology',
+      severity: 'error',
+      code: 'terminology-code-system-canonical-mismatch',
+      message:
+        `Coding.system '${coding.system}' is not a defined CodeSystem canonical URL; ` +
+        `use '${correctedSystem}' instead`,
+      path: systemPath,
+      timestamp: new Date(),
+      details: {
+        system: coding.system,
+        suggestedSystem: correctedSystem,
+        fixHint: `Replace Coding.system '${coding.system}' with '${correctedSystem}'.`,
+      },
+    });
+  } else if (mode === 'syntax' && /\/ValueSet\//i.test(coding.system)) {
     issues.push({
       id: `terminology-codesystem-is-valueset-${Date.now()}-${index}`,
       aspect: 'terminology',

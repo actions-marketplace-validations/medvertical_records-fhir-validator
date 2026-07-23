@@ -61,10 +61,14 @@ export function extractSubExtensionDefinitions(
 
   for (const element of elements) {
     if (!element.path?.endsWith('Extension.extension')) continue;
-    if (!element.sliceName && !identifyExtensionUrl(element)) continue;
+    const url = identifySubExtensionUrl(element, elements);
+    if (!element.sliceName && !url) continue;
 
-    const url = identifyExtensionUrl(element);
     if (!url) continue;
+
+    const inlineValueElement = element.id
+      ? elements.find(candidate => candidate.id === `${element.id}.value[x]`)
+      : undefined;
 
     result.set(url, {
       url,
@@ -75,11 +79,27 @@ export function extractSubExtensionDefinitions(
       isModifier: element.isModifier || false,
       typeCodes: element.type?.map(t => t.code) ?? [],
       profileUrl: extractExtensionProfileUrl(element),
+      ...(inlineValueElement ? { inlineValueElement } : {}),
+      ...(parentSD.url ? { ownerProfileUrl: parentSD.url } : {}),
       sliceName: element.sliceName,
     });
   }
 
   return result;
+}
+
+function identifySubExtensionUrl(
+  element: ElementDefinition,
+  elements: ElementDefinition[],
+): string | undefined {
+  const directUrl = identifyExtensionUrl(element);
+  if (directUrl) return directUrl;
+  if (!element.id) return undefined;
+
+  const urlElement = elements.find(candidate =>
+    candidate.id === `${element.id}.url` && candidate.path === 'Extension.extension.url'
+  );
+  return urlElement ? identifyExtensionUrl(urlElement) : undefined;
 }
 
 export function normalizeElementPath(path: string): string {

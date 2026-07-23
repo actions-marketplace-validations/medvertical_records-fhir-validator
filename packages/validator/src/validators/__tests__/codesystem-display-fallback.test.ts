@@ -233,6 +233,51 @@ describe('ValueSetValidator CodeSystem display fallback', () => {
     expect(result.message).toContain('Could not verify SNOMED CT code');
   });
 
+  it('treats unknown LOINC answer-list codes as unverifiable when the server lacks answer lists', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://loinc.example/fhir',
+    });
+    (validator as any).apiClient.validateCodeInCodeSystem = vi.fn().mockResolvedValue({
+      valid: false,
+      reason: 'code-unknown',
+      message: "Unknown code 'LA33959-0' in CodeSystem 'http://loinc.org'",
+    });
+
+    const result = await validator.validateCodeInCodeSystem(
+      'LA33959-0',
+      'http://loinc.org',
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('system-unresolvable');
+    expect(result.message).toContain('answer-list code');
+  });
+
+  it('treats composite HGNC fusion notation as unverifiable by single-concept terminology servers', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://hgnc.example/fhir',
+    });
+    (validator as any).validateCodeInLocalCodeSystem = vi.fn().mockResolvedValue({
+      valid: false,
+      reason: 'code-unknown',
+      message: "Unknown code 'HGNC:3689::HGNC:2697' in CodeSystem 'http://www.genenames.org/geneId'",
+    });
+
+    const result = await validator.validateCodeInCodeSystem(
+      'HGNC:3689::HGNC:2697',
+      'http://www.genenames.org/geneId',
+      'FGFR2::DBP',
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('system-unresolvable');
+    expect(result.message).toContain('composite HGNC fusion code');
+  });
+
   it('suppresses CodeSystem display mismatches that differ only in case or whitespace', async () => {
     const validator = new ValueSetValidator();
     validator.setResolutionConfig({

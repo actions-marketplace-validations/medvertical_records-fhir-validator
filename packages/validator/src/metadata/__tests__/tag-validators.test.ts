@@ -72,6 +72,26 @@ describe('TagValidator', () => {
       expect(issues.length).toBeGreaterThanOrEqual(0);
     });
 
+    it('includes the invalid system in the rendered issue message', () => {
+      const issues = validator.validate([{
+        system: 'not a uri',
+        code: 'test',
+      }], 'Patient');
+
+      expect(issues.find(issue => issue.code === 'metadata-tag-invalid-system-uri')?.message)
+        .toBe('Tag system is not a valid URI: not a uri');
+    });
+
+    it('accepts a relative URI in Coding.system', () => {
+      const issues = validator.validate([{
+        system: 'docattr_documentsubtype',
+        code: 'test',
+      }], 'DocumentReference');
+
+      expect(issues.find(issue => issue.code === 'metadata-tag-invalid-system-uri'))
+        .toBeUndefined();
+    });
+
     it('should validate code is string', () => {
       const tags = [
         {

@@ -79,24 +79,52 @@ function scopeItemsToSlice(
   );
   if (!parentSlicingBase?.slicing?.discriminator?.length) return null;
 
-  const discriminator = parentSlicingBase.slicing.discriminator[0];
-  if (discriminator.type !== 'value' && discriminator.type !== 'pattern') return null;
+  const constraints = parentSlicingBase.slicing.discriminator.map(discriminator => {
+    if (discriminator.type !== 'value' && discriminator.type !== 'pattern') return null;
 
-  const discriminatorPath = normalizeThisPath(discriminator.path);
-  const discriminatorConstraint = structureDef.snapshot?.element?.find(
-    e => e.id === `${parentSlice.id}.${discriminatorPath}`,
-  );
-  const constraintElement = discriminatorConstraint ?? parentSlice;
-  const expected = discriminator.type === 'pattern'
-    ? extractPattern(constraintElement) ?? extractFixed(constraintElement)
-    : extractFixed(constraintElement) ?? extractPattern(constraintElement);
-  const effectiveExpected = expected ?? inferExtensionUrlFromSliceType(parentSlice, discriminatorPath);
-  if (effectiveExpected === undefined) return null;
+    const discriminatorPath = normalizeThisPath(discriminator.path);
+    const discriminatorConstraint = findDiscriminatorConstraint(
+      parentSlice,
+      discriminatorPath,
+      structureDef,
+    );
+    const constraintElement = discriminatorConstraint ?? parentSlice;
+    const expected = discriminator.type === 'pattern'
+      ? extractPattern(constraintElement) ?? extractFixed(constraintElement)
+      : extractFixed(constraintElement) ?? extractPattern(constraintElement);
+    const effectiveExpected = expected ?? inferExtensionUrlFromSliceType(parentSlice, discriminatorPath);
+    return effectiveExpected === undefined ? null : { discriminatorPath, expected: effectiveExpected };
+  });
+  if (constraints.some(constraint => constraint === null)) return null;
 
-  return parentItems.filter(item => valueContainsPattern(
-    getPathValue(item, discriminatorPath),
-    effectiveExpected,
+  return parentItems.filter(item => constraints.every(constraint =>
+    constraint !== null && valueContainsPattern(
+      getPathValue(item, constraint.discriminatorPath),
+      constraint.expected,
+    ),
   ));
+}
+
+function findDiscriminatorConstraint(
+  parentSlice: any,
+  discriminatorPath: string,
+  structureDef: StructureDefinition,
+): any | undefined {
+  const expectedId = `${parentSlice.id}.${discriminatorPath}`;
+  const normalizedExpectedId = stripSliceLabels(expectedId);
+  const candidates = (structureDef.snapshot?.element ?? []).filter(element => {
+    if (typeof element.id !== 'string' || !element.id.startsWith(`${parentSlice.id}.`)) return false;
+    return stripSliceLabels(element.id) === normalizedExpectedId;
+  });
+  if (candidates.length !== 1) return undefined;
+  return candidates[0];
+}
+
+function stripSliceLabels(path: string): string {
+  return path
+    .split('.')
+    .map(segment => segment.split(':')[0])
+    .join('.');
 }
 
 function resolveRelativeParentItems(
@@ -179,10 +207,20 @@ function extractFixed(elementDef: any): any {
 
 function getPathValue(value: any, path: string): any {
   if (!path || path === '$this') return value;
-  return path.split('.').reduce((current, segment) => {
-    if (current == null) return undefined;
-    return resolveFhirSegmentValue(current, segment);
-  }, value);
+  return resolvePathParts(value, path.split('.'), 0);
+}
+
+function resolvePathParts(current: any, parts: string[], index: number): any {
+  if (current == null) return undefined;
+  if (index >= parts.length) return current;
+  if (Array.isArray(current)) {
+    for (const item of current) {
+      const resolved = resolvePathParts(item, parts, index);
+      if (resolved !== undefined) return resolved;
+    }
+    return undefined;
+  }
+  return resolvePathParts(resolveFhirSegmentValue(current, parts[index]), parts, index + 1);
 }
 
 function getTraversalSegmentValue(value: any, segment: string, hasRemainingPath: boolean): any {

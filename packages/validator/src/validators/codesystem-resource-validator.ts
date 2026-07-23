@@ -11,7 +11,10 @@ import {
   validateUrnUuid,
 } from './terminology-resource-utils';
 
-export function validateCodeSystemResource(cs: any): ValidationIssue[] {
+export function validateCodeSystemResource(
+  cs: any,
+  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const url = typeof cs.url === 'string' ? cs.url : '';
   const hl7 = isHl7Url(url);
@@ -21,7 +24,7 @@ export function validateCodeSystemResource(cs: any): ValidationIssue[] {
   issues.push(...validateCodeSystemSupplementContent(cs));
   issues.push(...validateCompleteCodeSystem(cs));
   issues.push(...validateHl7ConceptDefinitions(cs, 'CodeSystem.concept', 'CodeSystem', hl7));
-  issues.push(...validateCodeSystemPropertyDeclarations(cs));
+  issues.push(...validateCodeSystemPropertyDeclarations(cs, fhirVersion));
 
   if (Array.isArray(cs.concept)) {
     for (let i = 0; i < cs.concept.length; i++) {
@@ -173,7 +176,10 @@ function validateHl7ConceptDefinitions(
   return [];
 }
 
-function validateCodeSystemPropertyDeclarations(cs: any): ValidationIssue[] {
+function validateCodeSystemPropertyDeclarations(
+  cs: any,
+  fhirVersion: 'R4' | 'R5' | 'R6',
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   if (!Array.isArray(cs.property)) return issues;
 
@@ -194,6 +200,17 @@ function validateCodeSystemPropertyDeclarations(cs: any): ValidationIssue[] {
     if (typeof prop?.uri === 'string' && prop.uri.startsWith(HL7_CONCEPT_PROPERTY_NAMESPACE)) {
       const suffix = prop.uri.slice(HL7_CONCEPT_PROPERTY_NAMESPACE.length);
       if (!HL7_KNOWN_CONCEPT_PROPERTIES.has(suffix)) {
+        if (fhirVersion !== 'R4') {
+          issues.push(createValidationIssue({
+            code: 'tx-codesystem-property-uri-unresolvable',
+            path: `CodeSystem.property[${i}]`,
+            resourceType: 'CodeSystem',
+            customMessage:
+              `The uri '${prop.uri}' for the property '${prop.code || suffix}' implies ` +
+              'a property exists in the referenced HL7 CodeSystem, but none was found',
+            severityOverride: 'warning',
+          }));
+        }
         issues.push(createValidationIssue({
           code: 'business-rule-cs-unknown-hl7-property',
           path: `CodeSystem.property[${i}]`,
@@ -240,6 +257,11 @@ function validateConceptPropertyValueCodes(
         customMessage:
           `Unknown code '${code}' in the CodeSystem '${system}' version '${version}'`,
         severityOverride: 'error',
+        details: {
+          code,
+          system,
+          fieldPath: `${conceptPath}.property[${p}].value.ofType(Coding).code`,
+        },
       }));
     }
   }

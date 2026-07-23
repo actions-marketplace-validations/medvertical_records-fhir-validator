@@ -33,6 +33,10 @@ import { validateRecordsBatch } from './validator-batch-validation';
 import { validateRecordsResource } from './validator-single-resource-validation';
 import { checkRecordsValidatorAvailability } from './validator-initialization';
 import type { ReferenceResolver } from '../validators/slicing-validator';
+import {
+  isResolvedContainedReferenceIssue,
+  rebaseContainedIssue,
+} from './validator-contained-issues';
 
 export type { RecordsValidatorConfig } from './validator-engine-config';
 
@@ -120,6 +124,7 @@ export class RecordsValidator {
     referenceResolver?: ReferenceResolver | null,
     organizationId?: number,
     serverId?: number,
+    recursionDepth: number = 0,
   ): Promise<ValidationIssue[]> {
     await this.waitForInitialization();
     this.applyRuntimeSettings(settings as ValidationSettings | undefined);
@@ -142,8 +147,64 @@ export class RecordsValidator {
         strictMode: this.config.strictMode || false,
         validateBundleEntriesIfNeeded: (target, version) =>
           this.validateBundleEntriesIfNeeded(target, version),
+        validateContainedResourcesIfNeeded: (target) =>
+          this.validateContainedResourcesIfNeeded(
+            target,
+            fhirVersion,
+            settings,
+            fhirClient,
+            referenceResolver,
+            organizationId,
+            serverId,
+            recursionDepth,
+          ),
       },
     );
+  }
+
+  private async validateContainedResourcesIfNeeded(
+    resource: any,
+    fhirVersion: 'R4' | 'R5' | 'R6',
+    settings: ValidationSettings | undefined,
+    fhirClient: FhirClientLike | undefined,
+    referenceResolver: ReferenceResolver | null | undefined,
+    organizationId: number | undefined,
+    serverId: number | undefined,
+    recursionDepth: number,
+  ): Promise<ValidationIssue[]> {
+    if (!Array.isArray(resource?.contained) || recursionDepth >= RecordsValidator.BUNDLE_ENTRY_MAX_DEPTH) {
+      return [];
+    }
+
+    const parentResourceType = resource.resourceType || 'Resource';
+    const nested = await Promise.all(resource.contained.map(async (contained: any, index: number) => {
+      if (!contained || typeof contained !== 'object' || typeof contained.resourceType !== 'string') {
+        return [];
+      }
+
+      const profileUrl = contained.meta?.profile?.[0]
+        ?? `http://hl7.org/fhir/StructureDefinition/${contained.resourceType}`;
+      const issues = await this.validate(
+        contained,
+        profileUrl,
+        fhirVersion,
+        settings,
+        fhirClient,
+        referenceResolver,
+        organizationId,
+        serverId,
+        recursionDepth + 1,
+      );
+
+      return issues
+        .filter(issue =>
+          issue.aspect !== 'metadata'
+          && !isResolvedContainedReferenceIssue(issue, resource)
+        )
+        .map(issue => rebaseContainedIssue(issue, parentResourceType, contained, index));
+    }));
+
+    return nested.flat();
   }
 
   private async validateBundleEntriesIfNeeded(

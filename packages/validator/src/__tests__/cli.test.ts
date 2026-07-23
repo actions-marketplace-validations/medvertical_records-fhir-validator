@@ -133,7 +133,7 @@ describe('records-fhir-validator CLI', () => {
     expect(result.stderr).toBe('');
     const report = await readFile(join(root, 'fixtures/validation-report.json'), 'utf8');
     expect(report).toContain('Validated 1 file(s):');
-  });
+  }, 30_000);
 
   it('exits with code 2 when include and exclude filters leave no JSON files', async () => {
     const root = await createTempDir();

@@ -31,6 +31,7 @@ export { ValueSetValidator } from './validators/valueset-validator';
 export { ConstraintValidator } from './validators/constraint-validator';
 export type { FHIRPathConstraintDiagnostics } from './validators/constraint-validator';
 export { SnapshotGenerator } from './core/snapshot-generator';
+export { inferCodeBasedProfiles } from './core/code-inferred-profiles';
 
 export type { RecordsValidatorConfig, ValidationContext } from './core/validator-engine';
 export type { StructureDefinition, ElementDefinition } from './core/structure-definition-types';

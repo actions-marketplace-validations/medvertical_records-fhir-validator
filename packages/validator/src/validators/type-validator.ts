@@ -142,9 +142,15 @@ export class TypeValidator {
         const typeDescriptions = effectiveTypes.map(t => getTypeDescription(t.code));
         const expectedTypes = typeDescriptions.join(' | ');
         const actualType = getActualFhirType(value);
+        const primitiveOnly = effectiveTypes.every(type => {
+          const normalized = normalizeFhirType(type.code) || type.code;
+          return PRIMITIVE_TYPE_CODES.has(normalized);
+        });
 
         issues.push(createValidationIssue({
-          code: 'structural-type-mismatch',
+          code: primitiveOnly
+            ? 'structural-primitive-type-mismatch'
+            : 'structural-type-mismatch',
           path,
           resourceType,
           profile: profileUrl,
@@ -215,7 +221,14 @@ export class TypeValidator {
       case 'base64Binary':
         return isValidBase64Binary(value)
           ? null
-          : this.createInvalidFormatIssue(path, profileUrl, `Invalid base64Binary format at ${path}`, value, 'base64Binary');
+          : this.createInvalidFormatIssue(
+            path,
+            profileUrl,
+            `Invalid base64Binary format at ${path}`,
+            value,
+            'base64Binary',
+            'structural-invalid-base64-format',
+          );
       default:
         return null;
     }
@@ -227,9 +240,10 @@ export class TypeValidator {
     message: string,
     value: string,
     expectedType: string,
+    code: string = 'structural-invalid-format',
   ): ValidationIssue {
     return createValidationIssue({
-      code: 'structural-invalid-format',
+      code,
       path,
       resourceType: inferResourceTypeFromPath(path),
       profile: profileUrl,

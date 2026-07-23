@@ -146,6 +146,22 @@ function isAbsoluteUri(value: string): boolean {
     return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
 }
 
+function isValidOidUrn(value: string): boolean {
+    if (!/^urn:oid:/i.test(value)) return true;
+
+    const oid = value.slice('urn:oid:'.length);
+    const arcs = oid.split('.');
+    if (arcs.length < 3 || arcs.some(arc => !/^(?:0|[1-9][0-9]*)$/.test(arc))) {
+        return false;
+    }
+
+    const firstArc = Number(arcs[0]);
+    const secondArc = Number(arcs[1]);
+    if (!Number.isSafeInteger(firstArc) || firstArc < 0 || firstArc > 2) return false;
+    if (!Number.isSafeInteger(secondArc)) return false;
+    return firstArc === 2 || secondArc <= 39;
+}
+
 function isReferenceTypePath(path: string): boolean {
     const stripped = path.replace(/\[\d+\]/g, '');
     if (isFhirTypeCodePath(stripped)) return false;
@@ -161,7 +177,15 @@ function isCodingSystemPath(strippedPath: string): boolean {
 
     const segments = strippedPath.split('.');
     const parent = segments[segments.length - 2];
-    return parent === 'coding' || parent === 'code' || parent.endsWith('Coding');
+    return parent === 'coding' ||
+        parent === 'code' ||
+        parent.endsWith('Coding') ||
+        // Meta.tag and Meta.security are arrays of Coding, but their element
+        // names do not contain "coding". Coding.system is a FHIR `uri`, so a
+        // relative URI is syntactically valid; terminology checks can still
+        // report that the system cannot be resolved.
+        parent === 'tag' ||
+        parent === 'security';
 }
 
 function isCanonicalReferencePath(path: string): boolean {
@@ -200,6 +224,25 @@ function validateReferenceTypeUri(value: string, path: string, resourceType: str
 export function validateUriFormat(value: string, path: string, resourceType: string, profileUrl?: string): ValidationIssue | null {
     if (!value || typeof value !== 'string') {
         return null;
+    }
+
+    // A URI with the urn:oid scheme is absolute, but it still has to contain
+    // a syntactically valid object identifier. Apply this before path-specific
+    // relative-URI allowances so invalid OIDs in Coding.system are not hidden.
+    if (!isValidOidUrn(value)) {
+        return createValidationIssue({
+            code: 'structural-invalid-uri',
+            path,
+            resourceType,
+            profile: profileUrl,
+            severityOverride: 'error',
+            customMessage: `OID URI '${value}' is not syntactically valid`,
+            details: {
+                value,
+                expectedUriType: 'OID URN',
+                fixHint: 'Use urn:oid followed by at least three numeric arcs without leading zeroes.',
+            },
+        });
     }
 
     // Some FHIR uri fields explicitly allow relative URIs

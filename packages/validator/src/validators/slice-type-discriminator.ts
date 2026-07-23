@@ -73,6 +73,14 @@ function typeCodeMatchesValue(expectedType: string | undefined, inferredType: st
   if (!expectedType) return false;
   if (expectedType === inferredType) return true;
 
+  // A valid Quantity does not need to carry `unit`. Do not infer its type
+  // from the presence of optional children: incomplete or constrained
+  // Quantities still need to match a type-discriminator slice so their
+  // missing/fixed child rules can be reported precisely.
+  if (expectedType === 'Quantity' && isQuantityLike(value)) {
+    return true;
+  }
+
   if (value && typeof value === 'object' && typeof value.resourceType === 'string') {
     return expectedType === value.resourceType;
   }
@@ -191,9 +199,21 @@ function isCodingLike(value: unknown): boolean {
   return ['system', 'version', 'code', 'display', 'userSelected'].some(key => key in value);
 }
 
+function isQuantityLike(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (!keys.every(key => QUANTITY_KEYS.has(key))) return false;
+
+  return typeof value.value === 'number' ||
+    typeof value.comparator === 'string' ||
+    typeof value.unit === 'string' ||
+    typeof value.code === 'string';
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 const CODEABLE_CONCEPT_KEYS = new Set(['id', 'extension', 'coding', 'text']);
 const CODING_KEYS = new Set(['id', 'extension', 'system', 'version', 'code', 'display', 'userSelected']);
+const QUANTITY_KEYS = new Set(['id', 'extension', 'value', 'comparator', 'unit', 'system', 'code']);

@@ -33,6 +33,7 @@ import {
 import { validateCodingHygiene } from './terminology-coding-hygiene-rules';
 import { createValidationIssue } from '../../issues';
 import { computeValidationIssueId } from '@records-fhir/validation-types';
+import { validateDeepLocalCodings } from './terminology-local-coding-rules';
 
 // ============================================================================
 // Types
@@ -109,6 +110,12 @@ export class TerminologyExecutor {
 
       issues.push(...validateKnownLoincDisplays(resource));
       issues.push(...validateCodingHygiene(resource, issues));
+      issues.push(...await validateDeepLocalCodings(
+        resource,
+        issues,
+        this.valuesetValidator,
+        fhirVersion,
+      ));
 
       return issues;
 

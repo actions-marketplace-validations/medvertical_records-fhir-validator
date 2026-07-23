@@ -40,6 +40,8 @@ const SPECIAL_BACKBONE_KEYS = new Set([
   'id', 'extension', 'modifierExtension',
 ]);
 
+const PRIMITIVE_SIDECAR_KEYS = new Set(['id', 'extension']);
+
 const CHOICE_TYPE_SUFFIXES = [
   'String', 'Boolean', 'Integer', 'Decimal', 'DateTime', 'Date', 'Time',
   'Instant', 'Uri', 'Url', 'Canonical', 'Base64Binary', 'Code', 'Oid', 'Id',
@@ -188,7 +190,20 @@ async function walk(
 
   for (const key of Object.keys(value)) {
     if (allowedSpecial.has(key)) continue;
-    if (key.startsWith('_')) continue;
+    if (key.startsWith('_')) {
+      // The structural sanity pass already emits the canonical invalid
+      // property diagnostic for an orphan primitive sidecar. Avoid adding a
+      // second nested unknown-field error for the same malformed property.
+      if (!Object.prototype.hasOwnProperty.call(value, key.slice(1))) continue;
+      validatePrimitiveSidecarProperties(
+        value[key],
+        `${pathPrefix}.${key.slice(1)}`,
+        sdUrl,
+        issues,
+        isRoot,
+      );
+      continue;
+    }
 
     const childPath = `${pathPrefix}.${key}`;
 
@@ -228,6 +243,37 @@ async function walk(
       if (subIndex) {
         await walk(childValue, info.type, subIndex, sdUrl, issues, false, deps);
       }
+    }
+  }
+}
+
+/**
+ * Primitive extension sidecars (`_id`, `_given`, …) are Elements and may
+ * contain only `id` and `extension`. Treating every underscore-prefixed key
+ * as opaque allowed malformed JSON such as `_id.fhir_comments` to pass the
+ * recursive unknown-property check.
+ */
+function validatePrimitiveSidecarProperties(
+  sidecar: unknown,
+  primitivePath: string,
+  sdUrl: string | undefined,
+  issues: ValidationIssue[],
+  isRoot: boolean,
+): void {
+  const entries = Array.isArray(sidecar) ? sidecar : [sidecar];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    for (const sidecarKey of Object.keys(entry)) {
+      if (PRIMITIVE_SIDECAR_KEYS.has(sidecarKey)) continue;
+      issues.push(createValidationIssue({
+        code: 'structural-unknown-element',
+        path: primitivePath,
+        resourceType: primitivePath.split('.')[0],
+        customMessage:
+          `Unknown element '${sidecarKey}' in primitive extension sidecar - ` +
+          `not defined in ${sdUrl || 'StructureDefinition'}`,
+        severityOverride: isRoot ? undefined : 'warning',
+      }));
     }
   }
 }

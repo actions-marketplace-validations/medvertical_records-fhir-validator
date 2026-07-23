@@ -3,6 +3,7 @@ import { createValidationIssue } from '../issues';
 import type { ElementDefinition } from '../core/structure-definition-types';
 import { isDeepStrictEqual } from 'util';
 import { validateElementValueBounds } from './element-rule-value-bounds';
+import { constraintTypeMatchesElement } from './element-constraint-type';
 
 export class ElementRulesValidator {
   validate(
@@ -38,7 +39,9 @@ export class ElementRulesValidator {
       return issues;
     }
 
-    const fixedKeys = Object.keys(elementAny).filter((key) => key.startsWith('fixed'));
+    const fixedKeys = Object.keys(elementAny).filter((key) =>
+      key.startsWith('fixed') && constraintTypeMatchesElement(elementDef, key)
+    );
     for (const fixedKey of fixedKeys) {
       const expected = elementAny[fixedKey];
       if (!this.matchesFixedValue(value, expected)) {
@@ -52,7 +55,9 @@ export class ElementRulesValidator {
       }
     }
 
-    const patternKeys = Object.keys(elementAny).filter((key) => key.startsWith('pattern'));
+    const patternKeys = Object.keys(elementAny).filter((key) =>
+      key.startsWith('pattern') && constraintTypeMatchesElement(elementDef, key)
+    );
     for (const patternKey of patternKeys) {
       const pattern = elementAny[patternKey];
       const patternMatch = this.checkPatternMatch(value, pattern, path);

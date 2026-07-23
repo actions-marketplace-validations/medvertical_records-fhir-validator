@@ -52,12 +52,15 @@ export class TerminologyResourceValidator {
    * Validate terminology-specific business rules on a resource.
    * Returns empty array for non-CodeSystem/ValueSet resources.
    */
-  validate(resource: any): ValidationIssue[] {
+  validate(
+    resource: any,
+    fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+  ): ValidationIssue[] {
     if (!resource || typeof resource !== 'object') return [];
 
     switch (resource.resourceType) {
       case 'CodeSystem':
-        return validateCodeSystemResource(resource);
+        return validateCodeSystemResource(resource, fhirVersion);
       case 'ValueSet':
         return this.validateValueSet(resource);
       case 'ConceptMap':
@@ -140,7 +143,7 @@ export class TerminologyResourceValidator {
 
     // --- ValueSet.expansion best-practice checks ---
     if (vs.expansion && typeof vs.expansion === 'object') {
-      issues.push(...validateValueSetExpansion(vs.expansion));
+      issues.push(...validateValueSetExpansion(vs.expansion, vs.compose));
     }
 
     return issues;

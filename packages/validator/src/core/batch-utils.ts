@@ -14,6 +14,7 @@ import type { StructureDefinition } from './structure-definition-types';
 import type { SnapshotGenerator } from './snapshot-generator';
 import { logger } from '../logger';
 import { getProfileSource, type ProfileSourceContext } from '../persistence';
+import { inferCodeBasedProfiles } from './code-inferred-profiles';
 
 // Module-level flag to prevent redundant warmups within a validation session
 let warmupCompleted = false;
@@ -61,7 +62,8 @@ export function groupResourcesByProfile(
       const declaredProfiles = resource.meta?.profile || [];
       profileUrl = declaredProfiles.length > 0
         ? declaredProfiles[0]
-        : `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`;
+        : inferCodeBasedProfiles(resource)[0]
+          ?? `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`;
     }
 
     if (!groups.has(profileUrl)) {

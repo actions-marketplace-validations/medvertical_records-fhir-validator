@@ -50,7 +50,14 @@ export interface FhirOperationOutcomeIssue {
 export function issueToOperationOutcomeIssue(
   issue: ValidationIssue
 ): FhirOperationOutcomeIssue {
-  const hl7Code = mapToHl7IssueType(issue.code);
+  const constraintKey = issue.details && typeof issue.details === 'object' && !Array.isArray(issue.details)
+    ? (issue.details as Record<string, unknown>).constraintKey
+    : undefined;
+  // Java reports dom-3 as an invalid contained-resource relationship rather
+  // than as the generic invariant category used for most FHIRPath failures.
+  const hl7Code = constraintKey === 'dom-3'
+    ? 'invalid'
+    : mapToHl7IssueType(issue.code);
 
   const result: FhirOperationOutcomeIssue = {
     severity: normalizeToHl7Severity(issue.severity),

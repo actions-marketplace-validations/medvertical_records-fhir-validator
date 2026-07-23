@@ -32,6 +32,11 @@ export const StructuralCodes = {
         severity: 'error',
         description: 'Primitive value format is invalid',
     },
+    'structural-invalid-base64-format': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'base64Binary value format is invalid',
+    },
     'structural-cardinality-violation': {
         aspect: 'structural',
         severity: 'error',
@@ -51,6 +56,21 @@ export const StructuralCodes = {
         aspect: 'structural',
         severity: 'error',
         description: 'Element type does not match',
+    },
+    'structural-primitive-type-mismatch': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Primitive element type does not match',
+    },
+    'structural-attachment-size-mismatch': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Attachment.size does not match the decoded Attachment.data byte length',
+    },
+    'structural-attachment-hash-mismatch': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Attachment.hash does not match the SHA-1 digest of Attachment.data',
     },
     'structural-validation-error': {
         aspect: 'structural',

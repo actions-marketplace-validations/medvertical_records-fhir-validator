@@ -7,7 +7,14 @@ export function isBundleDuplicateFullUrlIssue(issue: ValidationIssue): boolean {
 }
 
 export function normalizeIssuePathForDedupe(issue: ValidationIssue): string {
-  const path = issue.path || '';
+  const rawPath = issue.path || '';
+  // Recursive validation annotates contained-resource navigation with a
+  // `/*Type/id*/` segment. Strip it only for contained paths so equivalent
+  // parent/child findings dedupe, while Bundle entry annotations continue to
+  // distinguish different resources.
+  const path = rawPath.includes('.contained[')
+    ? rawPath.replace(/\/\*[^*]*\*\//g, '').replace(/\.{2,}/g, '.')
+    : rawPath;
   const details = issue.details;
   const detailsResourceType = details && typeof details === 'object' && !Array.isArray(details)
     ? (details as Record<string, unknown>).resourceType

@@ -18,6 +18,7 @@ import type { StructureDefinition, ElementDefinition } from '../core/structure-d
 import { createValidationIssue } from '../issues';
 import { matchesPattern } from './slice-utils';
 import { logger } from '../logger';
+import { constraintTypeMatchesElement } from './element-constraint-type';
 
 // ============================================================================
 // Types
@@ -219,7 +220,9 @@ export class DeepProfileValidator {
      * Extract fixed value from element definition
      */
     private extractFixedValue(elementDef: ElementDefinition): any {
-        const fixedKeys = Object.keys(elementDef).filter(k => k.startsWith('fixed'));
+        const fixedKeys = Object.keys(elementDef).filter(k =>
+            k.startsWith('fixed') && constraintTypeMatchesElement(elementDef, k)
+        );
         if (fixedKeys.length > 0) {
             return (elementDef as unknown as Record<string, unknown>)[fixedKeys[0]];
         }
@@ -230,7 +233,9 @@ export class DeepProfileValidator {
      * Extract pattern value from element definition
      */
     private extractPatternValue(elementDef: ElementDefinition): any {
-        const patternKeys = Object.keys(elementDef).filter(k => k.startsWith('pattern'));
+        const patternKeys = Object.keys(elementDef).filter(k =>
+            k.startsWith('pattern') && constraintTypeMatchesElement(elementDef, k)
+        );
         if (patternKeys.length > 0) {
             return (elementDef as unknown as Record<string, unknown>)[patternKeys[0]];
         }

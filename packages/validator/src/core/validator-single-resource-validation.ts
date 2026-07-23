@@ -20,10 +20,11 @@ import {
   StructuralExecutor,
   TerminologyExecutor,
 } from './executors';
-import { createValidationErrorIssue } from './validation-utils';
+import { createValidationErrorIssue, dedupeResourceTreeIssues } from './validation-utils';
 import { collectSingleResourceValidationIssues } from './single-resource-validation';
 import type { ReferenceResolver } from '../validators/slicing-validator';
 import { withIssuesSchemaVersion } from './issue-schema-version';
+import { inferCodeBasedProfiles } from './code-inferred-profiles';
 
 interface RecordsSingleResourceValidationInput {
   resource: any;
@@ -51,6 +52,7 @@ interface RecordsSingleResourceValidationContext {
   questionnaireRegistry?: QuestionnaireContextRegistry;
   strictMode: boolean;
   validateBundleEntriesIfNeeded(resource: any, fhirVersion: 'R4' | 'R5' | 'R6'): Promise<ValidationIssue[]>;
+  validateContainedResourcesIfNeeded(resource: any): Promise<ValidationIssue[]>;
 }
 
 export async function validateRecordsResource(
@@ -66,9 +68,10 @@ export async function validateRecordsResource(
     const declaredProfileUrl =
       profileUrl ??
       resource.meta?.profile?.[0] ??
+      inferCodeBasedProfiles(resource)[0] ??
       `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`;
 
-    logger.info(`[RecordsValidator] Validating ${resource.resourceType} against ${declaredProfileUrl}`);
+    logger.debug(`[RecordsValidator] Validating ${resource.resourceType} against ${declaredProfileUrl}`);
 
     const loadResult = await loadProfileOrBase(
       context.sdLoader,
@@ -106,7 +109,7 @@ export async function validateRecordsResource(
       ? context.questionnaireRegistry?.resolveForResponse(resource)
       : undefined;
 
-    const issues = await collectSingleResourceValidationIssues(
+    let issues = await collectSingleResourceValidationIssues(
       {
         resource,
         profileUrl: declaredProfileUrl,
@@ -131,9 +134,15 @@ export async function validateRecordsResource(
         validateBundleEntriesIfNeeded: context.validateBundleEntriesIfNeeded,
       },
     );
+    issues.push(...await context.validateContainedResourcesIfNeeded(resource));
+    // Contained resources are validated recursively after the parent issue
+    // collection has already been deduplicated. Run the same canonical
+    // deduplication once more at the complete-resource boundary so an issue
+    // reported through both paths is returned exactly once.
+    issues = dedupeResourceTreeIssues(issues);
 
     const validationTime = Date.now() - startTime;
-    logger.info(
+    logger.debug(
       `[RecordsValidator] Validated ${resource.resourceType} in ${validationTime}ms ` +
       `(${issues.length} issues - extensions, slicing, bindings, constraints checked)`,
     );

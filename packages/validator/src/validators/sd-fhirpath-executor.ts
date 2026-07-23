@@ -28,6 +28,12 @@ export interface SDFHIRPathContext {
     resource: any;
     resourceType: string;
     structureDef: StructureDefinition;
+    /**
+     * FHIRPath `%resource` / `%rootResource` context. This differs from
+     * `resource` when a non-resource datatype is validated recursively, for
+     * example an Extension profile attached to Patient.gender.
+     */
+    rootResource?: any;
     bundle?: any;
     bundleResources?: Map<string, any>; // Map of fullUrl/id to resource
     fhirVersion?: 'R4' | 'R5' | 'R6';
@@ -41,13 +47,14 @@ export class SDFHIRPathExecutor {
      */
     async execute(context: SDFHIRPathContext): Promise<ValidationIssue[]> {
         const { resource, resourceType, structureDef, bundle, bundleResources, fhirVersion = 'R4' } = context;
+        const rootResource = context.rootResource ?? resource;
         const issues: ValidationIssue[] = [];
         const profileUrl = structureDef.url;
 
         if (!structureDef || !resource) return issues;
 
         // Create FHIRPath context and build userInvocationTable once per execute() call
-        const fhirPathContext = createFHIRPathContext(resource, bundleResources ?? bundle);
+        const fhirPathContext = createFHIRPathContext(rootResource, bundleResources ?? bundle);
         const userInvocationTable = fhirPathContext ? {
             resolve: {
                 fn: (inputs: any[]) => fhirPathCustomFunctions.resolve.fn(inputs, fhirPathContext),
@@ -88,6 +95,7 @@ export class SDFHIRPathExecutor {
                 }
                 const constraintIssues = await this.evaluateConstraintOnElement(
                     resource,
+                    rootResource,
                     resourceType,
                     matched,
                     constraint,
@@ -115,6 +123,7 @@ export class SDFHIRPathExecutor {
 
             const constraintIssues = await this.evaluateConstraint(
                 resource,
+                rootResource,
                 resourceType,
                 collected,
                 userInvocationTable,
@@ -135,6 +144,7 @@ export class SDFHIRPathExecutor {
      */
     private async evaluateConstraintOnElement(
         resource: any,
+        rootResource: any,
         resourceType: string,
         matched: any,
         constraint: Constraint,
@@ -220,7 +230,7 @@ export class SDFHIRPathExecutor {
                 }
                 return issues;
             }
-            const result = this.evaluateExpression(resolvedExpression, evaluationContext, resource, userInvocationTable, fhirVersion);
+            const result = this.evaluateExpression(resolvedExpression, evaluationContext, rootResource, userInvocationTable, fhirVersion);
             if (!constraintPassed(result)) {
                 issues.push(this.createViolation(constraint, matched.resourcePath, resourceType, profileUrl));
             }
@@ -266,6 +276,7 @@ export class SDFHIRPathExecutor {
      */
     private async evaluateConstraint(
         resource: any,
+        rootResource: any,
         resourceType: string,
         collected: CollectedConstraint,
         userInvocationTable: any,
@@ -365,7 +376,7 @@ export class SDFHIRPathExecutor {
                     return issues;
                 }
                 // Root constraint - evaluate on entire resource
-                const result = this.evaluateExpression(effectiveExpression, resource, resource, userInvocationTable, fhirVersion);
+                const result = this.evaluateExpression(effectiveExpression, resource, rootResource, userInvocationTable, fhirVersion);
                 if (!constraintPassed(result)) {
                     issues.push(this.createViolation(constraint, elementPath, resourceType, profileUrl));
                 }
@@ -390,7 +401,7 @@ export class SDFHIRPathExecutor {
                     }
                     return issues;
                 }
-                const result = this.evaluateExpression(effectiveExpression, resource, resource, userInvocationTable, fhirVersion);
+                const result = this.evaluateExpression(effectiveExpression, resource, rootResource, userInvocationTable, fhirVersion);
                 if (!constraintPassed(result)) {
                     issues.push(this.createViolation(constraint, elementPath, resourceType, profileUrl));
                 }
@@ -421,7 +432,7 @@ export class SDFHIRPathExecutor {
                         }
                         continue;
                     }
-                    const result = this.evaluateExpression(effectiveExpression, ctx.value, resource, userInvocationTable, fhirVersion);
+                    const result = this.evaluateExpression(effectiveExpression, ctx.value, rootResource, userInvocationTable, fhirVersion);
                     if (!constraintPassed(result)) {
                         issues.push(this.createViolation(constraint, ctx.fullPath, resourceType, profileUrl));
                     }

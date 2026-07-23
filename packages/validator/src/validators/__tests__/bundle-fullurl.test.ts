@@ -1,9 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { BundleValidator } from '../bundle-validator';
+import { validateBundleEntryIdConsistency } from '../bundle-entry-rules';
 
 const validator = new BundleValidator();
 
 describe('BundleValidator fullUrl enforcement', () => {
+  it('leaves a non-string fullUrl to structural type validation without throwing', async () => {
+    const bundle = {
+      resourceType: 'Bundle',
+      type: 'collection',
+      entry: [{
+        fullUrl: { invalidType: true },
+        resource: { resourceType: 'Patient', id: 'p1' },
+      }],
+    };
+
+    await expect(validator.validateBundle(bundle)).resolves.toBeDefined();
+    expect(validateBundleEntryIdConsistency(bundle)).toEqual([]);
+  });
+
   it('flags missing fullUrl as error in document Bundle', async () => {
     const bundle = {
       resourceType: 'Bundle',

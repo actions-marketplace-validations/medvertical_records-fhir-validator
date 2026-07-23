@@ -33,6 +33,7 @@ export function validateQuestionnaireItems(
     items: any[],
     linkIdSet: Set<string>,
     basePath: string,
+    fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
 ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
@@ -41,14 +42,14 @@ export function validateQuestionnaireItems(
 
         issues.push(...validateLinkId(state.item, state.path, linkIdSet));
         issues.push(...validateRequiredType(state));
-        issues.push(...validateGroupAndDisplayShape(state));
+        issues.push(...validateGroupAndDisplayShape(state, fhirVersion));
         issues.push(...validateAnswerSources(state));
         issues.push(...validateDisplayRestrictions(state));
         issues.push(...validateEnableWhenDefinition(state));
         issues.push(...validateInitialAndLength(state));
 
         if (state.nestedItems) {
-            issues.push(...validateQuestionnaireItems(state.nestedItems, linkIdSet, `${state.path}.item`));
+            issues.push(...validateQuestionnaireItems(state.nestedItems, linkIdSet, `${state.path}.item`, fhirVersion));
         }
     }
 
@@ -111,12 +112,15 @@ function validateRequiredType(state: QuestionnaireItemValidationState): Validati
     })];
 }
 
-function validateGroupAndDisplayShape(state: QuestionnaireItemValidationState): ValidationIssue[] {
+function validateGroupAndDisplayShape(
+    state: QuestionnaireItemValidationState,
+    fhirVersion: 'R4' | 'R5' | 'R6',
+): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
     const { item, nestedItems, path, type } = state;
 
     if (type === 'group' && (!nestedItems || nestedItems.length === 0)) {
-        issues.push(createQue1Issue(path));
+        issues.push(fhirVersion === 'R4' ? createQue1Issue(path) : createQue1bIssue(path));
     }
     if (type === 'display' && nestedItems && nestedItems.length > 0) {
         issues.push(createQue1Issue(path));
@@ -132,6 +136,18 @@ function validateGroupAndDisplayShape(state: QuestionnaireItemValidationState): 
     }
 
     return issues;
+}
+
+function createQue1bIssue(path: string): ValidationIssue {
+    return createValidationIssue({
+        code: 'constraint-violation-que-1b',
+        path,
+        resourceType: 'Questionnaire',
+        customMessage: "Constraint failed: que-1b: 'Groups should have items'",
+        severityOverride: 'warning',
+        ruleId: 'que-1b',
+        details: { constraintKey: 'que-1b', fieldPath: path },
+    });
 }
 
 function createQue1Issue(path: string): ValidationIssue {

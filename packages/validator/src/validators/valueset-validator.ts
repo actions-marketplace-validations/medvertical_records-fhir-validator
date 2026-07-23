@@ -6,8 +6,6 @@ import type {
   TerminologyResolutionConfig,
   CodeBindingOutcome,
   TerminologyDiagnostics,
-  CodeSystem,
-  CodeSystemConcept,
 } from './valueset-types';
 import {
   DEFAULT_RESOLUTION_CONFIG,
@@ -55,53 +53,15 @@ import {
   recordTerminologyReason,
 } from './valueset-diagnostics';
 import { validateCodeViaTerminologyServerWithFilters } from './valueset-terminology-server-validation';
+import { EpochSingleflight } from './epoch-singleflight';
+import {
+  buildUnverifiableCodeSystemResult,
+  fhirVersionToPackageMajor,
+  findCodeSystemConcept,
+  isAssertableCodeSystem,
+} from './valueset-code-system-rules';
 
 export type { TerminologyResolutionStrategy, TerminologyResolutionConfig, ValueSet, CodeSystem } from './valueset-types';
-
-function fhirVersionToPackageMajor(fhirVersion?: FhirVersion): string | undefined {
-  if (fhirVersion === 'R4') return '4';
-  if (fhirVersion === 'R5') return '5';
-  if (fhirVersion === 'R6') return '6';
-  return undefined;
-}
-
-function isAssertableCodeSystem(codeSystem: CodeSystem): boolean {
-  return codeSystem.content !== 'not-present' && codeSystem.content !== 'supplement';
-}
-
-function findCodeSystemConcept(
-  concepts: CodeSystemConcept[] | undefined,
-  code: string,
-): CodeSystemConcept | null {
-  if (!concepts) return null;
-  for (const concept of concepts) {
-    if (concept.code === code) return concept;
-    const nested = findCodeSystemConcept(concept.concept, code);
-    if (nested) return nested;
-  }
-  return null;
-}
-
-function shouldTreatCodeUnknownAsUnverifiable(
-  system: string,
-  result: CodeSystemValidationResult,
-  config: TerminologyResolutionConfig,
-): boolean {
-  return system === 'http://snomed.info/sct' &&
-    result.reason === 'code-unknown' &&
-    !hasEnabledPreferredTerminologyServer(config, system);
-}
-
-function hasEnabledPreferredTerminologyServer(
-  config: TerminologyResolutionConfig,
-  system: string,
-): boolean {
-  return (config.servers ?? []).some(server =>
-    server.enabled &&
-    !server.circuitOpen &&
-    server.preferredSystems?.includes(system)
-  );
-}
 
 export class ValueSetValidator {
   private resolutionConfig: TerminologyResolutionConfig;
@@ -110,6 +70,7 @@ export class ValueSetValidator {
   private packageLoader: ValueSetPackageLoader;
   private twoPhaseShadow: TwoPhaseShadowEvaluator;
   private terminologyDiagnostics: TerminologyDiagnostics = createEmptyTerminologyDiagnostics();
+  private bindingResolutions = new EpochSingleflight<CodeBindingOutcome>();
 
   static readonly EXTERNAL_CODE_SYSTEMS = EXTERNAL_CODE_SYSTEMS;
 
@@ -143,6 +104,7 @@ export class ValueSetValidator {
     };
     this.apiClient.setConfig(this.resolutionConfig);
     this.twoPhaseShadow.setConfig(this.resolutionConfig.twoPhaseExpansion);
+    this.bindingResolutions.advanceEpoch();
     const twoPhase = this.resolutionConfig.twoPhaseExpansion?.enabled
       ? this.resolutionConfig.twoPhaseExpansion.mode
       : 'off';
@@ -213,9 +175,6 @@ export class ValueSetValidator {
     };
   }
 
-  /**
-   * Validate code with binding-strength awareness
-   */
   async isCodeValidForBinding(
     code: string,
     system: string | undefined,
@@ -239,14 +198,31 @@ export class ValueSetValidator {
     fhirVersion?: FhirVersion,
     elementPath?: string,
   ): Promise<CodeBindingOutcome> {
+    return this.bindingResolutions.run([
+      fhirVersion ?? '', bindingStrength, valueSetUrl,
+      system ?? '', code, elementPath ?? '',
+    ], () => this.resolveCodeBindingSafely(
+      code, system, valueSetUrl, bindingStrength, fhirVersion, elementPath,
+    ));
+  }
+
+  private async resolveCodeBindingSafely(
+    code: string,
+    system: string | undefined,
+    valueSetUrl: string,
+    bindingStrength: BindingStrength,
+    fhirVersion?: FhirVersion,
+    elementPath?: string,
+  ): Promise<CodeBindingOutcome> {
     try {
       return await this.resolveCodeBinding(code, system, valueSetUrl, bindingStrength, fhirVersion, elementPath);
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
-      if (bindingStrength === 'required') {
-        logger.warn(`[ValueSetValidator] Required binding validation failed, treating as invalid: ${err.message}`);
-        return 'invalid';
-      }
+      // A resolver failure is absence of evidence, never evidence that the
+      // code is outside a required ValueSet. Keep the tri-state contract for
+      // every binding strength so infrastructure/package failures cannot
+      // create false clinical errors.
+      logger.warn(`[ValueSetValidator] Binding validation failed, treating as unverified: ${err.message}`);
       recordTerminologyReason(this.terminologyDiagnostics.unverifiedBindings, 'validation-error');
       return 'unverified';
     }
@@ -262,7 +238,14 @@ export class ValueSetValidator {
     fhirVersion?: FhirVersion,
   ): Promise<CodeSystemValidationResult> {
     const localResult = await this.validateCodeInLocalCodeSystem(code, system, display, fhirVersion);
-    if (localResult) return localResult;
+    if (localResult) {
+      return buildUnverifiableCodeSystemResult(
+        code,
+        system,
+        localResult,
+        this.resolutionConfig,
+      ) ?? localResult;
+    }
 
     if (!this.isExternalCodeSystem(system)) {
       return { valid: true };
@@ -279,16 +262,27 @@ export class ValueSetValidator {
       resolutionConfig: this.resolutionConfig,
       system,
     });
-    if (shouldTreatCodeUnknownAsUnverifiable(system, result, this.resolutionConfig)) {
-      return {
-        valid: false,
-        reason: 'system-unresolvable',
-        message:
-          `Could not verify SNOMED CT code '${code}' against an authoritative unversioned SNOMED edition. ` +
-          `Configure a SNOMED-preferred terminology server or provide a versioned Coding.version to enforce code membership.`,
-      };
-    }
-    return result;
+    return buildUnverifiableCodeSystemResult(
+      code,
+      system,
+      result,
+      this.resolutionConfig,
+    ) ?? result;
+  }
+
+  /**
+   * Validate against an installed CodeSystem only. This is used by the deep
+   * Coding walk for datatype children that are not expanded into a resource
+   * StructureDefinition snapshot. It must never trigger a remote terminology
+   * request merely because a nested Coding exists.
+   */
+  async validateCodeInLocalCodeSystemOnly(
+    code: string,
+    system: string,
+    display?: string,
+    fhirVersion?: FhirVersion,
+  ): Promise<CodeSystemValidationResult | null> {
+    return this.validateCodeInLocalCodeSystem(code, system, display, fhirVersion);
   }
 
   private async validateCodeInLocalCodeSystem(
@@ -304,10 +298,17 @@ export class ValueSetValidator {
 
     const concept = findCodeSystemConcept(codeSystem.concept, code);
     if (!concept) {
+      const incompleteCodeSystem = codeSystem.content === 'fragment';
       return {
         valid: false,
         reason: 'code-unknown',
-        message: `Unknown code '${code}' in CodeSystem '${system}'${codeSystem.version ? ` version '${codeSystem.version}'` : ''}`,
+        incompleteCodeSystem,
+        message:
+          `Unknown code '${code}' in CodeSystem '${system}'` +
+          `${codeSystem.version ? ` version '${codeSystem.version}'` : ''}` +
+          (incompleteCodeSystem
+            ? '; the CodeSystem is a fragment, so the code may exist in another fragment'
+            : ''),
       };
     }
 
@@ -407,9 +408,6 @@ export class ValueSetValidator {
     }
   }
 
-  /**
-   * Clear all caches
-   */
   clearCache(): void {
     this.cache.clear();
     this.packageLoader.clearLookupState();
@@ -417,13 +415,11 @@ export class ValueSetValidator {
     clearCodeSystemValidateCodeCache();
     clearSubsumesCache();
     this.twoPhaseShadow.clearExpansion();
+    this.bindingResolutions.clear();
     this.terminologyDiagnostics = createEmptyTerminologyDiagnostics();
     logger.debug('[ValueSetValidator] Cache cleared');
   }
 
-  /**
-   * Get cache statistics
-   */
   getCacheStats(): {
     valueSetCount: number;
     codeSystemCount: number;

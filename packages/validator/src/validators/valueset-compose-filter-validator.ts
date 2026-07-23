@@ -4,6 +4,7 @@ import {
   ALLOWED_FILTER_OPS,
   codeSystemHasCode,
   getCachedCodeSystem,
+  isTxOnlySystem,
   parseSystemVersionCode,
 } from './terminology-resource-utils';
 
@@ -32,7 +33,14 @@ export function validateValueSetComposeFilters(
     issues.push(...validateFilterOperator(op, filterPath));
 
     const { propDef, filterDef, hasKnownDefs } = resolveCodeSystemFilterDefinitions(targetCs, property);
-    if (targetCs && property && hasKnownDefs && !propDef && !filterDef) {
+    if (
+      targetCs &&
+      property &&
+      hasKnownDefs &&
+      !propDef &&
+      !filterDef &&
+      !isTxOnlySystem(systemUrl ?? '')
+    ) {
       issues.push(createValidationIssue({
         code: 'tx-valueset-filter-property-unknown',
         path: filterPath,

@@ -30,6 +30,7 @@ async function mergeTypeProfilePatterns(
   element: ElementDefinition,
   childPatterns: Map<string, any>,
   childFixed: Map<string, any>,
+  childMin: Map<string, number>,
   resolver: TypeProfileResolverFn,
 ): Promise<void> {
   if (!resolver || !element.type) return;
@@ -53,6 +54,9 @@ async function mergeTypeProfilePatterns(
             const tf = extractFixedFromElement(typeEl);
             if (tf !== undefined) childFixed.set(relativePath, tf);
           }
+          if ((typeEl.min ?? 0) > 0 && !childMin.has(relativePath)) {
+            childMin.set(relativePath, typeEl.min!);
+          }
         }
       } catch (err) {
         logger.debug(`[SlicingValidator] Failed to resolve type profile ${profileUrl}: ${err}`);
@@ -68,6 +72,7 @@ async function mergeAncestorTypeProfileSliceMetadata({
   sliceDef,
   childPatterns,
   childFixed,
+  childMin,
   childTypes,
   resolver,
 }: {
@@ -77,6 +82,7 @@ async function mergeAncestorTypeProfileSliceMetadata({
   sliceDef: SliceDefinition;
   childPatterns: Map<string, any>;
   childFixed: Map<string, any>;
+  childMin: Map<string, number>;
   childTypes: Map<string, TypeSpec[]>;
   resolver: TypeProfileResolverFn;
 }): Promise<void> {
@@ -106,6 +112,7 @@ async function mergeAncestorTypeProfileSliceMetadata({
             typeElements,
             childPatterns,
             childFixed,
+            childMin,
             childTypes,
           );
         } catch (err) {
@@ -168,6 +175,7 @@ function mergeInheritedSliceChildren(
   typeElements: ElementDefinition[],
   childPatterns: Map<string, any>,
   childFixed: Map<string, any>,
+  childMin: Map<string, number>,
   childTypes: Map<string, TypeSpec[]>,
 ): void {
   const inheritedPrefix = inheritedElement.id ? `${inheritedElement.id}.` : null;
@@ -184,6 +192,9 @@ function mergeInheritedSliceChildren(
       const childFixedValue = extractFixedFromElement(candidate);
       if (childFixedValue !== undefined) childFixed.set(relativePath, childFixedValue);
     }
+    if ((candidate.min ?? 0) > 0 && !childMin.has(relativePath)) {
+      childMin.set(relativePath, candidate.min!);
+    }
     if (!childTypes.has(relativePath) && candidate.type && candidate.type.length > 0) {
       childTypes.set(relativePath, candidate.type);
     }
@@ -196,6 +207,20 @@ function getTypeProfileRelativePath(element: ElementDefinition, typeRoot: string
     return element.id.substring(idPrefix.length);
   }
   return element.path.substring(typeRoot.length + 1);
+}
+
+function applyRootSliceConstraints(sliceDef: SliceDefinition, element: ElementDefinition): void {
+  const rootPattern = extractPatternEntry(element);
+  if (rootPattern !== undefined) {
+    sliceDef.pattern = rootPattern.value;
+    sliceDef.patternKind = rootPattern.key;
+  }
+
+  const rootFixed = extractFixedEntry(element);
+  if (rootFixed !== undefined) {
+    sliceDef.fixed = rootFixed.value;
+    sliceDef.fixedKind = rootFixed.key;
+  }
 }
 
 export async function extractSlicingInfo(
@@ -235,23 +260,14 @@ export async function extractSlicingInfo(
       type: element.type,
     };
 
-    const rootPattern = extractPatternEntry(element);
-    if (rootPattern !== undefined) {
-      sliceDef.pattern = rootPattern.value;
-      sliceDef.patternKind = rootPattern.key;
-    }
-
-    const rootFixed = extractFixedEntry(element);
-    if (rootFixed !== undefined) {
-      sliceDef.fixed = rootFixed.value;
-      sliceDef.fixedKind = rootFixed.key;
-    }
+    applyRootSliceConstraints(sliceDef, element);
 
     const slicePrefix = element.id
       ? `${element.id}.`
       : `${elementPath}:${element.sliceName}.`;
     const childPatterns = new Map<string, any>();
     const childFixed = new Map<string, any>();
+    const childMin = new Map<string, number>();
     const childTypes = new Map<string, Array<{ code: string; profile?: string[]; targetProfile?: string[] }>>();
     const childBindingValueSets = new Map<string, string>();
     const childBindingCodes = new Map<string, Set<string>>();
@@ -265,6 +281,9 @@ export async function extractSlicingInfo(
       if (childPattern !== undefined) childPatterns.set(relativePath, childPattern);
       const childFixedValue = extractFixedFromElement(candidate);
       if (childFixedValue !== undefined) childFixed.set(relativePath, childFixedValue);
+      if ((candidate.min ?? 0) > 0) {
+        childMin.set(relativePath, candidate.min!);
+      }
       if (candidate.type && candidate.type.length > 0) {
         childTypes.set(relativePath, candidate.type);
       }
@@ -287,7 +306,7 @@ export async function extractSlicingInfo(
       }
     }
 
-    await mergeTypeProfilePatterns(element, childPatterns, childFixed, typeProfileResolver);
+    await mergeTypeProfilePatterns(element, childPatterns, childFixed, childMin, typeProfileResolver);
     await mergeAncestorTypeProfileSliceMetadata({
       element,
       elements,
@@ -295,6 +314,7 @@ export async function extractSlicingInfo(
       sliceDef,
       childPatterns,
       childFixed,
+      childMin,
       childTypes,
       resolver: typeProfileResolver,
     });
@@ -302,6 +322,7 @@ export async function extractSlicingInfo(
 
     if (childPatterns.size > 0) sliceDef.childPatterns = childPatterns;
     if (childFixed.size > 0) sliceDef.childFixed = childFixed;
+    if (childMin.size > 0) sliceDef.childMin = childMin;
     if (childTypes.size > 0) sliceDef.childTypes = childTypes;
     if (childBindingValueSets.size > 0) sliceDef.childBindingValueSets = childBindingValueSets;
     if (childBindingCodes.size > 0) sliceDef.childBindingCodes = childBindingCodes;

@@ -1,4 +1,4 @@
-import type { StructureDefinition } from '../core/structure-definition-types';
+import type { ElementDefinition, StructureDefinition } from '../core/structure-definition-types';
 
 export interface ExtensionValidationContext {
   resource: any;
@@ -18,5 +18,13 @@ export interface ExtensionDefinition {
   typeCodes?: string[];
   isModifier?: boolean;
   profileUrl?: string;
+  /**
+   * The value[x] rule declared inline below a complex-extension slice.
+   * Complex extensions such as US Core ethnicity do not give each nested
+   * slice its own StructureDefinition; their type, cardinality, and binding
+   * live on `Extension.extension:slice.value[x]` in the parent profile.
+   */
+  inlineValueElement?: ElementDefinition;
+  ownerProfileUrl?: string;
   sliceName?: string;
 }

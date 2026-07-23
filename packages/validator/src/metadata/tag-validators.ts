@@ -11,7 +11,6 @@
 
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
-import { validateUriFormat } from './uri-validators';
 import { logger } from '../logger';
 
 /**
@@ -69,14 +68,17 @@ export class TagValidator {
               details: { actualValue: tag.system },
             }));
           } else {
-            const systemValidation = validateUriFormat(tag.system);
-            if (!systemValidation.isValid) {
+            // Coding.system is a FHIR `uri`, which permits relative URI
+            // references. Reject whitespace (invalid in a URI) but do not
+            // require an absolute URL here; Identifier.system has the stricter
+            // absolute-reference rule and is validated separately.
+            if (/\s/.test(tag.system)) {
               issues.push(createValidationIssue({
                 code: 'metadata-tag-invalid-system-uri',
                 path: `${path}.system`,
                 resourceType,
-                messageParams: { value: tag.system },
-                details: { reason: systemValidation.reason },
+                messageParams: { system: tag.system },
+                details: { reason: 'URI must not contain whitespace' },
               }));
             }
           }

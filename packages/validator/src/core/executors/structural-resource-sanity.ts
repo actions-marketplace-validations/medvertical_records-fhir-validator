@@ -32,6 +32,7 @@ interface ResourceSanityValidators {
       resource: any,
       contextQuestionnaire?: any,
       options?: ResourceSanityOptions,
+      fhirVersion?: 'R4' | 'R5' | 'R6',
     ): ValidationIssue[];
   };
 }
@@ -45,6 +46,7 @@ export function validateResourceSanity(
   validators: ResourceSanityValidators,
   contextQuestionnaire?: any,
   options: ResourceSanityOptions = {},
+  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
 ): ValidationIssue[] {
   const resourceType = resource?.resourceType || 'Resource';
   const issues = [
@@ -65,7 +67,12 @@ export function validateResourceSanity(
   ];
 
   if (resourceType === 'Questionnaire' || resourceType === 'QuestionnaireResponse') {
-    issues.push(...validators.questionnaire.validateAnyResource(resource, contextQuestionnaire, options));
+    issues.push(...validators.questionnaire.validateAnyResource(
+      resource,
+      contextQuestionnaire,
+      options,
+      fhirVersion,
+    ));
   }
 
   return issues;

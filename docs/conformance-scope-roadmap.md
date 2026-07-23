@@ -52,7 +52,7 @@ It should not be described as support for every item in the upstream manifest.
 | Non-R4/R5/R6 FHIR versions (`3.0`, `3.0.1`, `1.4`) | 47 | Add only if legacy STU3/DSTU support becomes a product target. |
 | Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 68 | Adjacent standards need dedicated modules and separate scores. |
 | Disabled by upstream manifest (`use-test: false`) | 17 | Keep excluded unless upstream enables them or Records defines its own baseline. |
-| No `java` baseline declared in the upstream manifest | 1 | `(default)/zzz` is an upstream close-up helper rather than a normal comparison case. |
+| No `java` baseline declared in the upstream manifest | 1 | `(default)/zzz` is an upstream platform-specific teardown workaround rather than a validator comparison case. |
 | Logical model test | 1 | Add as a logical-model lane if logical-model validation is implemented. |
 
 These are excluded because they do not test the current package contract:

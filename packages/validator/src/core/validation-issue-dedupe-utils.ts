@@ -18,7 +18,11 @@ export function getTerminologyDisplayMismatchKey(issue: ValidationIssue): string
 }
 
 export function getTerminologyCodeInvalidKey(issue: ValidationIssue): string | null {
-  if (issue.code !== 'terminology-code-invalid' && issue.code !== 'invalid-code') return null;
+  if (
+    issue.code !== 'terminology-code-invalid' &&
+    issue.code !== 'invalid-code' &&
+    issue.code !== 'tx-codesystem-concept-property-code-invalid'
+  ) return null;
   const details = getDetailsRecord(issue);
   const system = typeof details?.system === 'string' ? details.system.trim().toLowerCase() : '';
   const code = typeof details?.code === 'string' ? details.code.trim().toLowerCase() : '';
@@ -44,7 +48,10 @@ function normalizeIssuePathForTerminologyCode(issue: ValidationIssue): string {
   const relativePath = resourceType && rawPath.startsWith(prefix)
     ? rawPath.slice(prefix.length)
     : rawPath;
-  const normalizedPath = normalizeChoiceTypePath(relativePath, { stripIndices: false });
+  const normalizedPath = normalizeChoiceTypePath(
+    relativePath.replace(/\.value\.oftype\(([^)]+)\)/g, '.value$1'),
+    { stripIndices: false },
+  );
   if (normalizedPath.endsWith('.coding.code')) return normalizedPath.slice(0, -'.code'.length);
   if (normalizedPath.endsWith('.code')) return normalizedPath.slice(0, -'.code'.length);
   return normalizedPath;
@@ -58,6 +65,7 @@ function getTerminologyCodeInvalidSpecificity(issue: ValidationIssue): number {
   }
   if (issue.message.toLowerCase().includes('check digit')) score += 100;
   if (issue.code === 'terminology-code-invalid') score += 25;
+  if (issue.code === 'tx-codesystem-concept-property-code-invalid') score += 100;
   if (details?.provenance && typeof details.provenance === 'object') score += 50;
   return score;
 }

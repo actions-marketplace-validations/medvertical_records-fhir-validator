@@ -67,6 +67,28 @@ describe('ValueSetValidator required primitive bindings', () => {
     expect(issues[0].details?.resourceType).toBe('Patient');
   });
 
+  it('does not satisfy a required CodeableConcept binding with a system-less Coding', async () => {
+    const valueSetUrl = 'http://hl7.org/fhir/ValueSet/allergyintolerance-clinical|4.0.1';
+    setExpandedCodes(valueSetUrl, new Set([
+      'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical|active',
+      'active',
+    ]));
+    const validator = new ValueSetValidator();
+
+    const issues = await validator.validateBinding(
+      { coding: [{ code: 'active' }] },
+      { strength: 'required', valueSet: valueSetUrl },
+      'AllergyIntolerance.clinicalStatus',
+      { fhirVersion: 'R4' },
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      severity: 'error',
+      code: 'terminology-binding-required-code',
+      path: 'AllergyIntolerance.clinicalStatus',
+    }));
+  });
+
   it('rejects invalid observation-status codes from local expansion', async () => {
     const validator = new ValueSetValidator();
 
@@ -238,6 +260,35 @@ describe('ValueSetValidator required primitive bindings', () => {
       valueSet: valueSetUrl,
       bindingStrength: 'required',
     });
+  });
+
+  it('treats a wildcard ValueSet include version as unconstrained', async () => {
+    const valueSetUrl = 'http://example.test/ValueSet/versioned-ops';
+    const systemUrl = 'http://fhir.de/CodeSystem/bfarm/ops';
+    valueSetCache.setValueSetFile(valueSetUrl, {
+      resourceType: 'ValueSet',
+      url: valueSetUrl,
+      status: 'active',
+      compose: { include: [{ system: systemUrl, version: '*' }] },
+    });
+    setExpandedCodes(valueSetUrl, new Set([`${systemUrl}|5-470.0`, '5-470.0']));
+
+    const validator = new ValueSetValidator();
+    const issues = await validator.validateBinding(
+      {
+        coding: [{
+          system: systemUrl,
+          version: '2020',
+          code: '5-470.0',
+        }],
+      },
+      { strength: 'required', valueSet: valueSetUrl },
+      'Procedure.code',
+    );
+
+    expect(issues).not.toContainEqual(expect.objectContaining({
+      code: 'terminology-code-system-version-mismatch',
+    }));
   });
 
   it('does not warn when Coding.display only differs in case or whitespace', async () => {

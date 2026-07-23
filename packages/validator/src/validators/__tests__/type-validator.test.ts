@@ -38,7 +38,7 @@ describe('TypeValidator', () => {
       const types: ElementType[] = [{ code: 'integer' }];
       const issues = await validator.validate('not-a-number', types, 'Patient.age');
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
       expect(issues[0].resourceType).toBe('Patient');
     });
 
@@ -82,7 +82,7 @@ describe('TypeValidator', () => {
       );
 
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
     });
 
     it('reports malformed instant strings as format errors, not type mismatches', async () => {
@@ -125,7 +125,7 @@ describe('TypeValidator', () => {
       const issues = await validator.validate('not base64!', types, 'Binary.data');
 
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-invalid-format');
+      expect(issues[0].code).toBe('structural-invalid-base64-format');
       expect(issues[0].resourceType).toBe('Binary');
       expect(issues.some(issue => issue.code === 'structural-type-mismatch')).toBe(false);
     });
@@ -151,7 +151,7 @@ describe('TypeValidator', () => {
       const issues = await validator.validate(invalidValue, types, 'Media.content.data');
 
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-invalid-format');
+      expect(issues[0].code).toBe('structural-invalid-base64-format');
 
       const details = issues[0].details as Record<string, unknown>;
       expect(details.value).toBeUndefined();
@@ -221,7 +221,7 @@ describe('TypeValidator', () => {
       const issues = await validator.validate('not-a-number', types, 'Patient.age');
       
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
     });
   });
 
@@ -286,7 +286,7 @@ describe('TypeValidator', () => {
       
       // Should error on the string element
       expect(issues.length).toBeGreaterThan(0);
-      expect(issues.some(i => i.code === 'structural-type-mismatch')).toBe(true);
+      expect(issues.some(i => i.code === 'structural-primitive-type-mismatch')).toBe(true);
     });
   });
 
@@ -373,7 +373,7 @@ describe('TypeValidator', () => {
       
       const issues = await validator.validate('string-value', types, 'Element.value');
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
     });
 
     it('accepts extension-only complex values in choice slots', async () => {
@@ -429,7 +429,7 @@ describe('TypeValidator', () => {
       const types: ElementType[] = [{ code: 'integer' }];
       const issues = await validator.validate({ not: 'an-integer' }, types, 'Patient.multipleBirthInteger');
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
     });
   });
 });

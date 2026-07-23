@@ -15,13 +15,13 @@ import { getExtensionGroupsByParent } from './extension-group-resolver';
 import {
   getSubExtensionDefinitions,
   validateAgainstExtensionProfile,
+  validateExtensionValueElements,
 } from './extension-profile-validation';
 import {
   validateExtensionStructure,
   validateExtensionValueType,
 } from './extension-structure-rules';
 import type { ExtensionDefinition, ExtensionValidationContext } from './extension-types';
-import { validateUniversalExtensionRules } from './extension-universal-rules';
 import {
   filterDefinitionContextForFhirVersion,
   filterDefinitionsForFhirVersion,
@@ -31,32 +31,19 @@ import { walkResourceExtensions } from './extension-resource-walk';
 
 export type { ExtensionDefinition, ExtensionValidationContext } from './extension-types';
 
-// ============================================================================
-// Extension Validator
-// ============================================================================
-
 export class ExtensionValidator {
   private extensionProfileCache: Map<string, StructureDefinition | null> = new Map();
   /**
    * Cache of sub-extension definitions keyed by parent extension profile URL.
-   * Sub-extension definitions are parsed from `Extension.extension:sliceName`
-   * elements inside the parent extension's profile snapshot and drive
-   * cardinality/value-type checks on nested extensions.
-   *
-   * Without this cache each nested extension in a complex profile would
-   * re-parse the parent profile on every validation.
+   * Avoids parsing complex-extension snapshots for every nested instance.
    */
   private subExtensionDefinitionsCache: Map<string, Map<string, ExtensionDefinition>> = new Map();
   /**
-   * URL-resolvability cache: `true` means an Extension SD was found for this
-   * URL (via sdLoader), `false` means it was not. Cached per validator
-   * instance so repeated resource validations don't re-fetch the same URLs.
+   * Remembers whether the loader resolved each extension URL.
    */
   private urlResolvabilityCache: Map<string, boolean> = new Map();
   /**
-   * Maximum depth for nested extension traversal. FHIR does not prescribe a
-   * hard limit but real profiles rarely go beyond 3 levels; anything deeper
-   * usually indicates a cycle or runaway data.
+   * Bounds malformed or cyclic nested-extension input.
    */
   private readonly maxNestedExtensionDepth = 5;
 
@@ -292,6 +279,23 @@ export class ExtensionValidator {
           resourceType,
         );
         issues.push(...valueIssues);
+      }
+
+      // Complex Extension profiles commonly define nested slices inline
+      // instead of assigning each sub-extension a separate profile. Apply
+      // that slice's value[x] cardinality, type, fixed/pattern and binding
+      // rules to the nested extension instance.
+      if (extDef.inlineValueElement) {
+        issues.push(...await validateExtensionValueElements({
+          extension,
+          valueElements: [extDef.inlineValueElement],
+          path: extensionPath,
+          profileUrl: extDef.ownerProfileUrl ?? context.profileUrl,
+          context,
+          typeValidator: this.typeValidator,
+          valueSetValidator: this.valueSetValidator,
+          elementRulesValidator: this.elementRulesValidator,
+        }));
       }
 
       // If the extension references an Extension profile, validate against it

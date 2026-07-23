@@ -89,7 +89,7 @@ depending on your trade-off between freshness and stability:
 | Goal | Pin in `uses:` | Notes |
 |---|---|---|
 | Always-latest within current major | `medvertical/records-fhir-validator@v0` | Force-moved on every stable release; never advances onto a prerelease |
-| Specific minor/patch (recommended for production CI) | `medvertical/records-fhir-validator@v0.4.0` | Immutable once published |
+| Specific minor/patch (recommended for production CI) | `medvertical/records-fhir-validator@v0.5.0` | Immutable once published |
 | Bit-exact reproducibility | `medvertical/records-fhir-validator@<commit-sha>` | For audit / forensic builds |
 
 The `validator-v<semver>` tag you may see on the public repo's release
@@ -181,8 +181,7 @@ Exit codes are stable for CI:
 
 ## Local Quality Guarantees
 
-The 0.2.x release line is backed by local checks that do not require GitHub
-Actions:
+Every release is backed by local checks that do not require GitHub Actions:
 
 ```sh
 npm run quality:validator-perf-baseline
@@ -258,6 +257,33 @@ const results = await recordsValidator.validateAll([
   continueOnError: true,
 });
 ```
+
+### FHIR-implied Observation profiles
+
+When an Observation has no explicit profile argument or `meta.profile`, the
+validator recognizes the core vital-sign profiles implied by their defining
+LOINC or SNOMED CT codes. This matches the reference validator behavior for
+respiratory rate, heart rate, oxygen saturation, body temperature, height,
+head circumference, weight, BMI, blood pressure, and vital-sign panels.
+
+Use the same deterministic policy in host code through the public helper:
+
+```ts
+import { inferCodeBasedProfiles } from '@records-fhir/validator';
+
+const profiles = inferCodeBasedProfiles({
+  resourceType: 'Observation',
+  code: {
+    coding: [{ system: 'http://loinc.org', code: '85354-9' }],
+  },
+});
+// → ['http://hl7.org/fhir/StructureDefinition/bp']
+```
+
+Contained resources are validated recursively through the same structural,
+profile, terminology, reference, and custom-rule aspects. Their findings are
+reported on parent-relative paths such as
+`Observation.contained[0].name[0].family`.
 
 ### Class form (full control)
 
@@ -336,6 +362,10 @@ checkFhirpathSandbox('a'.repeat(5000));
 // → { ok: false, reason: 'Expression length 5000 exceeds limit 4096', metrics: { ... } }
 ```
 
+The same API is available through the explicit
+`@records-fhir/validator/validators/fhirpath-sandbox` subpath for consumers
+that prefer capability-specific imports.
+
 ### Routing engine logs
 
 By default the engine logs to `console.{debug,info,warn,error}`. Wire
@@ -364,6 +394,12 @@ Repository quality and conformance tooling can use the explicit conformance subp
 
 ```ts
 import { toOperationOutcome } from '@records-fhir/validator/conformance';
+```
+
+FHIRPath sandbox consumers can use the explicit stable subpath:
+
+```ts
+import { checkFhirpathSandbox } from '@records-fhir/validator/validators/fhirpath-sandbox';
 ```
 
 Deep imports that are not listed in `exports` are internal and can change without notice.
@@ -403,10 +439,10 @@ headline support scope unless called out by a dedicated conformance lane.
 ## Conformance
 
 Current HL7 `FHIR/fhir-test-cases` status: 100.0% of executable comparison
-tests passing. The latest local report was generated on 2026-07-21 from pinned
+tests passing. The latest local report was generated on 2026-07-23 from pinned
 upstream commit `8923095fc5e3750025f7dd71988c9e89083b1487`. The local artifact
 used for this update was
-`conformance-results/report-2026-07-21.json`.
+`conformance-results/report-2026-07-23.json`.
 
 The upstream manifest contains more than 900 entries. Records does not claim
 that all manifest entries are executable in the current TypeScript validator
@@ -440,8 +476,9 @@ Pre-filter exclusions:
 | No `java` baseline declared in the upstream manifest | 1 |
 | Logical model test | 1 |
 
-The only undeclared-baseline entry is `(default)/zzz`, an upstream close-up
-helper rather than a normal comparison case. The upstream manifest now declares
+The only undeclared-baseline entry is `(default)/zzz`, an upstream
+platform-specific teardown workaround rather than a validator comparison case.
+The upstream manifest now declares
 and resolves Java outcomes for the full 536-case candidate set, so the former
 baseline-resolution workarounds are no longer used. All executable comparisons
 now match the normalized Java result.
@@ -488,15 +525,15 @@ constraints measured by `quality:spec-coverage`.
 
 MII conformance is measured in a separate lane from the HL7
 `FHIR/fhir-test-cases` score. The current scoped MII-2026 reference run was
-generated on 2026-07-21 against the official MII FHIR Validator container
-`mii-fhir-validator:0.0.1-alpha.7` at `http://localhost:8081`. It matches the
+generated on 2026-07-23 against the official MII FHIR Validator container
+`mii-fhir-validator:0.0.1-alpha.7`. It matches the
 reference validator on 231/231 measured resources from the refreshed MII 2026
 corpus under the `mii-2026-reference` profile scope and `mii-local-blaze`
 terminology mode, with 22 classified skips: 12 corpus/profile-drift skips and
 10 reference-terminology-incomplete skips. The run prewarmed 128/128
 reference-scope profiles before executing the cases. The
 source-repository report is
-`conformance-results/mii-triangulation-2026-07-21.json`.
+`conformance-results/mii-triangulation-2026-07-23.json`.
 
 This is a scoped parity claim for the measured package-example corpus. It is
 not an MII certification claim and does not imply full site-level MII
@@ -525,14 +562,16 @@ The current all-scope MII dual-path lane covers 555 real fixtures. Of those, 512
 have Java/reference coverage through the attached Java CLI supplement
 (`conformance-results/fhir-schema-reference-cli-supplement-all-2026-07-01.json`).
 The final report is
-`conformance-results/fhir-schema-dual-path-all-2026-07-01.json`.
+`conformance-results/fhir-schema-dual-path-all-2026-07-23.json`.
 
-The lane reports 416 clean cases, 58 exact Graph/Records comparable matches, 26
+The lane reports 418 clean cases, 71 exact Graph/Records comparable matches, 11
 graph-only cases, 0 Records-only cases, 0 divergent cases, 55 missing-profile
-cases, and 0 execution errors. Both TypeScript paths match 75 normalized
-Java/reference issue keys; no Java-covered issue is currently classified as
-`graph-aligns-reference-records-missing`,
-`records-aligns-reference-graph-missing`, or `both-miss-reference`.
+cases, and 0 execution errors. The graph and Records paths match 104 and 92
+normalized Java/reference issue keys respectively. Twelve normalized issue-key
+gaps across the 11 graph-only cases are explicitly deferred because the
+reference-slice discriminator requires an external target that is unavailable
+to the standalone fixture; Records reports those slices as unverifiable instead
+of declaring the resources invalid. No other Java-confirmed runtime gap remains.
 
 Reference coverage is reported separately from graph-vs-Records correctness. The
 remaining 43 reference-coverage gaps are fixtures without an explicit
@@ -566,7 +605,7 @@ The release gate for this lane is:
 
 ```bash
 npm run quality:fhir-schema-gate -- \
-  --report conformance-results/fhir-schema-dual-path-all-2026-07-01.json
+  --report conformance-results/fhir-schema-dual-path-all-2026-07-23.json
 ```
 
 It fails only on hard convergence regressions: execution errors, Records-only

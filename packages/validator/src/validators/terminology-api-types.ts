@@ -15,4 +15,6 @@ export interface CodeSystemValidationResult {
     issues?: CodeSystemValidationIssue[];
     inactive?: boolean;
     display?: string;
+    /** The local CodeSystem declares content=fragment, so absence is not proof. */
+    incompleteCodeSystem?: boolean;
 }

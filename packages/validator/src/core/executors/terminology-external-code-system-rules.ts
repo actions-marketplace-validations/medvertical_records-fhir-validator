@@ -65,7 +65,14 @@ export async function validateExternalCodeSystems(
       continue;
     }
 
-    if (!coding || typeof coding !== 'object' || !coding.system || !coding.code) {
+    if (
+      !coding ||
+      typeof coding !== 'object' ||
+      typeof coding.system !== 'string' ||
+      typeof coding.code !== 'string' ||
+      coding.system.length === 0 ||
+      coding.code.length === 0
+    ) {
       continue;
     }
 
@@ -79,6 +86,38 @@ export async function validateExternalCodeSystems(
   }
 
   return issues;
+}
+
+export async function validateLocalCodeSystemCoding(
+  coding: any,
+  path: string,
+  valuesetValidator: ValueSetValidator,
+  fhirVersion?: 'R4' | 'R5' | 'R6',
+): Promise<ValidationIssue[]> {
+  if (
+    !coding ||
+    typeof coding !== 'object' ||
+    typeof coding.system !== 'string' ||
+    typeof coding.code !== 'string' ||
+    /\/ValueSet\//i.test(coding.system)
+  ) {
+    return [];
+  }
+
+  const result = await valuesetValidator.validateCodeInLocalCodeSystemOnly(
+    coding.code,
+    coding.system,
+    typeof coding.display === 'string' ? coding.display : undefined,
+    fhirVersion,
+  );
+  if (!result) return [];
+
+  const terminologyServerIssues = result.issues ?? [];
+  return [
+    ...buildDisplayIssues(coding, result, terminologyServerIssues, path, 0, false),
+    ...buildInactiveIssues(coding, result, terminologyServerIssues, path, 0, false),
+    ...buildInvalidCodeIssues(coding, result, path, 0, false),
+  ];
 }
 
 function resourceTypeFromPath(path: string): string {
@@ -256,7 +295,7 @@ function buildInvalidCodeIssues(
   return [{
     id: `terminology-codesystem-${isSystemUnresolvable ? 'unresolvable' : 'invalid'}-${Date.now()}-${index}`,
     aspect: 'terminology',
-    severity: isSystemUnresolvable ? 'warning' : 'error',
+    severity: isSystemUnresolvable || result.incompleteCodeSystem ? 'warning' : 'error',
     code: isSystemUnresolvable ? 'terminology-codesystem-unresolvable' : 'terminology-code-invalid',
     message: buildInvalidCodeMessage(coding, result, loincCheckDigit),
     path: codingPath,

@@ -35,12 +35,12 @@ describe('valueset display equivalence', () => {
     )).toBe(false);
   });
 
-  it('allows HL7 v2 display comments to be omitted from Coding.display', () => {
+  it('does not silently remove semantic text from HL7 v2 displays', () => {
     expect(displaysEquivalentForCodeInfo(
       'Routine appointment - default if not valued',
       'Routine appointment',
       { system: 'http://terminology.hl7.org/CodeSystem/v2-0276' },
-    )).toBe(true);
+    )).toBe(false);
   });
 
   it('allows concise LOINC common display names', () => {

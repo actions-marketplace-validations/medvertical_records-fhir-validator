@@ -86,7 +86,7 @@ export async function validateStructuralSnapshot(params: StructuralSnapshotParam
   }
 
   if (resource.resourceType === 'Questionnaire') {
-    issues.push(...deps.questionnaireValidator.validateQuestionnaire(resource));
+    issues.push(...deps.questionnaireValidator.validateQuestionnaire(resource, 'Questionnaire', fhirVersion));
   } else if (resource.resourceType === 'QuestionnaireResponse') {
     issues.push(...deps.questionnaireValidator.validateQuestionnaireResponse(resource));
   }

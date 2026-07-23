@@ -1,6 +1,6 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
-import type { StructureDefinition } from '../core/structure-definition-types';
+import type { ElementDefinition, StructureDefinition } from '../core/structure-definition-types';
 import { StructureDefinitionLoader } from '../core/structure-definition-loader';
 import { logger } from '../logger';
 import { TypeValidator } from './type-validator';
@@ -8,6 +8,7 @@ import { ValueSetValidator } from './valueset-validator';
 import { ElementRulesValidator } from './element-rules-validator';
 import { extractSubExtensionDefinitions } from './extension-definition-extractor';
 import type { ExtensionDefinition, ExtensionValidationContext } from './extension-types';
+import { sdFHIRPathExecutor } from './sd-fhirpath-executor';
 
 interface ValidateExtensionProfileParams {
   extension: any;
@@ -86,9 +87,69 @@ export async function validateAgainstExtensionProfile({
     return issues;
   }
 
+  // Extension profiles can declare invariants on their root element. Those
+  // constraints are not copied into the containing resource profile's
+  // snapshot, so they must be evaluated against the extension instance
+  // itself (the same recursive profile step performed by the reference
+  // validator). Keep only constraint diagnostics here; the element-level
+  // fixed/type/binding rules are handled below and must not be duplicated.
+  const extensionResource = {
+    resourceType: 'Extension',
+    ...extension,
+  };
+  const constraintIssues = await sdFHIRPathExecutor.execute({
+    resource: extensionResource,
+    rootResource: context.resource,
+    resourceType: 'Extension',
+    structureDef,
+    fhirVersion: context.fhirVersion,
+  });
+  issues.push(...constraintIssues
+    .filter(issue => Boolean(issue.ruleId))
+    .map(issue => rebaseExtensionConstraintIssue(
+      issue,
+      path,
+      context.resource?.resourceType || 'Unknown',
+    )));
+
   const valueElements = structureDef.snapshot.element.filter(
     (el) => el.path?.startsWith('Extension.value')
   );
+
+  issues.push(...await validateExtensionValueElements({
+    extension,
+    valueElements,
+    path,
+    profileUrl,
+    context,
+    typeValidator,
+    valueSetValidator,
+    elementRulesValidator,
+  }));
+
+  return issues;
+}
+
+export async function validateExtensionValueElements({
+  extension,
+  valueElements,
+  path,
+  profileUrl,
+  context,
+  typeValidator,
+  valueSetValidator,
+  elementRulesValidator,
+}: {
+  extension: any;
+  valueElements: ElementDefinition[];
+  path: string;
+  profileUrl: string;
+  context: ExtensionValidationContext;
+  typeValidator: TypeValidator;
+  valueSetValidator: ValueSetValidator;
+  elementRulesValidator: ElementRulesValidator;
+}): Promise<ValidationIssue[]> {
+  const issues: ValidationIssue[] = [];
 
   const valueKeys = Object.keys(extension).filter((key) => key.startsWith('value'));
 
@@ -148,4 +209,27 @@ export async function validateAgainstExtensionProfile({
   }
 
   return issues;
+}
+
+function rebaseExtensionConstraintIssue(
+  issue: ValidationIssue,
+  extensionPath: string,
+  resourceType: string,
+): ValidationIssue {
+  const issuePath = issue.path || 'Extension';
+  const rebasedPath = issuePath === 'Extension'
+    ? extensionPath
+    : issuePath.startsWith('Extension.')
+      ? `${extensionPath}${issuePath.slice('Extension'.length)}`
+      : extensionPath;
+  return {
+    ...issue,
+    path: rebasedPath,
+    resourceType,
+    details: {
+      ...(typeof issue.details === 'object' && issue.details !== null ? issue.details : {}),
+      fieldPath: rebasedPath,
+      resourceType,
+    },
+  };
 }

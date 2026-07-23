@@ -118,15 +118,24 @@ describe('Profile Validation Matrix', () => {
       const normalized = normalizeRecordsIssues(issues);
       // family is required (min > 0) in MII
       const familyMissing = normalized.find(
-        i => (i.code === 'required-element-missing' || i.code === 'structural-required-element-missing') && i.path.includes('name') && i.path.includes('family')
+        i => (
+          i.code === 'required-element-missing' ||
+          i.code === 'structural-required-element-missing' ||
+          i.code === 'structural-cardinality-min'
+        ) && i.path.includes('name') && i.path.includes('family')
       );
-      // given is mustSupport but not required (min=0) in MII
-      const givenMustSupport = normalized.find(
-        i => (i.code === 'mustsupport-missing' || i.code === 'profile-mustsupport-missing') && i.path.includes('name') && i.path.includes('given')
+      // Older packages model given as MustSupport; current MII snapshots set
+      // min=1. Either result proves recursive complex-type validation.
+      const givenIssue = normalized.find(
+        i => (
+          i.code === 'mustsupport-missing' ||
+          i.code === 'profile-mustsupport-missing' ||
+          i.code === 'structural-cardinality-min'
+        ) && i.path.includes('name') && i.path.includes('given')
       );
 
       expect(familyMissing).toBeDefined();
-      expect(givenMustSupport).toBeDefined();
+      expect(givenIssue).toBeDefined();
     }, 120000);
 
     it('should report missing mustSupport elements', async () => {
@@ -207,7 +216,10 @@ describe('Profile Validation Matrix', () => {
       const codes = new Set(normalized.map(i => i.code));
 
       // Should have at least these categories (accept both old and new codes)
-      const hasRequiredElementMissing = codes.has('required-element-missing') || codes.has('structural-required-element-missing');
+      const hasRequiredElementMissing =
+        codes.has('required-element-missing') ||
+        codes.has('structural-required-element-missing') ||
+        codes.has('structural-cardinality-min');
       const hasMustSupportMissing = codes.has('mustsupport-missing') || codes.has('profile-mustsupport-missing');
 
       expect(hasRequiredElementMissing).toBe(true);

@@ -10,6 +10,63 @@ ship together; package-only changes are noted under each release.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-23
+
+Minor release expanding reference-compatible profile, contained-resource,
+slicing, and terminology behavior. Validation results can become more precise
+for resources that previously fell back to a base profile or emitted redundant
+findings; there are no intentional breaking changes to the public API.
+
+### Added
+
+- Applied the FHIR-implied core Observation profile when recognized LOINC or
+  SNOMED CT codes identify vital signs and no explicit profile was supplied.
+  The matching policy is available through the new public
+  `inferCodeBasedProfiles()` helper.
+- Validated contained resources in the multi-aspect path, including contained
+  reference resolution, parent-relative issue paths, applied-profile evidence,
+  and deterministic issue identities.
+- Added the explicit `@records-fhir/validator/validators/fhirpath-sandbox`
+  package subpath alongside the existing root export.
+- Added focused regression coverage for complex slicing discriminators,
+  extension invariants, terminology bindings, contained resources, attachment
+  content, choice types, URI primitives, XHTML, and reference targets.
+
+### Changed
+
+- Hardened the composite GitHub Action by pinning `actions/setup-node` to an
+  immutable commit and validating `validator-version` before passing it to npm.
+- Reported code-inferred profile application through the shared
+  `ProfileApplicationSource` contract.
+- Coalesced identical asynchronous terminology work within one configuration
+  epoch while preserving cache invalidation between epochs.
+
+### Fixed
+
+- Aligned nested and differential-only slice matching for value, pattern,
+  profile, reference, and complex child discriminators without hiding closed
+  slicing failures.
+- Corrected required and extensible terminology binding behavior for local
+  CodeSystems, composed ValueSets, display validation, external CodeSystem
+  references, and unavailable membership evidence.
+- Preserved extension and element constraint context across nested profiles,
+  optional fixed children, and repeated elements.
+- Removed redundant structural, profile, metadata, and invariant findings while
+  retaining the most specific issue code, path, profile, and rule evidence.
+- Hardened attachment, Bundle fullUrl, CodeSystem property URI, narrative
+  XHTML, Questionnaire, reference target, tag, and primitive URI validation.
+
+### Verification
+
+- Passed validator and validation-types typechecks and builds, package
+  dry-runs, the OSS boundary audit, package smoke test, and publish-workflow
+  dry-run.
+- HL7 JSON parity: 536/536 (100.0%), 0 failed, 0 skipped, 0 errors.
+- MII 2026 reference parity: 231/231 measured (100.0%), 22 classified skips,
+  128/128 profiles prewarmed, and 0 FHIRPath constraint skips.
+- FHIR Schema dual path: 555 fixtures, 0 Records-only cases, 0 divergent cases,
+  and 0 actionable Java-confirmed runtime gaps.
+
 ## [0.4.4] — 2026-07-21
 
 Patch release hardening production metadata validation and terminology
@@ -773,7 +830,8 @@ extracted from the Records DataOps Control Plane.
   are explicitly out of scope for this package and are not blended
   into the headline conformance score.
 
-[Unreleased]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.4...HEAD
+[Unreleased]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.5.0...HEAD
+[0.5.0]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.4...validator-v0.5.0
 [0.4.4]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.3...validator-v0.4.4
 [0.4.3]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.2...validator-v0.4.3
 [0.4.2]: https://github.com/medvertical/records-fhir-validator/compare/validator-v0.4.1...validator-v0.4.2

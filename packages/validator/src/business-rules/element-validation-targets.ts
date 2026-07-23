@@ -2,7 +2,7 @@
  * Array-aware validation target resolution for FHIR element paths.
  */
 
-import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
+import { getPrimitiveSidecar, resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
 
 /**
  * Validation target for a specific path in a resource.
@@ -87,7 +87,7 @@ export function getValidationTargets(
   }];
 
   for (let i = startIndex; i < parts.length; i++) {
-    targets = resolveNextSegmentTargets(targets, parts[i]);
+    targets = resolveNextSegmentTargets(targets, parts[i], i < parts.length - 1);
   }
 
   return targets.map(convertToValidationTarget);
@@ -96,6 +96,7 @@ export function getValidationTargets(
 function resolveNextSegmentTargets(
   targets: Array<{ current: any; pathSoFar: string[]; resourceTypePart: string }>,
   segment: string,
+  hasRemainingPath: boolean,
 ): Array<{ current: any; pathSoFar: string[]; resourceTypePart: string }> {
   const newTargets: typeof targets = [];
 
@@ -104,7 +105,7 @@ function resolveNextSegmentTargets(
       continue;
     }
 
-    const nextValues = resolveSegmentTargets(target.current, segment);
+    const nextValues = resolveSegmentTargets(target.current, segment, hasRemainingPath);
     for (const next of nextValues) {
       if (Array.isArray(next.value)) {
         next.value.forEach((item, arrayIndex) => {
@@ -131,12 +132,19 @@ function resolveNextSegmentTargets(
 function resolveSegmentTargets(
   currentValue: any,
   segment: string,
+  hasRemainingPath: boolean,
 ): Array<{ value: any; pathSegment: string }> {
   if (segment.endsWith('[x]') && currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue)) {
     const baseName = segment.slice(0, -3);
     const directChoiceKey = Object.keys(currentValue).find(key => isConcreteChoiceKey(key, baseName));
     if (directChoiceKey) {
-      return [{ value: currentValue[directChoiceKey], pathSegment: directChoiceKey }];
+      const sidecar = hasRemainingPath
+        ? getPrimitiveSidecar(currentValue, directChoiceKey)
+        : undefined;
+      return [{
+        value: sidecar ?? currentValue[directChoiceKey],
+        pathSegment: directChoiceKey,
+      }];
     }
 
     const sidecarChoiceKey = Object.keys(currentValue).find(
@@ -150,7 +158,24 @@ function resolveSegmentTargets(
     }
   }
 
+  if (
+    hasRemainingPath &&
+    currentValue &&
+    typeof currentValue === 'object' &&
+    !Array.isArray(currentValue) &&
+    isPrimitiveValueOrPrimitiveArray(currentValue[segment])
+  ) {
+    const sidecar = getPrimitiveSidecar(currentValue, segment);
+    if (sidecar !== undefined) return [{ value: sidecar, pathSegment: segment }];
+  }
+
   return [{ value: resolveSegmentValue(currentValue, segment), pathSegment: segment }];
+}
+
+function isPrimitiveValueOrPrimitiveArray(value: unknown): boolean {
+  const isPrimitive = (candidate: unknown): boolean =>
+    candidate === null || ['string', 'number', 'boolean'].includes(typeof candidate);
+  return Array.isArray(value) ? value.every(isPrimitive) : isPrimitive(value);
 }
 
 function isConcreteChoiceKey(key: string, baseName: string): boolean {

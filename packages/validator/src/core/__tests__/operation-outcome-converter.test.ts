@@ -30,16 +30,23 @@ describe('mapToHl7IssueType', () => {
     expect(mapToHl7IssueType('structural-type-mismatch')).toBe('structure');
     expect(mapToHl7IssueType('structural-unknown-element')).toBe('structure');
     expect(mapToHl7IssueType('structural-invalid-format')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-invalid-base64-format')).toBe('structure');
+    expect(mapToHl7IssueType('structural-validation-error')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-primitive-type-mismatch')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-primitive-array-alignment')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-resource-id-extension')).toBe('business-rule');
     expect(mapToHl7IssueType('structural-invalid-id')).toBe('invalid');
     expect(mapToHl7IssueType('structural-empty-array')).toBe('invalid');
     expect(mapToHl7IssueType('structural-other-thing')).toBe('structure');
   });
 
   it('maps profile codes to correct HL7 types', () => {
+    expect(mapToHl7IssueType('constraint-violation-que-1b')).toBe('invariant');
     expect(mapToHl7IssueType('profile-constraint-violation')).toBe('invariant');
     expect(mapToHl7IssueType('profile-slice-matching')).toBe('structure');
     expect(mapToHl7IssueType('profile-extension-missing')).toBe('extension');
     expect(mapToHl7IssueType('profile-not-found')).toBe('structure');
+    expect(mapToHl7IssueType('profile-not-resolved')).toBe('structure');
     expect(mapToHl7IssueType('profile-download')).toBe('transient');
     expect(mapToHl7IssueType('profile-load-error')).toBe('transient');
     expect(mapToHl7IssueType('profile-other')).toBe('invalid');
@@ -82,6 +89,20 @@ describe('mapToHl7IssueType', () => {
 
   it('maps invariant codes', () => {
     expect(mapToHl7IssueType('invariant-dom-6')).toBe('invariant');
+  });
+
+  it('maps dom-3 violations to invalid at the issue boundary', () => {
+    const outcome = issueToOperationOutcomeIssue({
+      id: 'dom-3',
+      aspect: 'profile',
+      severity: 'error',
+      code: 'profile-constraint-violation',
+      message: 'Contained resource is not referenced',
+      path: 'Condition',
+      timestamp: new Date(),
+      details: { constraintKey: 'dom-3' },
+    });
+    expect(outcome.code).toBe('invalid');
   });
 
   it('preserves exact HL7 issue-type codes', () => {

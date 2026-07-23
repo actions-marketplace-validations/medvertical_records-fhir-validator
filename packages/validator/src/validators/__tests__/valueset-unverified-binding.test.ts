@@ -152,4 +152,42 @@ describe('ValueSetValidator unverified bindings (P-3)', () => {
     expect(issues.some(issue => issue.code === 'terminology-binding-unverified')).toBe(false);
     expect(issues.some(issue => issue.code.startsWith('terminology-binding-required'))).toBe(true);
   });
+
+  it('never turns a resolver failure into a required-binding error', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'local-only',
+      serverUrl: undefined,
+      strictUnverifiedRequiredBindings: true,
+      serverDelegation: {
+        expandValueSets: false,
+        validateCodes: false,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+    const internal = validator as unknown as {
+      resolveCodeBinding: () => Promise<never>;
+    };
+    const original = internal.resolveCodeBinding;
+    internal.resolveCodeBinding = async () => {
+      throw new Error('package index unavailable');
+    };
+
+    try {
+      const issues = await validator.validateBinding(
+        coding,
+        { strength: 'required', valueSet: valueSetUrl },
+        'Observation.code',
+      );
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('terminology-binding-unverified');
+      expect(issues[0].severity).toBe('warning');
+      expect(validator.getCacheStats().terminologyDiagnostics.unverifiedBindings.byReason['validation-error'])
+        .toBe(1);
+    } finally {
+      internal.resolveCodeBinding = original;
+    }
+  });
 });

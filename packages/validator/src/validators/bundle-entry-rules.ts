@@ -78,7 +78,7 @@ export function validateBundleEntryIdConsistency(bundle: any): ValidationIssue[]
         const entry = entries[i];
         const fullUrl: string | undefined = entry?.fullUrl;
         const res = entry?.resource;
-        if (!fullUrl || !res?.resourceType || !res?.id) continue;
+        if (typeof fullUrl !== 'string' || fullUrl.length === 0 || !res?.resourceType || !res?.id) continue;
         if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) continue;
         if (fullUrl.startsWith('urn:')) continue;
 
