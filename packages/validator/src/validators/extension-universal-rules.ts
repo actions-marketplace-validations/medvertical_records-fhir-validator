@@ -1,5 +1,8 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
+import { isRecord, resourceTypeOf } from '../core/fhir-resource';
+import type { ExtensionUsageSite, NormalizedExtensionContext } from './extension-context-matching';
+import { validateExtensionContextUsage } from './extension-context-usage';
 import {
   isAbsoluteExtensionUrl,
   shouldReportUnresolvableExtensionUrl,
@@ -7,9 +10,10 @@ import {
   validateKnownHl7ExtensionValueType,
 } from './extension-structure-rules';
 import type { ExtensionValidationContext } from './extension-types';
+import { isKnownCrossVersionExtensionUrl } from './extension-xver-urls';
 
 interface ValidateUniversalExtensionRulesParams {
-  extension: any;
+  extension: unknown;
   extensionType: 'extension' | 'modifierExtension';
   path: string;
   knownUrls: Set<string>;
@@ -22,6 +26,11 @@ interface ValidateUniversalExtensionRulesParams {
     url: string,
     fhirVersion: 'R4' | 'R5' | 'R6',
   ) => Promise<boolean>;
+  getDeclaredContexts: (
+    url: string,
+    fhirVersion: 'R4' | 'R5' | 'R6',
+  ) => Promise<NormalizedExtensionContext[] | null>;
+  site: ExtensionUsageSite;
 }
 
 export async function validateUniversalExtensionRules({
@@ -35,12 +44,14 @@ export async function validateUniversalExtensionRules({
   maxNestedExtensionDepth,
   isNested = false,
   isExtensionUrlResolvable,
+  getDeclaredContexts,
+  site,
 }: ValidateUniversalExtensionRulesParams): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
 
-  if (!extension || typeof extension !== 'object') return issues;
+  if (!isRecord(extension)) return issues;
 
-  const url: string | undefined = extension.url;
+  const url = typeof extension.url === 'string' ? extension.url : undefined;
   issues.push(...await validateExtensionUrlRules({
     url,
     extensionType,
@@ -56,17 +67,31 @@ export async function validateUniversalExtensionRules({
       extension,
       extensionType,
       path,
-      context.resource?.resourceType || 'Unknown',
+      resourceTypeOf(context.resource, 'Unknown'),
     ));
+    issues.push(...await validateExtensionContextUsage({
+      url,
+      path,
+      site,
+      resourceType: resourceTypeOf(context.resource, 'Unknown'),
+      fhirVersion: context.fhirVersion,
+      getDeclaredContexts,
+    }));
   }
 
   issues.push(...validateKnownHl7ExtensionValueType(
     extension,
     path,
-    context.resource?.resourceType || 'Unknown',
+    resourceTypeOf(context.resource, 'Unknown'),
   ));
 
   if (Array.isArray(extension.extension) && depth < maxNestedExtensionDepth) {
+    const nestedSite: ExtensionUsageSite = {
+      resourceType: site.resourceType,
+      elementPath: `${site.elementPath}.extension`,
+      attachment: 'nested-extension',
+      parentExtensionUrl: url,
+    };
     for (let i = 0; i < extension.extension.length; i++) {
       const nested = extension.extension[i];
       const nestedPath = `${path}.extension[${i}]`;
@@ -82,6 +107,8 @@ export async function validateUniversalExtensionRules({
         maxNestedExtensionDepth,
         isNested: true,
         isExtensionUrlResolvable,
+        getDeclaredContexts,
+        site: nestedSite,
       });
       issues.push(...nestedIssues);
     }
@@ -104,7 +131,7 @@ async function validateExtensionUrlRules({
   url: string | undefined;
   isNested: boolean;
 }): Promise<ValidationIssue[]> {
-  const resourceType = context.resource?.resourceType || 'Unknown';
+  const resourceType = resourceTypeOf(context.resource, 'Unknown');
   const issues: ValidationIssue[] = [];
 
   if (!url || url === '') {
@@ -124,19 +151,48 @@ async function validateExtensionUrlRules({
   } else if (!isNested && url.includes('|')) {
     issues.push(...createVersionedUrlIssues(url, path, resourceType));
   } else if (!isNested && !knownUrls.has(url) && shouldReportUnresolvableExtensionUrl(url)) {
-    const resolvable = await isExtensionUrlResolvable(url, context.fhirVersion);
+    const resolvable = await isExtensionUrlResolvable(url, context.fhirVersion)
+      || isKnownCrossVersionExtensionUrl(url, extensionType);
     if (!resolvable) {
-      issues.push(createValidationIssue({
-        code: 'profile-extension-not-found',
-        path,
-        resourceType,
-        messageParams: { url },
-        severityOverride: 'warning',
-      }));
+      issues.push(createUnresolvedExtensionIssue(url, extensionType, path, resourceType));
     }
   }
 
   return issues;
+}
+
+/**
+ * Canonical registry domains whose extension URLs are expected to resolve:
+ * the HL7 reference validator errors on an unresolvable hl7.org / fhir.org
+ * extension (see the fhir-test-cases bundle-ea-testcase Java baseline), so
+ * these cannot drop below warning without losing conformance parity.
+ */
+const REGISTRY_EXTENSION_URL = /^https?:\/\/([^/]+\.)?(hl7\.org|fhir\.org)\//i;
+
+/**
+ * FHIR's open-world model allows unknown plain extensions from private
+ * canonical spaces, so those only get a hint — but registry-domain URLs are
+ * expected to resolve (warning), and an unrecognised modifierExtension
+ * cannot be safely ignored and must fail validation.
+ */
+function createUnresolvedExtensionIssue(
+  url: string,
+  extensionType: 'extension' | 'modifierExtension',
+  path: string,
+  resourceType: string,
+): ValidationIssue {
+  const isModifier = extensionType === 'modifierExtension';
+  const plainSeverity = REGISTRY_EXTENSION_URL.test(url) ? 'warning' : 'information';
+  return createValidationIssue({
+    code: 'profile-extension-not-found',
+    path,
+    resourceType,
+    messageParams: { url },
+    severityOverride: isModifier ? 'error' : plainSeverity,
+    ...(isModifier && {
+      customMessage: `The modifier extension ${url} could not be resolved; unrecognised modifier extensions cannot be safely ignored — verify its StructureDefinition or package availability`,
+    }),
+  });
 }
 
 function createVersionedUrlIssues(

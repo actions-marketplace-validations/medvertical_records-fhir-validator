@@ -15,6 +15,7 @@ import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { ValueSetPackageLoader } from '../valueset-package-loader';
+import { ValueSetPackageResourceAccess } from '../valueset-package-resource-access';
 import { ValueSetCache } from '../valueset-cache';
 import type { ValueSet, CodeSystem } from '../valueset-types';
 
@@ -39,6 +40,13 @@ function makeLoader(
         valueSets[url] ?? null,
     );
     return loader;
+}
+
+function makePackageLoader(
+    root: string,
+    cache: ValueSetCache = new ValueSetCache(),
+): ValueSetPackageLoader {
+    return new ValueSetPackageLoader(cache, new ValueSetPackageResourceAccess([root]));
 }
 
 describe('ValueSetPackageLoader.extractCodesFromValueSet — deep expansion', () => {
@@ -362,7 +370,10 @@ describe('ValueSetPackageLoader canonical package scan', () => {
 
         const loader = new ValueSetPackageLoader();
 
-        expect(loader.getPackageDirectories()[0]).toBe(path.join(os.homedir(), '.fhir', 'packages'));
+        // The user cache is a supplemental fallback and must rank last so
+        // resolution never depends on local download history.
+        const directories = loader.getPackageDirectories();
+        expect(directories[directories.length - 1]).toBe(path.join(os.homedir(), '.fhir', 'packages'));
     });
 
     it('loads ValueSets and CodeSystems whose filenames do not match the canonical suffix', async () => {
@@ -394,8 +405,7 @@ describe('ValueSetPackageLoader canonical package scan', () => {
             JSON.stringify(valueSet),
         );
 
-        const loader = new ValueSetPackageLoader();
-        (loader as any).packageDirectories = [root];
+        const loader = makePackageLoader(root);
 
         const codes = await loader.loadValueSet('https://example.org/fhir/ValueSet/canonical-name');
 
@@ -423,8 +433,7 @@ describe('ValueSetPackageLoader canonical package scan', () => {
         );
 
         const cache = new ValueSetCache();
-        const loader = new ValueSetPackageLoader(cache);
-        (loader as any).packageDirectories = [root];
+        const loader = makePackageLoader(root, cache);
 
         await expect(loader.loadCodeSystem(canonical, '4')).resolves.toMatchObject({
             url: canonical,
@@ -432,6 +441,37 @@ describe('ValueSetPackageLoader canonical package scan', () => {
         expect(cache.getCodeSystem(`${canonical}|fhir4`)).toMatchObject({ url: canonical });
         expect(cache.getCodeSystem(canonical)).toMatchObject({ url: canonical });
         expect(cache.getCodeSystemFile(canonical)).toMatchObject({ url: canonical });
+    });
+
+    it('loads the current MII Onkologie CodeSystem through its predecessor canonical', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
+        const packageDir = path.join(root, 'de.medizininformatikinitiative.kerndatensatz.onkologie#2026.0.3', 'package');
+        await fs.mkdir(packageDir, { recursive: true });
+
+        const predecessor =
+            'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-therapie-stellungzurop';
+        const current =
+            'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-onko-therapie-stellungzurop';
+        await fs.writeFile(
+            path.join(packageDir, 'CodeSystem-mii-cs-onko-therapie-stellungzurop.json'),
+            JSON.stringify({
+                resourceType: 'CodeSystem',
+                url: current,
+                status: 'active',
+                content: 'complete',
+                concept: [{ code: 'N', display: 'neoadjuvant' }],
+            } satisfies CodeSystem),
+        );
+
+        const cache = new ValueSetCache();
+        const loader = makePackageLoader(root, cache);
+
+        await expect(loader.loadCodeSystem(predecessor, '4')).resolves.toMatchObject({
+            url: current,
+            concept: [{ code: 'N', display: 'neoadjuvant' }],
+        });
+        expect(cache.getCodeSystem(predecessor)).toMatchObject({ url: current });
+        expect(cache.getCodeSystem(current)).toMatchObject({ url: current });
     });
 
     it('does not let a negative CodeSystem cache entry hide a later package match', async () => {
@@ -456,8 +496,7 @@ describe('ValueSetPackageLoader canonical package scan', () => {
         const cache = new ValueSetCache();
         cache.setCodeSystemFile(`${canonical}|fhir4`, null);
 
-        const loader = new ValueSetPackageLoader(cache);
-        (loader as any).packageDirectories = [root];
+        const loader = makePackageLoader(root, cache);
 
         await expect(loader.loadCodeSystem(canonical, '4')).resolves.toMatchObject({
             url: canonical,
@@ -468,9 +507,10 @@ describe('ValueSetPackageLoader canonical package scan', () => {
 
     it('single-flights concurrent misses and reuses its negative lookup', async () => {
         const cache = new ValueSetCache();
-        const loader = new ValueSetPackageLoader(cache);
-        const findDirect = vi.spyOn(loader as any, 'findInPackages').mockResolvedValue(null);
-        const findCanonical = vi.spyOn(loader as any, 'findByCanonicalScan').mockResolvedValue(null);
+        const packageResources = new ValueSetPackageResourceAccess([]);
+        const loader = new ValueSetPackageLoader(cache, packageResources);
+        const findDirect = vi.spyOn(packageResources, 'findInPackages').mockResolvedValue(null);
+        const findCanonical = vi.spyOn(packageResources, 'findByCanonicalScan').mockResolvedValue(null);
         const canonical = 'https://example.org/fhir/CodeSystem/missing';
 
         await Promise.all([
@@ -522,8 +562,7 @@ describe('ValueSetPackageLoader canonical package scan', () => {
             } satisfies ValueSet),
         );
 
-        const loader = new ValueSetPackageLoader();
-        (loader as any).packageDirectories = [root];
+        const loader = makePackageLoader(root);
 
         const codes = await loader.loadValueSet(canonical);
 
@@ -566,8 +605,7 @@ describe('ValueSetPackageLoader canonical package scan', () => {
             } satisfies ValueSet),
         );
 
-        const loader = new ValueSetPackageLoader();
-        (loader as any).packageDirectories = [root];
+        const loader = makePackageLoader(root);
 
         const codes = await loader.loadValueSet(parentCanonical);
 

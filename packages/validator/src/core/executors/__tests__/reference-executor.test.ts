@@ -123,8 +123,10 @@ describe('ReferenceExecutor', () => {
       expect(issues[0].aspect).toBe('reference');
       expect(issues[0].severity).toBe('error');
       expect(issues[0].code).toBe('validation-error');
-      expect(issues[0].message).toContain('Reference validation failed');
-      expect(issues[0].message).toContain('Test error');
+      expect(issues[0].message).toBe(
+        'Reference validation could not be completed because the validator encountered an operational error.',
+      );
+      expect(issues[0].message).not.toContain('Test error');
     });
 
     it('should handle non-Error exceptions', async () => {
@@ -135,7 +137,10 @@ describe('ReferenceExecutor', () => {
       const issues = await executorWithMock.validate(mockContext);
       
       expect(issues).toHaveLength(1);
-      expect(issues[0].message).toContain('String error');
+      expect(issues[0].message).toBe(
+        'Reference validation could not be completed because the validator encountered an operational error.',
+      );
+      expect(issues[0].message).not.toContain('String error');
     });
 
     it('should handle different resource types', async () => {

@@ -8,6 +8,7 @@
 import type { ValidationIssue } from '../../types';
 import { createValidationIssue } from '../../issues';
 import { logger } from '../../logger';
+import { validationFailureMetadata } from '../../utils/validation-execution-failure';
 
 const PATH = 'meta.versionId';
 
@@ -18,7 +19,7 @@ export class VersionIdValidator {
   /**
    * Validate versionId format
    */
-  validateFormat(versionId: string, resourceType: string, profileUrl?: string): ValidationIssue[] {
+  validateFormat(versionId: unknown, resourceType: string, profileUrl?: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
@@ -47,7 +48,7 @@ export class VersionIdValidator {
       }
 
       // Validate FHIR id type pattern
-      const fhirIdPattern = /^[A-Za-z0-9\-\.]{1,64}$/;
+      const fhirIdPattern = /^[A-Za-z0-9.-]{1,64}$/;
       if (!fhirIdPattern.test(versionId)) {
         issues.push(createValidationIssue({
           code: 'metadata-version-id-invalid-format',
@@ -90,7 +91,7 @@ export class VersionIdValidator {
       }
 
       // Warn if only special characters
-      if (/^[\-\.]+$/.test(versionId)) {
+      if (/^[-.]+$/.test(versionId)) {
         issues.push(createValidationIssue({
           code: 'metadata-version-id-special-chars-only',
           path: PATH,
@@ -116,13 +117,14 @@ export class VersionIdValidator {
       }
 
     } catch (error) {
-      logger.error('[VersionIdValidator] format validation failed:', error);
+      logger.error('[VersionIdValidator] format validation failed', validationFailureMetadata(error));
       issues.push(createValidationIssue({
         code: 'metadata-version-id-validation-error',
         path: PATH,
         resourceType,
         profile: profileUrl,
-        messageParams: { error: error instanceof Error ? error.message : 'Unknown error' },
+        messageParams: { error: 'Operational validation failure' },
+        details: validationFailureMetadata(error),
       }));
     }
 
@@ -132,26 +134,35 @@ export class VersionIdValidator {
   /**
    * Validate versionId consistency with resource
    */
-  validateConsistency(resource: any, resourceType: string, profileUrl?: string): ValidationIssue[] {
+  validateConsistency(resource: unknown, resourceType: string, profileUrl?: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
-      const versionId = resource.meta?.versionId;
-      if (!versionId) return issues;
+      if (typeof resource !== 'object' || resource === null || Array.isArray(resource)) {
+        return issues;
+      }
+      const resourceRecord = resource as Record<string, unknown>;
+      const meta = resourceRecord.meta;
+      if (typeof meta !== 'object' || meta === null || Array.isArray(meta)) {
+        return issues;
+      }
+      const metaRecord = meta as Record<string, unknown>;
+      const versionId = metaRecord.versionId;
+      if (typeof versionId !== 'string' || versionId.length === 0) return issues;
 
       // Check versionId != resource.id
-      if (resource.id && versionId === resource.id) {
+      if (typeof resourceRecord.id === 'string' && versionId === resourceRecord.id) {
         issues.push(createValidationIssue({
           code: 'metadata-version-id-same-as-id',
           path: PATH,
           resourceType,
           profile: profileUrl,
-          details: { versionId, resourceId: resource.id },
+          details: { versionId, resourceId: resourceRecord.id },
         }));
       }
 
       // Check for very high version numbers
-      if (/^\d+$/.test(versionId) && resource.meta?.lastUpdated) {
+      if (/^\d+$/.test(versionId) && metaRecord.lastUpdated) {
         const numericVersion = parseInt(versionId, 10);
         if (numericVersion > 10000) {
           issues.push(createValidationIssue({
@@ -166,7 +177,10 @@ export class VersionIdValidator {
       }
 
     } catch (error) {
-      logger.error('[VersionIdValidator] consistency check failed:', error);
+      logger.error(
+        '[VersionIdValidator] consistency check failed',
+        validationFailureMetadata(error),
+      );
     }
 
     return issues;

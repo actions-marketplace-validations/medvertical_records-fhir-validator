@@ -35,7 +35,7 @@ describe('BundleValidator fullUrl enforcement', () => {
     expect(fullUrlIssues[0].severity).toBe('error');
   });
 
-  it('anchors cross-entry errors at the resource when source fullUrl is missing', async () => {
+  it('keeps the concrete reference path when source fullUrl is missing', async () => {
     const bundle = {
       resourceType: 'Bundle',
       type: 'document',
@@ -58,7 +58,7 @@ describe('BundleValidator fullUrl enforcement', () => {
     const crossEntryIssue = issues.find(i => i.code === 'bundle-cross-entry-reference-missing');
 
     expect(crossEntryIssue).toBeDefined();
-    expect(crossEntryIssue?.path).toBe('Bundle.entry[0].resource');
+    expect(crossEntryIssue?.path).toBe('Bundle.entry[0].resource.author[0]');
   });
 
   it('flags missing fullUrl as error in transaction Bundle', async () => {
@@ -240,6 +240,41 @@ describe('BundleValidator fullUrl enforcement', () => {
       hasTypeIdMatch: false,
       matchedRequestUrls: [{ entryIndex: 1, requestUrl: 'Practitioner/pr1' }],
       fixHint: expect.stringContaining('Do not rely on entry.request.url'),
+    }));
+  });
+
+  it('does not resolve relative message references from an inconsistent REST fullUrl', async () => {
+    const bundle = {
+      resourceType: 'Bundle',
+      type: 'message',
+      entry: [
+        {
+          fullUrl: 'http://example.org/MessageHeader/wrong-id',
+          resource: {
+            resourceType: 'MessageHeader',
+            id: 'actual-id',
+            eventCoding: { system: 'http://example.org/events', code: 'event' },
+            source: { endpoint: 'http://example.org/source' },
+            focus: [{ reference: 'Organization/org' }],
+          },
+        },
+        {
+          fullUrl: 'http://example.org/Organization/org',
+          resource: { resourceType: 'Organization', id: 'org' },
+        },
+      ],
+    };
+
+    const issues = await validator.validateBundle(bundle);
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'bundle-cross-entry-reference-missing',
+      path: 'Bundle.entry[0].resource.focus[0]',
+    }));
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'bundle-entry-not-reachable',
+      path: 'Bundle.entry[1]',
+      severity: 'warning',
     }));
   });
 

@@ -94,6 +94,8 @@ export const DEFAULT_VALIDATION_SETTINGS_R4: ValidationSettings = {
   terminologyServers: DEFAULT_TERMINOLOGY_SERVERS,
   terminologyResolution: {
     strategy: 'local-first',
+    reportUnverifiedBindings: true,
+    strictUnverifiedRequiredBindings: true,
     twoPhaseExpansion: {
       enabled: false,
       mode: 'shadow',
@@ -136,6 +138,8 @@ export const DEFAULT_VALIDATION_SETTINGS_R4: ValidationSettings = {
       // Germany: MII Core Data Set (37 university hospitals)
       'de.medizininformatikinitiative.*',
       'de.medizininformatik-initiative.*',
+      // ConsentManagement is a separate German package used by MII consent.
+      'de.einwilligungsmanagement',
       // Germany: KBV (ambulatory care)
       'kbv.*',
       // Germany: HL7 Germany base profiles
@@ -206,6 +210,8 @@ export const DEFAULT_VALIDATION_SETTINGS_R5: ValidationSettings = {
   terminologyServers: DEFAULT_TERMINOLOGY_SERVERS,
   terminologyResolution: {
     strategy: 'local-first',
+    reportUnverifiedBindings: true,
+    strictUnverifiedRequiredBindings: true,
     twoPhaseExpansion: {
       enabled: false,
       mode: 'shadow',

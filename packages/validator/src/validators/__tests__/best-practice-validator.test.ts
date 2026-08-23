@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BestPracticeValidator } from '../best-practice-validator';
+import { BestPracticeValidator, validateBestPractices } from '../best-practice-validator';
 
 const validator = new BestPracticeValidator();
 
@@ -76,5 +76,47 @@ describe('BestPracticeValidator Patient rules', () => {
       path: 'Patient.text',
       resourceType: 'Patient',
     }));
+  });
+});
+
+describe('validateBestPractices settings mapping', () => {
+  const narrativelessPatient = {
+    resourceType: 'Patient',
+    id: 'p1',
+    identifier: [{ system: 'urn:example', value: '123' }],
+    name: [{ family: 'Tester' }],
+  };
+
+  it('keeps the default information severity without settings', () => {
+    const issues = validateBestPractices(validator, {
+      resourceType: 'Patient',
+      resource: narrativelessPatient,
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'dom-6',
+      severity: 'information',
+    }));
+  });
+
+  it('escalates to warning when bestPracticeSeverity is warning', () => {
+    const issues = validateBestPractices(
+      validator,
+      { resourceType: 'Patient', resource: narrativelessPatient },
+      { bestPracticeSeverity: 'warning' },
+    );
+
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.every(issue => issue.severity === 'warning')).toBe(true);
+  });
+
+  it('suppresses all findings when enableBestPracticeChecks is false', () => {
+    const issues = validateBestPractices(
+      validator,
+      { resourceType: 'Patient', resource: narrativelessPatient },
+      { enableBestPracticeChecks: false, bestPracticeSeverity: 'warning' },
+    );
+
+    expect(issues).toHaveLength(0);
   });
 });

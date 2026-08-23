@@ -137,6 +137,48 @@ export const CATALOG_CORE: Record<string, FixSuggestion> = {
         why: 'Attachment.size does not match the actual byte count of Attachment.data.',
         fix: 'Recalculate size from the decoded base64 data length and set it correctly.',
     },
+    'attachment-att1-violation': {
+        why: 'Invariant att-1: when Attachment.data is present, contentType is required so receivers know how to decode it.',
+        fix: 'Add contentType with the MIME type of the embedded data.',
+        example: 'Add "contentType": "application/pdf" next to the base64 data.',
+        specUrl: 'https://www.hl7.org/fhir/datatypes.html#Attachment',
+        patch: { action: 'add', path: '{{fieldPath}}.contentType', value: '(MIME type of the data, e.g. "application/pdf")' },
+    },
+    'attachment-no-content': {
+        why: 'The attachment has neither data nor url, so receivers cannot retrieve any content.',
+        fix: 'Provide data (base64) or url pointing to the content — or at least a contentType and/or language describing it.',
+        example: 'Add "url": "https://example.org/reports/report.pdf" or an inline base64 "data" value.',
+        specUrl: 'https://www.hl7.org/fhir/datatypes.html#Attachment',
+    },
+    'narrative-txt2-violation': {
+        why: 'Constraint txt-2: the narrative div must contain some non-whitespace content.',
+        fix: 'Add a human-readable summary inside text.div, or remove the text element if no narrative is available.',
+        example: '<div xmlns="http://www.w3.org/1999/xhtml"><p>Patient summary</p></div>',
+        specUrl: 'https://www.hl7.org/fhir/narrative.html',
+    },
+    'date-year-implausible': {
+        why: 'The year is far outside the plausible range for clinical data, which usually indicates a data entry error.',
+        fix: 'Check the date for typos (swapped or missing digits) and correct the year.',
+        example: 'Use "2024-03-01" instead of "0224-03-01".',
+    },
+    'string-whitespace-padding': {
+        why: 'Leading or trailing whitespace in string values is usually accidental and breaks exact matching and display.',
+        fix: 'Trim the whitespace from the start and end of the value.',
+        example: 'Use "Smith" instead of " Smith ".',
+        patch: { action: 'replace', path: '{{fieldPath}}', value: '{{suggestedValue}}' },
+    },
+    'decimal-value-out-of-range': {
+        why: 'The decimal needs more than 18 digits, which is outside the range commonly supported by FHIR systems and usually indicates a data entry or unit error.',
+        fix: 'Check the magnitude and precision of the value; correct the number or its unit.',
+        example: 'Use 1.5 (with unit "g") instead of 1e+300.',
+        specUrl: 'https://www.hl7.org/fhir/datatypes.html#decimal',
+    },
+    'language-code-invalid': {
+        why: 'Resource.language must be a BCP-47 tag built from IANA-registered subtags so consumers can interpret the content language.',
+        fix: 'Replace the value with a registered language tag.',
+        example: 'Use "en", "de-CH" or "en-US" instead of "zz-INVALID".',
+        specUrl: 'https://www.hl7.org/fhir/resource-definitions.html#Resource.language',
+    },
     'structural-bundle-fullurl-duplicate': {
         why: 'Each Bundle entry must have a unique fullUrl for unambiguous reference resolution.',
         fix: 'Assign a unique fullUrl to each entry (use urn:uuid for temporary IDs).',

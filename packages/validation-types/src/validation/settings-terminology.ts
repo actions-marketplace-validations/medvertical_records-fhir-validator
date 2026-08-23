@@ -83,6 +83,12 @@ export interface TerminologyServer {
   /** Supported FHIR versions (auto-detected) */
   fhirVersions: ('R4' | 'R5' | 'R6')[];
 
+  /**
+   * Operator-supplied immutable release/snapshot identifier for reproducible
+   * runs (for example an Ontoserver edition or terminology release date).
+   */
+  snapshotId?: string;
+
   /** Health status */
   status: ServerStatus;
 

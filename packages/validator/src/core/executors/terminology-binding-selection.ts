@@ -1,31 +1,53 @@
 import type { ValidationIssue } from '../../types';
-import type { ElementDefinition, StructureDefinition } from '../structure-definition-types';
+import type { Binding, ElementDefinition, StructureDefinition } from '../structure-definition-types';
 import { matchesPattern } from '../../validators/slice-utils';
 import { UCUM_BEARING_TYPES } from './terminology-ucum-rules';
 import { isResolvedPrimitiveSidecarValue } from '../fhir-primitive-sidecar';
-const TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED =
-  process.env.FHIR_TERMINOLOGY_SLICE_PLAN_CACHE !== 'false';
-const sliceChildConstraintsCache = new WeakMap<
-  StructureDefinition,
-  WeakMap<ElementDefinition, ElementDefinition[]>
->();
-const owningSliceElementCache = new WeakMap<
-  StructureDefinition,
-  WeakMap<ElementDefinition, ElementDefinition | null>
->();
-const siblingSlicePatternsCache = new WeakMap<
-  StructureDefinition,
-  WeakMap<ElementDefinition, ElementDefinition[]>
->();
-const valueSetDiscriminatedSliceCache = new WeakMap<
-  StructureDefinition,
-  WeakMap<ElementDefinition, boolean>
->();
-export function effectiveBindingForElement(elementDef: { binding?: any; type?: { code: string }[] }): any {
+import {
+  codingMatchesPattern,
+  codeableConceptMatchesPattern,
+  elementMatchesOwnPattern,
+  getPatternOrFixedValue,
+} from './terminology-binding-pattern-matching';
+import type { TerminologySlicePlanCache } from './terminology-slice-plan-cache';
+export function effectiveBindingForElement(
+  elementDef: Pick<ElementDefinition, 'binding' | 'type'>,
+): Binding | undefined {
   const binding = elementDef.binding; // Quantity bindings are downgraded to HAPI-aligned extensible strength.
   if (binding?.strength !== 'required') return binding;
   const hasQuantityType = elementDef.type?.some(t => UCUM_BEARING_TYPES.has(t.code));
-  return hasQuantityType ? { ...binding, strength: 'extensible' } : binding;
+  return hasQuantityType ? { ...binding, strength: 'extensible' as const } : binding;
+}
+
+const CORE_CANONICAL_BASE = 'http://hl7.org/fhir/';
+
+/**
+ * Pin an unversioned ValueSet binding to the profile's own version when both
+ * live in the same IG canonical space. Multiple versions of an IG can sit in
+ * the local package stores at once, and the newest ValueSet is not the one
+ * this profile was published against — carin-bb 2.1.0 rebased
+ * C4BBSurfaceCodes onto a THO CodeSystem, so resolving a 2.0.0 profile's
+ * binding to it fails every 2.0.0-conformant code. Core FHIR canonicals are
+ * excluded: they already resolve by FHIR version preference.
+ */
+export function pinBindingToProfileVersion<T extends Binding | undefined>(
+  binding: T,
+  structureDef: Pick<StructureDefinition, 'url' | 'version'>,
+): T {
+  if (!binding?.valueSet || binding.valueSet.includes('|')) return binding;
+  if (!structureDef.version || typeof structureDef.url !== 'string') return binding;
+
+  const igBase = canonicalIgBase(structureDef.url);
+  if (!igBase || igBase === CORE_CANONICAL_BASE) return binding;
+  if (!binding.valueSet.startsWith(igBase)) return binding;
+
+  return { ...binding, valueSet: `${binding.valueSet}|${structureDef.version}` };
+}
+
+function canonicalIgBase(profileUrl: string): string | null {
+  const marker = '/StructureDefinition/';
+  const markerIndex = profileUrl.indexOf(marker);
+  return markerIndex > 0 ? profileUrl.slice(0, markerIndex + 1) : null;
 }
 
 export function shouldValidateBindingForValue(
@@ -42,57 +64,6 @@ export function shouldValidateBindingForValue(
     typeof candidate.code === 'string';
 
   return !quantityLike;
-}
-
-function codingMatchesPattern(coding: unknown, pattern: Record<string, unknown>): boolean {
-  if (!coding || typeof coding !== 'object' || Array.isArray(coding)) return false;
-  const candidate = coding as Record<string, unknown>;
-  return Object.entries(pattern).every(([key, value]) => candidate[key] === value);
-}
-
-function codeableConceptMatchesPattern(value: unknown, pattern: Record<string, unknown>): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-
-  return Object.entries(pattern).every(([key, expected]) => {
-    if (key === 'coding' && Array.isArray(expected)) {
-      const candidateCodings = Array.isArray(candidate.coding) ? candidate.coding : [];
-      return expected.every(patternCoding =>
-        candidateCodings.some(candidateCoding =>
-          codingMatchesPattern(candidateCoding, patternCoding as Record<string, unknown>),
-        ),
-      );
-    }
-
-    return candidate[key] === expected;
-  });
-}
-
-function elementMatchesOwnPattern(elementDef: ElementDefinition, value: unknown): boolean {
-  const patternOrFixed = getPatternOrFixedValue(elementDef);
-  if (patternOrFixed !== undefined) return matchesPattern(value, patternOrFixed);
-
-  const patternCoding = (elementDef as ElementDefinition & { patternCoding?: Record<string, unknown> }).patternCoding;
-  if (patternCoding) return codingMatchesPattern(value, patternCoding);
-
-  const patternCodeableConcept = (
-    elementDef as ElementDefinition & { patternCodeableConcept?: Record<string, unknown> }
-  ).patternCodeableConcept;
-  if (patternCodeableConcept) return codeableConceptMatchesPattern(value, patternCodeableConcept);
-
-  return false;
-}
-
-function getPatternOrFixedValue(elementDef: ElementDefinition): unknown {
-  const candidate = elementDef as ElementDefinition & Record<string, unknown>;
-  if (candidate.pattern !== undefined) return candidate.pattern;
-  if (candidate.fixed !== undefined) return candidate.fixed;
-  for (const key of Object.keys(candidate)) {
-    if ((key.startsWith('pattern') || key.startsWith('fixed')) && key !== 'pattern' && key !== 'fixed') {
-      return candidate[key];
-    }
-  }
-  return undefined;
 }
 
 function getValueAtRelativePath(value: unknown, path: string): unknown {
@@ -117,67 +88,19 @@ function getValueAtRelativePath(value: unknown, path: string): unknown {
   return current;
 }
 
-function getSliceChildConstraints(structureDef: StructureDefinition, elementDef: ElementDefinition): ElementDefinition[] {
-  if (!elementDef.id || !elementDef.sliceName) return [];
-  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
-    ? sliceChildConstraintsCache.get(structureDef)
-    : undefined;
-  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
-    byElement = new WeakMap();
-    sliceChildConstraintsCache.set(structureDef, byElement);
-  }
-  const cached = byElement?.get(elementDef);
-  if (cached) return cached;
-
-  const prefix = `${elementDef.id}.`;
-  const constraints = structureDef.snapshot?.element.filter(candidate =>
-    typeof candidate.id === 'string' &&
-    candidate.id.startsWith(prefix) &&
-    getPatternOrFixedValue(candidate) !== undefined,
-  ) ?? [];
-  byElement?.set(elementDef, constraints);
-  return constraints;
-}
-
 function elementMatchesSliceChildConstraints(
   value: unknown,
   elementDef: ElementDefinition,
   structureDef: StructureDefinition,
+  planCache: TerminologySlicePlanCache,
 ): boolean {
-  const constraints = getSliceChildConstraints(structureDef, elementDef);
+  const constraints = planCache.getSliceChildConstraints(structureDef, elementDef);
   if (constraints.length === 0) return false;
 
   return constraints.every(constraint => {
     const relativePath = constraint.id!.substring(`${elementDef.id}.`.length);
     return matchesPattern(getValueAtRelativePath(value, relativePath), getPatternOrFixedValue(constraint));
   });
-}
-
-function getOwningSliceElement(
-  structureDef: StructureDefinition,
-  elementDef: ElementDefinition,
-): ElementDefinition | null {
-  if (!elementDef.id || !elementDef.id.includes(':')) return null;
-  if (elementDef.sliceName) return elementDef;
-
-  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
-    ? owningSliceElementCache.get(structureDef)
-    : undefined;
-  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
-    byElement = new WeakMap();
-    owningSliceElementCache.set(structureDef, byElement);
-  }
-  if (byElement?.has(elementDef)) return byElement.get(elementDef) ?? null;
-
-  const owner = structureDef.snapshot?.element
-    .filter(candidate =>
-      Boolean(candidate.sliceName) &&
-      typeof candidate.id === 'string' &&
-      elementDef.id!.startsWith(`${candidate.id}.`),
-    )
-    .sort((a, b) => b.id!.length - a.id!.length)[0] ?? null;
-  byElement?.set(elementDef, owner);
-  return owner;
 }
 
 function getRelativePathWithinSlice(elementDef: ElementDefinition, sliceElement: ElementDefinition): string {
@@ -189,17 +112,18 @@ function elementMatchesSlice(
   value: unknown,
   sliceElement: ElementDefinition,
   structureDef: StructureDefinition,
+  planCache: TerminologySlicePlanCache,
 ): boolean {
   const ownPatternOrFixed = getPatternOrFixedValue(sliceElement);
   if (ownPatternOrFixed !== undefined) return matchesPattern(value, ownPatternOrFixed);
   if (elementMatchesOwnPattern(sliceElement, value)) return true;
 
-  const ownChildConstraints = getSliceChildConstraints(structureDef, sliceElement);
+  const ownChildConstraints = planCache.getSliceChildConstraints(structureDef, sliceElement);
   if (ownChildConstraints.length > 0) {
-    return elementMatchesSliceChildConstraints(value, sliceElement, structureDef);
+    return elementMatchesSliceChildConstraints(value, sliceElement, structureDef, planCache);
   }
 
-  const siblingPatterns = getSiblingSlicePatterns(structureDef, sliceElement);
+  const siblingPatterns = planCache.getSiblingSlicePatterns(structureDef, sliceElement);
   if (siblingPatterns.length > 0) {
     return !siblingPatterns.some(sibling => elementMatchesOwnPattern(sibling, value));
   }
@@ -211,9 +135,10 @@ export function selectSliceScopedValues(
   resource: unknown,
   elementDef: ElementDefinition,
   structureDef: StructureDefinition,
-  getValueAtPath: (resource: any, path: string) => any,
+  getValueAtPath: (resource: unknown, path: string) => unknown,
+  planCache: TerminologySlicePlanCache,
 ): { hasMatchingSliceElements: boolean; values: unknown[] } | null {
-  const sliceElement = getOwningSliceElement(structureDef, elementDef);
+  const sliceElement = planCache.getOwningSliceElement(structureDef, elementDef);
   if (!sliceElement) return null;
 
   const sliceParentValue = getValueAtPath(resource, sliceElement.path);
@@ -225,9 +150,9 @@ export function selectSliceScopedValues(
 
   if (
     (sliceElement.min ?? 0) > 0 &&
-    isValueSetDiscriminatedSliceRoot(sliceElement, structureDef) &&
+    planCache.isValueSetDiscriminatedSliceRoot(sliceElement, structureDef) &&
     getPatternOrFixedValue(sliceElement) === undefined &&
-    getSliceChildConstraints(structureDef, sliceElement).length === 0
+    planCache.getSliceChildConstraints(structureDef, sliceElement).length === 0
   ) {
     return {
       hasMatchingSliceElements: sliceParentValues.length > 0,
@@ -236,7 +161,7 @@ export function selectSliceScopedValues(
   }
 
   const matchingSliceValues = sliceParentValues.filter(value =>
-    elementMatchesSlice(value, sliceElement, structureDef),
+    elementMatchesSlice(value, sliceElement, structureDef, planCache),
   );
 
   const relativePath = getRelativePathWithinSlice(elementDef, sliceElement);
@@ -252,43 +177,13 @@ export function selectSliceScopedValues(
   return { hasMatchingSliceElements: matchingSliceValues.length > 0, values };
 }
 
-function isSliceRootElement(elementDef: ElementDefinition): boolean {
-  return Boolean(elementDef.sliceName && elementDef.id?.includes(':'));
-}
-
-function isValueSetDiscriminatedSliceRoot(
-  elementDef: ElementDefinition,
-  structureDef: StructureDefinition,
-): boolean {
-  if (!isSliceRootElement(elementDef) || !elementDef.binding?.valueSet) return false;
-
-  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
-    ? valueSetDiscriminatedSliceCache.get(structureDef)
-    : undefined;
-  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
-    byElement = new WeakMap();
-    valueSetDiscriminatedSliceCache.set(structureDef, byElement);
-  }
-  if (byElement?.has(elementDef)) return byElement.get(elementDef) ?? false;
-
-  const siblingSlices = structureDef.snapshot?.element.filter(candidate =>
-    candidate !== elementDef &&
-    candidate.path === elementDef.path &&
-    Boolean(candidate.sliceName) &&
-    Boolean(candidate.binding?.valueSet),
-  ) ?? [];
-
-  const result = siblingSlices.length > 0;
-  byElement?.set(elementDef, result);
-  return result;
-}
-
 export function shouldSuppressValueSetSliceMembershipIssue(
   elementDef: ElementDefinition,
   structureDef: StructureDefinition,
   issues: ValidationIssue[],
+  planCache: TerminologySlicePlanCache,
 ): boolean {
-  if (!isValueSetDiscriminatedSliceRoot(elementDef, structureDef)) return false;
+  if (!planCache.isValueSetDiscriminatedSliceRoot(elementDef, structureDef)) return false;
   if (!hasBindingMembershipViolation(issues)) return false;
 
   return (elementDef.min ?? 0) === 0;
@@ -304,49 +199,50 @@ export function shouldSuppressNonRequiredBindingForOwnFixedPattern(
   return elementMatchesOwnPattern(elementDef, value);
 }
 
-function hasBindingMembershipViolation(issues: ValidationIssue[]): boolean {
-  return issues.some(issue =>
-    issue.code === 'terminology-binding-required' ||
+function isBindingMembershipViolation(issue: ValidationIssue): boolean {
+  return issue.code === 'terminology-binding-required' ||
     issue.code === 'terminology-binding-required-code' ||
     issue.code === 'terminology-binding-extensible' ||
     issue.code === 'terminology-binding-extensible-code' ||
     issue.code === 'terminology-binding-preferred' ||
-    issue.code === 'terminology-binding-preferred-code'
-  );
+    issue.code === 'terminology-binding-preferred-code';
 }
 
-function getSiblingSlicePatterns(structureDef: StructureDefinition, elementDef: ElementDefinition): ElementDefinition[] {
-  const elementId = elementDef.id;
-  if (!elementId || !elementDef.sliceName) return [];
+function hasBindingMembershipViolation(issues: ValidationIssue[]): boolean {
+  return issues.some(isBindingMembershipViolation);
+}
 
-  let byElement = TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED
-    ? siblingSlicePatternsCache.get(structureDef)
-    : undefined;
-  if (TERMINOLOGY_SLICE_PLAN_CACHE_ENABLED && !byElement) {
-    byElement = new WeakMap();
-    siblingSlicePatternsCache.set(structureDef, byElement);
+/**
+ * "Slicing by value sets": sibling slices are told apart by their required
+ * bindings, so a repeat outside this slice's value set belongs to another
+ * slice (or the open portion), not in error. For a min>0 slice the binding
+ * failure only stands when no repeat satisfies the value set at all.
+ */
+export function applyValueSetSliceMembershipPolicy(
+  elementDef: ElementDefinition,
+  structureDef: StructureDefinition,
+  perCandidateIssues: ValidationIssue[][],
+  planCache: TerminologySlicePlanCache,
+): ValidationIssue[] {
+  const combined = perCandidateIssues.flat();
+  if (
+    (elementDef.min ?? 0) === 0 ||
+    !planCache.isValueSetDiscriminatedSliceRoot(elementDef, structureDef)
+  ) {
+    return combined;
   }
-  const cached = byElement?.get(elementDef);
-  if (cached) return cached;
-
-  const slicePrefix = elementId.slice(0, elementId.lastIndexOf(':') + 1);
-  const siblings = structureDef.snapshot?.element.filter(candidate =>
-    candidate.id !== elementId &&
-    candidate.id?.startsWith(slicePrefix) &&
-    candidate.path === elementDef.path &&
-    Boolean(
-      (candidate as ElementDefinition & { patternCoding?: unknown }).patternCoding ||
-      (candidate as ElementDefinition & { patternCodeableConcept?: unknown }).patternCodeableConcept
-    ),
-  ) ?? [];
-  byElement?.set(elementDef, siblings);
-  return siblings;
+  const anyCandidateInValueSet = perCandidateIssues.some(
+    issues => !hasBindingMembershipViolation(issues),
+  );
+  if (!anyCandidateInValueSet) return combined;
+  return combined.filter(issue => !isBindingMembershipViolation(issue));
 }
 
 export function selectValuesForBinding(
   elementDef: ElementDefinition,
   value: unknown,
   structureDef: StructureDefinition,
+  planCache: TerminologySlicePlanCache,
 ): unknown[] {
   const values = Array.isArray(value) ? value : [value];
 
@@ -385,12 +281,12 @@ export function selectValuesForBinding(
     return values.filter(item => codeableConceptMatchesPattern(item, patternCodeableConcept));
   }
 
-  const ownChildConstraints = getSliceChildConstraints(structureDef, elementDef);
+  const ownChildConstraints = planCache.getSliceChildConstraints(structureDef, elementDef);
   if (ownChildConstraints.length > 0) {
-    return values.filter(item => elementMatchesSliceChildConstraints(item, elementDef, structureDef));
+    return values.filter(item => elementMatchesSliceChildConstraints(item, elementDef, structureDef, planCache));
   }
 
-  const siblingPatterns = getSiblingSlicePatterns(structureDef, elementDef);
+  const siblingPatterns = planCache.getSiblingSlicePatterns(structureDef, elementDef);
   if (siblingPatterns.length > 0) {
     return values.filter(item => !siblingPatterns.some(sibling => elementMatchesOwnPattern(sibling, item)));
   }

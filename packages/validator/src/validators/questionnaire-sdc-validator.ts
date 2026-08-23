@@ -1,17 +1,15 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import type { QuestionnaireItem, QuestionnaireResponseAnswer, QuestionnaireResponseItem } from './questionnaire-types';
+import { visitQuestionnaireResponseItems } from './questionnaire-response-traversal';
 
 export function validateQuestionnaireSdcConstraints(
-    items: QuestionnaireResponseItem[],
+    items: unknown[],
     questionMap: Map<string, QuestionnaireItem>,
     basePath: string,
 ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-
-    for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        const path = `${basePath}[${i}]`;
+    visitQuestionnaireResponseItems(items, basePath, (item, path) => {
         const question = item.linkId ? questionMap.get(item.linkId) : undefined;
 
         if (question) {
@@ -28,10 +26,7 @@ export function validateQuestionnaireSdcConstraints(
             }
         }
 
-        if (Array.isArray(item.item)) {
-            issues.push(...validateQuestionnaireSdcConstraints(item.item, questionMap, `${path}.item`));
-        }
-    }
+    });
 
     return issues;
 }
@@ -42,7 +37,7 @@ function validateItemLevelSdcConstraints(
     itemPath: string,
 ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-    const qExt = (question as unknown as { extension?: Array<Record<string, unknown>> }).extension;
+    const qExt = question.extension;
     const answerCount = Array.isArray(item.answer) ? item.answer.length : 0;
 
     if (Array.isArray(qExt)) {
@@ -214,7 +209,7 @@ function validateAnswerAgainstExtensions(
     answerPath: string,
 ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-    const extensions = (question as unknown as { extension?: Array<Record<string, unknown>> }).extension;
+    const extensions = question.extension;
     if (!Array.isArray(extensions) || extensions.length === 0) return issues;
 
     const minUrl = 'http://hl7.org/fhir/StructureDefinition/minValue';
@@ -254,7 +249,7 @@ function validateAnswerAgainstExtensions(
     return issues;
 }
 
-function extractExtensionValue(ext: Record<string, unknown>): { type: string; value: any } | null {
+function extractExtensionValue(ext: Record<string, unknown>): { type: string; value: unknown } | null {
     for (const key of Object.keys(ext)) {
         if (key.startsWith('value') && key !== 'value') {
             const type = key.slice('value'.length);
@@ -264,7 +259,7 @@ function extractExtensionValue(ext: Record<string, unknown>): { type: string; va
     return null;
 }
 
-function extractAnswerValueForCompare(answer: QuestionnaireResponseAnswer): { type: string; value: any } | null {
+function extractAnswerValueForCompare(answer: QuestionnaireResponseAnswer): { type: string; value: unknown } | null {
     if (answer.valueBoolean !== undefined) return { type: 'boolean', value: answer.valueBoolean };
     if (answer.valueDecimal !== undefined) return { type: 'decimal', value: answer.valueDecimal };
     if (answer.valueInteger !== undefined) return { type: 'integer', value: answer.valueInteger };
@@ -280,7 +275,7 @@ function extractAnswerValueForCompare(answer: QuestionnaireResponseAnswer): { ty
     return null;
 }
 
-function compareOrdinalValues(a: any, b: any): number | null {
+function compareOrdinalValues(a: unknown, b: unknown): number | null {
     if (typeof a === 'number' && typeof b === 'number') {
         return Math.sign(a - b);
     }

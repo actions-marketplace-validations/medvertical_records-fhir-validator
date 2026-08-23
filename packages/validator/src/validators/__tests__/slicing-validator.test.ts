@@ -10,6 +10,28 @@ import type { StructureDefinition } from "../../core/structure-definition-types"
 describe("SlicingValidator", () => {
   const validator = new SlicingValidator();
 
+  it("does not expose slicing validator exception text", async () => {
+    const secret = "https://user:password@example.test/private";
+    const boundaryValidator = new SlicingValidator({
+      extractSlicingInfo: vi.fn().mockRejectedValue(new Error(secret)),
+    });
+
+    const issues = await boundaryValidator.validateSlicing(
+      [],
+      "Patient.identifier",
+      {} as StructureDefinition,
+    );
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        code: "profile-slice-validation-error",
+        message:
+          "Slicing validation could not be completed because the validator encountered an operational error.",
+      }),
+    );
+    expect(JSON.stringify(issues)).not.toContain(secret);
+  });
+
   it("reports a concrete pattern mismatch instead of a missing slice for versioned Coding patterns", async () => {
     const heartRateProfile: StructureDefinition = {
       resourceType: "StructureDefinition",
@@ -763,9 +785,8 @@ describe("SlicingValidator", () => {
         return [];
       });
 
-      const bindingOnlyValidator = new SlicingValidator();
-      (bindingOnlyValidator as any).getValueSetLoader = () => ({
-        loadValueSet,
+      const bindingOnlyValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet },
       });
 
       const beatmungProfile: StructureDefinition = {
@@ -845,8 +866,9 @@ describe("SlicingValidator", () => {
         return [];
       });
 
-      const categoryValidator = new SlicingValidator();
-      (categoryValidator as any).getValueSetLoader = () => ({ loadValueSet });
+      const categoryValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet },
+      });
 
       const categoryProfile: StructureDefinition = {
         resourceType: "StructureDefinition",
@@ -945,9 +967,8 @@ describe("SlicingValidator", () => {
         return [];
       });
 
-      const adjudicationValidator = new SlicingValidator();
-      (adjudicationValidator as any).getValueSetLoader = () => ({
-        loadValueSet,
+      const adjudicationValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet },
       });
 
       const adjudicationProfile: StructureDefinition = {
@@ -1078,8 +1099,9 @@ describe("SlicingValidator", () => {
         return [];
       });
 
-      const totalValidator = new SlicingValidator();
-      (totalValidator as any).getValueSetLoader = () => ({ loadValueSet });
+      const totalValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet },
+      });
 
       const totalProfile: StructureDefinition = {
         resourceType: "StructureDefinition",
@@ -1174,8 +1196,9 @@ describe("SlicingValidator", () => {
         return [];
       });
 
-      const categoryValidator = new SlicingValidator();
-      (categoryValidator as any).getValueSetLoader = () => ({ loadValueSet });
+      const categoryValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet },
+      });
 
       const conditionCategoryProfile: StructureDefinition = {
         resourceType: "StructureDefinition",
@@ -1251,8 +1274,9 @@ describe("SlicingValidator", () => {
 
     it("does not claim a binding-only required slice is missing when the ValueSet cannot be resolved", async () => {
       const loadValueSet = vi.fn(async () => null);
-      const categoryValidator = new SlicingValidator();
-      (categoryValidator as any).getValueSetLoader = () => ({ loadValueSet });
+      const categoryValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet },
+      });
 
       const conditionCategoryProfile: StructureDefinition = {
         resourceType: "StructureDefinition",
@@ -1316,9 +1340,8 @@ describe("SlicingValidator", () => {
     });
 
     it("still reports binding-only required slice min when the sliced element is absent", async () => {
-      const categoryValidator = new SlicingValidator();
-      (categoryValidator as any).getValueSetLoader = () => ({
-        loadValueSet: vi.fn(async () => null),
+      const categoryValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet: vi.fn(async () => null) },
       });
 
       const conditionCategoryProfile: StructureDefinition = {
@@ -1943,7 +1966,7 @@ describe("SlicingValidator", () => {
       expect(issues).toContainEqual(
         expect.objectContaining({
           code: "profile-slice-fixed-value-mismatch",
-          path: "Procedure.extension[0].value[x].coding.system",
+          path: "Procedure.extension[0].value[x].coding[0].system",
         }),
       );
     });
@@ -2653,9 +2676,8 @@ describe("SlicingValidator", () => {
         },
       };
 
-      const localValidator = new SlicingValidator();
-      (localValidator as any).getValueSetLoader = () => ({
-        loadValueSet: vi.fn(async () => null),
+      const localValidator = new SlicingValidator({
+        valueSetLoader: { loadValueSet: vi.fn(async () => null) },
       });
       const issues = await localValidator.validateSlicing(
         [

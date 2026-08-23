@@ -17,7 +17,7 @@ export type {
   FhirOperationOutcomeIssue,
 } from '../core/operation-outcome-converter';
 export { InvariantRegistry } from '../validators/invariant-registry';
-export { ValueSetCache, valueSetCache } from '../validators/valueset-cache';
+export { ValueSetCache } from '../validators/valueset-cache';
 export type { ServerExpansionEntry } from '../validators/valueset-cache';
 export type {
   CodeSystem,

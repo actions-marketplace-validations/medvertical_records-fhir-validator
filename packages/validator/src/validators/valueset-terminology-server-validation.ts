@@ -2,8 +2,8 @@ import type { BindingStrength } from './valueset-display-utils';
 import type { FhirVersion } from './valueset-expansion-cache-key';
 import type { TerminologyApiClient } from './terminology-api-client';
 import type { ValueSetPackageLoader } from './valueset-package-loader';
-
-type TerminologyServerOverride = { url: string; auth?: any };
+import type { TerminologyServerOverride } from './valueset-types';
+import { codeSystemCanonicalsEquivalent } from './code-system-canonical-aliases';
 
 type ValidateCodeViaTerminologyServerOptions = {
   apiClient: TerminologyApiClient;
@@ -35,7 +35,7 @@ export async function validateCodeViaTerminologyServerWithFilters({
 
   const filters = await packageLoader.getIncludeConceptFilters(valueSetUrl, fhirVersion);
   for (const filter of filters) {
-    if (filter.system !== system || filter.property !== 'concept') continue;
+    if (!codeSystemCanonicalsEquivalent(filter.system, system) || filter.property !== 'concept') continue;
 
     if (filter.op === '=' && filter.value === code) {
       return true;

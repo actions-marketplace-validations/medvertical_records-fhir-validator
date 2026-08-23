@@ -14,13 +14,19 @@
  * is unchanged, which would make a build-time index unusable at runtime.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'fs';
 import * as path from 'path';
 import { logger } from '../logger';
+import { SD_LOADER_INDEX_FILENAME } from '../package/package-profile-index-metadata.js';
+import {
+    packageErrorMetadata,
+    packageTargetMetadata,
+} from '../package/package-artifact-policy.js';
 
 const INDEX_VERSION = 5; // Bumped: v5 uses stable package-manifest fingerprints
-const INDEX_FILENAME = 'sdloader-profile-index.json';
+const MAX_INDEX_BYTES = 64 * 1024 * 1024;
+const MAX_INDEX_PROFILES = 1_000_000;
 
 interface PackageIndexEntry {
     name: string;
@@ -57,7 +63,7 @@ export interface PersistentIndexOptions {
  */
 function getIndexPath(sourcePath: string): string {
     // Store index in the source directory itself
-    return path.join(sourcePath, INDEX_FILENAME);
+    return path.join(sourcePath, SD_LOADER_INDEX_FILENAME);
 }
 
 /**
@@ -85,8 +91,8 @@ async function getPackageManifestHashes(sourcePath: string): Promise<Map<string,
                 }
             }
         }
-    } catch (_error) {
-        logger.debug(`[SDLoaderIndex] Could not read source path: ${sourcePath}`);
+    } catch (error: unknown) {
+        logger.debug('[SDLoaderIndex] Could not read package source', packageErrorMetadata(error));
     }
 
     return manifestHashes;
@@ -117,7 +123,7 @@ async function isIndexValid(index: ProfileIndex, sourcePath: string, options: Pe
     // Check if any packages were added
     for (const [name] of currentManifestHashes) {
         if (!indexedManifestHashes.has(name)) {
-            logger.debug(`[SDLoaderIndex] New package detected: ${name}, will rescan`);
+            logger.debug('[SDLoaderIndex] New package detected; will rescan', packageTargetMetadata(name));
             return false;
         }
     }
@@ -126,15 +132,15 @@ async function isIndexValid(index: ProfileIndex, sourcePath: string, options: Pe
     for (const [name, indexedManifestHash] of indexedManifestHashes) {
         const currentManifestHash = currentManifestHashes.get(name);
         if (currentManifestHash === undefined) {
-            logger.debug(`[SDLoaderIndex] Package removed: ${name}, will rescan`);
+            logger.debug('[SDLoaderIndex] Package removed; will rescan', packageTargetMetadata(name));
             return false;
         }
         if (currentManifestHash === null || indexedManifestHash === null) {
-            logger.debug(`[SDLoaderIndex] Package manifest missing: ${name}, will rescan`);
+            logger.debug('[SDLoaderIndex] Package manifest missing; will rescan', packageTargetMetadata(name));
             return false;
         }
         if (currentManifestHash !== indexedManifestHash) {
-            logger.debug(`[SDLoaderIndex] Package manifest changed: ${name}, will rescan`);
+            logger.debug('[SDLoaderIndex] Package manifest changed; will rescan', packageTargetMetadata(name));
             return false;
         }
     }
@@ -153,8 +159,17 @@ export async function loadFromPersistentIndex(
     const indexPath = getIndexPath(sourcePath);
 
     try {
+        const stats = await fs.stat(indexPath);
+        if (stats.size > MAX_INDEX_BYTES) {
+            logger.warn('[SDLoaderIndex] Refusing oversized persistent index');
+            return null;
+        }
         const content = await fs.readFile(indexPath, 'utf-8');
-        const index: ProfileIndex = JSON.parse(content);
+        const index = parseProfileIndex(JSON.parse(content));
+        if (!index) {
+            logger.debug('[SDLoaderIndex] Persistent index schema is invalid');
+            return null;
+        }
 
         // Validate index
         if (!await isIndexValid(index, sourcePath, options)) {
@@ -168,9 +183,8 @@ export async function loadFromPersistentIndex(
         return new Set(index.profileUrls);
 
     } catch (error: unknown) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            logger.debug(`[SDLoaderIndex] Could not load index: ${err.message}`);
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+            logger.debug('[SDLoaderIndex] Could not load index', packageErrorMetadata(error));
         }
         return null;
     }
@@ -186,16 +200,22 @@ export async function saveToPersistentIndex(
     options: PersistentIndexOptions = {}
 ): Promise<void> {
     const indexPath = getIndexPath(sourcePath);
+    const temporaryPath = path.join(
+        sourcePath,
+        `.${SD_LOADER_INDEX_FILENAME}.${process.pid}.${randomUUID()}.tmp`,
+    );
 
     try {
         const manifestHashes = await getPackageManifestHashes(sourcePath);
 
         // Build package entries
-        const packages: PackageIndexEntry[] = packageDetails.map(p => ({
-            name: p.name,
-            profileCount: p.profileCount,
-            manifestHash: manifestHashes.get(p.name) ?? null
-        }));
+        const packages: PackageIndexEntry[] = packageDetails
+            .map(p => ({
+                name: p.name,
+                profileCount: p.profileCount,
+                manifestHash: manifestHashes.get(p.name) ?? null
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name));
         const sourcePackages: SourcePackageIndexEntry[] = Array.from(manifestHashes.entries())
             .map(([name, manifestHash]) => ({ name, manifestHash }))
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -206,16 +226,82 @@ export async function saveToPersistentIndex(
             options,
             packages,
             sourcePackages,
-            profileUrls: Array.from(profileUrls)
+            profileUrls: Array.from(profileUrls).sort()
         };
 
-        await fs.writeFile(indexPath, JSON.stringify(index, null, 2));
+        await fs.writeFile(temporaryPath, JSON.stringify(index, null, 2), {
+            encoding: 'utf-8',
+            flag: 'wx',
+            mode: 0o600,
+        });
+        await fs.rename(temporaryPath, indexPath);
         logger.info(`[SDLoaderIndex] ✅ Saved index with ${profileUrls.size} profiles from ${packages.length} packages`);
 
     } catch (error: unknown) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        logger.warn(`[SDLoaderIndex] Could not save index: ${err.message}`);
+        await fs.unlink(temporaryPath).catch(() => undefined);
+        logger.warn('[SDLoaderIndex] Could not save index', packageErrorMetadata(error));
     }
+}
+
+function parseProfileIndex(value: unknown): ProfileIndex | null {
+    if (!isRecord(value)) return null;
+    const { version, generatedAt, options, packages, sourcePackages, profileUrls } = value;
+    if (!Number.isSafeInteger(version) || typeof version !== 'number') return null;
+    if (!Number.isSafeInteger(generatedAt) || typeof generatedAt !== 'number' || generatedAt <= 0) return null;
+    if (!validOptions(options)) return null;
+    if (!Array.isArray(packages) || !packages.every(validPackageEntry)) return null;
+    if (!Array.isArray(sourcePackages) || !sourcePackages.every(validSourcePackageEntry)) return null;
+    if (
+        !Array.isArray(profileUrls)
+        || profileUrls.length > MAX_INDEX_PROFILES
+        || !profileUrls.every(validProfileCanonical)
+    ) {
+        return null;
+    }
+    return {
+        version,
+        generatedAt,
+        ...(options ? { options } : {}),
+        packages,
+        sourcePackages,
+        profileUrls,
+    };
+}
+
+function validOptions(value: unknown): value is ProfileIndex['options'] {
+    return value === undefined
+        || (isRecord(value)
+            && (value.deduplicatePackages === undefined
+                || typeof value.deduplicatePackages === 'boolean'));
+}
+
+function validPackageEntry(value: unknown): value is PackageIndexEntry {
+    return validSourcePackageEntry(value)
+        && isRecord(value)
+        && Number.isSafeInteger(value.profileCount)
+        && Number(value.profileCount) >= 0;
+}
+
+function validSourcePackageEntry(value: unknown): value is SourcePackageIndexEntry {
+    return isRecord(value)
+        && typeof value.name === 'string'
+        && value.name.length > 0
+        && validManifestHash(value.manifestHash);
+}
+
+function validManifestHash(value: unknown): boolean {
+    return value === null || (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
+}
+
+function validProfileCanonical(value: unknown): value is string {
+    return typeof value === 'string'
+        && value.length > 0
+        && value.length <= 8192
+        && !value.includes('\0');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**
@@ -228,9 +314,8 @@ export async function clearPersistentIndex(sourcePath: string): Promise<void> {
         await fs.unlink(indexPath);
         logger.info('[SDLoaderIndex] Index cleared');
     } catch (error: unknown) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            logger.warn(`[SDLoaderIndex] Could not clear index: ${err.message}`);
+        if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+            logger.warn('[SDLoaderIndex] Could not clear index', packageErrorMetadata(error));
         }
     }
 }

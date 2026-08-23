@@ -89,6 +89,11 @@ export interface TerminologyResolutionConfig {
          * CodeSystem/package validation unaffected.
          */
         maxRemoteCodeSystemValidations?: number;
+        /**
+         * Process-wide concurrency limit per terminology-server scope. The
+         * shared broker applies this across validator instances and runs.
+         */
+        maxConcurrentRequests?: number;
     };
     twoPhaseExpansion?: {
         enabled: boolean;
@@ -98,15 +103,15 @@ export interface TerminologyResolutionConfig {
     /**
      * When true, a binding that cannot be verified locally and is not
      * confirmed by a terminology server emits a `terminology-binding-unverified`
-     * informational issue instead of silently failing open. Default off —
-     * precision-neutral until explicitly enabled (gap P-3 step b).
+     * informational issue instead of silently failing open. The Records
+     * runtime enables this by default; low-level callers may opt out.
      */
     reportUnverifiedBindings?: boolean;
     /**
      * Strict terminology policy (gap P-3 step c): when true, an unverifiable
      * *required* binding is raised to `warning` severity instead of the default
      * `information`. Implies `reportUnverifiedBindings`. Extensible/preferred
-     * bindings stay informational. Default off.
+     * bindings stay informational. The Records runtime enables this by default.
      */
     strictUnverifiedRequiredBindings?: boolean;
 }
@@ -123,6 +128,7 @@ export type CodeBindingOutcome = 'valid' | 'invalid' | 'unverified';
 export const TERMINOLOGY_UNVERIFIED_REASONS = [
     'empty-expansion',
     'unsupported-filter',
+    'unenumerable-system-include',
     'unresolvable-snomed-extension-filter',
     'validation-error',
 ] as const;
@@ -190,14 +196,16 @@ export interface ValueSet {
         exclude?: ValueSetComposeExclude[];
     };
     expansion?: {
-        contains?: Array<{
-            system?: string;
-            code: string;
-            display?: string;
-            /** Nested concepts (hierarchical expansion) */
-            contains?: any[];
-        }>;
+        contains?: ValueSetExpansionContains[];
     };
+}
+
+export interface ValueSetExpansionContains {
+    system?: string;
+    version?: string;
+    code: string;
+    display?: string;
+    contains?: ValueSetExpansionContains[];
 }
 
 export interface CodeSystemConcept {
@@ -216,6 +224,20 @@ export interface CodeSystemConcept {
     concept?: CodeSystemConcept[];
 }
 
+export interface CodeSystemPropertyDefinition {
+    code: string;
+    uri?: string;
+    description?: string;
+    type?: string;
+}
+
+export interface CodeSystemFilterDefinition {
+    code: string;
+    description?: string;
+    operator?: string[];
+    value?: string;
+}
+
 export interface CodeSystem {
     resourceType: 'CodeSystem';
     url: string;
@@ -231,6 +253,8 @@ export interface CodeSystem {
      * the codes they reference must already exist in the base system.
      */
     supplements?: string;
+    property?: CodeSystemPropertyDefinition[];
+    filter?: CodeSystemFilterDefinition[];
     concept?: CodeSystemConcept[];
 }
 

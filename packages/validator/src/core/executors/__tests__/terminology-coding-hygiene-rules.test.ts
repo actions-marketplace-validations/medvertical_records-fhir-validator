@@ -66,4 +66,11 @@ describe('validateCodingHygiene', () => {
       }),
     ]));
   });
+
+  it('terminates safely when an object graph contains a cycle', () => {
+    const resource: Record<string, unknown> = { resourceType: 'Observation' };
+    resource.self = resource;
+
+    expect(validateCodingHygiene(resource, [])).toEqual([]);
+  });
 });

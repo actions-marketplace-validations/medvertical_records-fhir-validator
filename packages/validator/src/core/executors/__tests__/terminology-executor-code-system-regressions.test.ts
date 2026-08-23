@@ -3,27 +3,6 @@ import type {
   StructureDefinition,
   ElementDefinition,
 } from "../../structure-definition-types";
-
-const { MockValueSetValidator, getMockInstance } = vi.hoisted(() => {
-  let lastInstance: any = null;
-  class MockValueSetValidator {
-    validateBinding = vi.fn().mockResolvedValue([]);
-    isExternalCodeSystem = vi.fn().mockReturnValue(false);
-    validateCodeInCodeSystem = vi.fn().mockResolvedValue({ valid: true });
-    validateCodeInLocalCodeSystemOnly = vi.fn().mockResolvedValue(null);
-    setResolutionConfig = vi.fn();
-    getResolutionConfig = vi.fn().mockReturnValue({ strategy: "local" });
-    clearCache = vi.fn();
-    constructor() {
-      lastInstance = this;
-    }
-  }
-  return { MockValueSetValidator, getMockInstance: () => lastInstance };
-});
-
-vi.mock("../../../validators/valueset-validator", () => ({
-  ValueSetValidator: MockValueSetValidator,
-}));
 vi.mock("../../../logger", () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -32,15 +11,20 @@ import {
   TerminologyExecutor,
   type TerminologyValidationContext,
 } from "../terminology-executor";
+import {
+  createTerminologyValidationPortMock,
+  type TerminologyValidationPortMock,
+} from "./terminology-validation-port.test-support";
 
 let executor: TerminologyExecutor;
+let validatorInstance: TerminologyValidationPortMock;
 let mockContext: TerminologyValidationContext;
 let mockStructureDef: StructureDefinition;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  executor = new TerminologyExecutor();
-  getMockInstance()?.validateBinding.mockResolvedValue([]);
+  validatorInstance = createTerminologyValidationPortMock();
+  executor = new TerminologyExecutor(validatorInstance);
   mockStructureDef = {
     id: "test-structure",
     url: "http://test.org/StructureDefinition/Test",
@@ -87,8 +71,6 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
         },
       ],
     };
-
-    const validatorInstance = (executor as any).valuesetValidator;
     validatorInstance.validateCodeInLocalCodeSystemOnly.mockResolvedValue({
       valid: false,
       reason: "display-mismatch",
@@ -153,9 +135,6 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
       return undefined;
     };
 
-    const validatorInstance = (executor as any).valuesetValidator;
-    validatorInstance.isExternalCodeSystem.mockReturnValue(false);
-
     const issues = await executor.validate(mockContext);
 
     expect(issues).toContainEqual(
@@ -173,7 +152,6 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
 
   it("should return empty array for valid terminology bindings", async () => {
     // Spy on the validator instance's validateBinding method
-    const validatorInstance = (executor as any).valuesetValidator;
     const validateBindingSpy = vi
       .spyOn(validatorInstance, "validateBinding")
       .mockResolvedValue([]);
@@ -218,7 +196,6 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
         },
       ],
     };
-    const validatorInstance = (executor as any).valuesetValidator;
     const validateBindingSpy = vi
       .spyOn(validatorInstance, "validateBinding")
       .mockResolvedValue([
@@ -300,9 +277,8 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
       },
     ];
 
-    const executorWithMock = new TerminologyExecutor();
-    const validatorInstance = (executorWithMock as any).valuesetValidator;
-    validatorInstance.validateBinding = vi.fn().mockResolvedValue(mockIssues);
+    const executorWithMock = new TerminologyExecutor(validatorInstance);
+    validatorInstance.validateBinding.mockResolvedValue(mockIssues);
 
     const issues = await executorWithMock.validate(singleBindingContext);
     expect(issues).toEqual(mockIssues);
@@ -390,8 +366,6 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
         return undefined;
       },
     };
-
-    const validatorInstance = (executor as any).valuesetValidator;
     validatorInstance.validateBinding.mockImplementation(
       async (_value: unknown, binding: any) => {
         if (
@@ -486,8 +460,6 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
         return undefined;
       },
     };
-
-    const validatorInstance = (executor as any).valuesetValidator;
     validatorInstance.validateBinding.mockImplementation(
       async (_value: unknown, binding: any) => [
         {

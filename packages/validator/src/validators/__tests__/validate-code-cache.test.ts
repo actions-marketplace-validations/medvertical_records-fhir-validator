@@ -1,24 +1,21 @@
 /**
  * Tests for the TerminologyApiClient $validate-code result cache (P-4).
  *
- * Covers cache exports only — the caching behaviour on real HTTP calls is
+ * Covers owned cache state — the caching behaviour on real HTTP calls is
  * exercised indirectly by the integration tests that go through
  * `TerminologyApiClient.validateCode`. Here we lock the module-level
  * cache contract: size tracking + clear + TTL/LRU eviction.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import {
-  clearValidateCodeCache,
-  getValidateCodeCacheSize,
-} from '../terminology-api-client';
+import { describe, it, expect, vi } from 'vitest';
+import { TerminologyOperationCache } from '../terminology-operation-cache';
+import { ValueSetCache } from '../valueset-cache';
 
 describe('validate-code cache', () => {
-  beforeEach(() => {
-    clearValidateCodeCache();
-  });
-
   it('is empty after clear', () => {
-    expect(getValidateCodeCacheSize()).toBe(0);
+    const operationCache = new TerminologyOperationCache();
+    operationCache.storeValidateCode('test', true);
+    operationCache.clearValidateCode();
+    expect(operationCache.getStats().validateCodeResultCount).toBe(0);
   });
 
   it('tracks entries as the real validateCode flow writes them', async () => {
@@ -43,14 +40,15 @@ describe('validate-code cache', () => {
       };
     });
 
-    const { TerminologyApiClient, clearValidateCodeCache: clear, getValidateCodeCacheSize: size } =
+    const { TerminologyApiClient } =
       await import('../terminology-api-client');
 
-    clear();
+    const operationCache = new TerminologyOperationCache();
     const client = new TerminologyApiClient({
       serverUrl: 'https://tx.example.com/r4',
       strategy: 'server-first',
-    });
+    }, new ValueSetCache(), operationCache);
+    const size = () => operationCache.getStats().validateCodeResultCount;
 
     const a = await client.validateCode('A', 'http://x.sys', 'http://vs/1');
     expect(a).toBe(true);
@@ -70,7 +68,7 @@ describe('validate-code cache', () => {
     expect(size()).toBe(3);
 
     // Clear drops everything.
-    clear();
+    operationCache.clearValidateCode();
     expect(size()).toBe(0);
 
     vi.doUnmock('axios');
@@ -95,10 +93,9 @@ describe('validate-code cache', () => {
       };
     });
 
-    const { TerminologyApiClient, clearValidateCodeCache: clear } =
+    const { TerminologyApiClient } =
       await import('../terminology-api-client');
 
-    clear();
     const client = new TerminologyApiClient({
       serverUrl: 'https://tx.example.com/r4',
       strategy: 'server-first',
@@ -150,10 +147,9 @@ describe('validate-code cache', () => {
       };
     });
 
-    const { TerminologyApiClient, clearValidateCodeCache: clear } =
+    const { TerminologyApiClient } =
       await import('../terminology-api-client');
 
-    clear();
     const client = new TerminologyApiClient({
       serverUrl: 'https://tx.example.com/r4',
       strategy: 'server-first',
@@ -162,6 +158,76 @@ describe('validate-code cache', () => {
     expect(await client.validateCode('A', 'http://x.sys', 'http://vs/not-resolvable', 'required')).toBe(true);
     expect(await client.validateCode('B', 'http://x.sys', 'http://vs/not-resolvable', 'required')).toBe(true);
     expect(get).toHaveBeenCalledTimes(1);
+
+    vi.doUnmock('axios');
+  });
+
+  it('isolates required and fail-open binding results in the validate-code cache', async () => {
+    vi.resetModules();
+    const get = vi.fn().mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 422,
+        data: {
+          resourceType: 'OperationOutcome',
+          issue: [{
+            severity: 'error',
+            code: 'code-invalid',
+            details: { text: 'Unknown code' },
+          }],
+        },
+      },
+    });
+
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: {
+          ...actual.default,
+          get,
+        },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { TerminologyApiClient } =
+      await import('../terminology-api-client');
+    const operationCache = new TerminologyOperationCache();
+    const client = new TerminologyApiClient({
+      serverUrl: 'https://tx.example.com/r4',
+      strategy: 'server-first',
+    }, new ValueSetCache(), operationCache);
+
+    expect(await client.validateCode(
+      'A',
+      'http://x.sys',
+      'http://vs/strength-order-a',
+      'extensible',
+    )).toBe(true);
+    expect(await client.validateCode(
+      'A',
+      'http://x.sys',
+      'http://vs/strength-order-a',
+      'required',
+    )).toBe(false);
+
+    operationCache.clearValidateCode();
+
+    expect(await client.validateCode(
+      'B',
+      'http://x.sys',
+      'http://vs/strength-order-b',
+      'required',
+    )).toBe(false);
+    expect(await client.validateCode(
+      'B',
+      'http://x.sys',
+      'http://vs/strength-order-b',
+      'preferred',
+    )).toBe(true);
+
+    expect(get).toHaveBeenCalledTimes(4);
 
     vi.doUnmock('axios');
   });
@@ -334,6 +400,204 @@ describe('validate-code cache', () => {
     vi.doUnmock('axios');
   });
 
+  it('isolates direct CodeSystem circuit breakers by terminology server', async () => {
+    vi.resetModules();
+    const brokenServer = 'https://broken-tx.example.com/r4';
+    const healthyServer = 'https://healthy-tx.example.com/r4';
+    const get = vi.fn().mockImplementation(async (url: string) => {
+      if (url.startsWith(brokenServer)) {
+        throw new Error('connect ECONNREFUSED');
+      }
+      return {
+        data: {
+          resourceType: 'Parameters',
+          parameter: [{ name: 'result', valueBoolean: true }],
+        },
+      };
+    });
+
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: {
+          ...actual.default,
+          get,
+        },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { TerminologyApiClient } = await import('../terminology-api-client');
+    const client = new TerminologyApiClient({
+      strategy: 'server-first',
+    });
+
+    for (const code of ['A', 'B', 'C']) {
+      await client.validateCodeInCodeSystem(
+        code,
+        'http://loinc.org',
+        undefined,
+        { url: brokenServer },
+      );
+    }
+
+    const healthyResult = await client.validateCodeInCodeSystem(
+      'D',
+      'http://loinc.org',
+      undefined,
+      { url: healthyServer },
+    );
+
+    expect(healthyResult).toMatchObject({ valid: true });
+    expect(get).toHaveBeenCalledTimes(4);
+    expect(get.mock.calls[3]?.[0]).toBe(
+      `${healthyServer}/CodeSystem/$validate-code`,
+    );
+
+    vi.doUnmock('axios');
+  });
+
+  it('does not reuse OAuth tokens across scoped terminology servers', async () => {
+    vi.resetModules();
+    const post = vi.fn()
+      .mockResolvedValueOnce({
+        data: { access_token: 'token-a', expires_in: 3600 },
+      })
+      .mockResolvedValueOnce({
+        data: { access_token: 'token-b', expires_in: 3600 },
+      });
+    const get = vi.fn().mockImplementation(async (
+      _url: string,
+      requestConfig: { headers: { Authorization?: string } },
+    ) => ({
+      data: {
+        resourceType: 'Parameters',
+        parameter: [{
+          name: 'result',
+          valueBoolean: requestConfig.headers.Authorization === 'Bearer token-a',
+        }],
+      },
+    }));
+
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: {
+          ...actual.default,
+          get,
+          post,
+        },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { TerminologyApiClient } = await import('../terminology-api-client');
+    const client = new TerminologyApiClient({
+      strategy: 'server-first',
+    });
+    const sharedServerUrl = 'https://tx.example.com/r4';
+    const firstServer = {
+      url: sharedServerUrl,
+      auth: {
+        type: 'oauth2' as const,
+        clientId: 'client-a',
+        clientSecret: 'secret-a',
+        tokenUrl: 'https://auth-a.example.com/token',
+      },
+    };
+    const secondServer = {
+      url: sharedServerUrl,
+      auth: {
+        type: 'oauth2' as const,
+        clientId: 'client-b',
+        clientSecret: 'secret-b',
+        tokenUrl: 'https://auth-b.example.com/token',
+      },
+    };
+
+    const firstResult = await client.validateCode(
+      'A',
+      'http://loinc.org',
+      'http://example.test/ValueSet/shared',
+      'required',
+      firstServer,
+    );
+    const secondResult = await client.validateCode(
+      'A',
+      'http://loinc.org',
+      'http://example.test/ValueSet/shared',
+      'required',
+      secondServer,
+    );
+
+    expect(firstResult).toBe(true);
+    expect(secondResult).toBe(false);
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls[0]?.[1]?.headers.Authorization).toBe('Bearer token-a');
+    expect(get.mock.calls[1]?.[1]?.headers.Authorization).toBe('Bearer token-b');
+
+    vi.doUnmock('axios');
+  });
+
+  it('isolates direct CodeSystem results by auth scope on a shared server URL', async () => {
+    vi.resetModules();
+    const get = vi.fn().mockImplementation(async (
+      _url: string,
+      requestConfig: { headers: { Authorization?: string } },
+    ) => ({
+      data: {
+        resourceType: 'Parameters',
+        parameter: [{
+          name: 'result',
+          valueBoolean: requestConfig.headers.Authorization === 'Bearer tenant-a',
+        }],
+      },
+    }));
+
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: {
+          ...actual.default,
+          get,
+        },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { TerminologyApiClient } = await import('../terminology-api-client');
+    const client = new TerminologyApiClient({ strategy: 'server-first' });
+    const serverUrl = 'https://shared-tx.example.com/r4';
+    const firstResult = await client.validateCodeInCodeSystem(
+      'A',
+      'http://loinc.org',
+      undefined,
+      {
+        url: serverUrl,
+        auth: { type: 'bearer', token: 'tenant-a' },
+      },
+    );
+    const secondResult = await client.validateCodeInCodeSystem(
+      'A',
+      'http://loinc.org',
+      undefined,
+      {
+        url: serverUrl,
+        auth: { type: 'bearer', token: 'tenant-b' },
+      },
+    );
+
+    expect(firstResult.valid).toBe(true);
+    expect(secondResult.valid).toBe(false);
+    expect(get).toHaveBeenCalledTimes(2);
+
+    vi.doUnmock('axios');
+  });
+
   it('fails open after the remote CodeSystem validation budget is exhausted', async () => {
     vi.resetModules();
     const get = vi.fn().mockResolvedValue({
@@ -370,12 +634,24 @@ describe('validate-code cache', () => {
 
     await client.validateCodeInCodeSystem('A', 'http://loinc.org');
     await client.validateCodeInCodeSystem('B', 'http://loinc.org');
+    client.setConfig({
+      serverUrl: 'https://tx.example.com/r4',
+      strategy: 'server-first',
+      serverDelegation: {
+        expandValueSets: true,
+        validateCodes: true,
+        cacheResults: true,
+        cacheTTLSeconds: 3600,
+        maxRemoteCodeSystemValidations: 2,
+      },
+    });
     const exhaustedResult = await client.validateCodeInCodeSystem('C', 'http://loinc.org');
 
     expect(exhaustedResult).toMatchObject({
       valid: true,
       reason: 'remote-budget-exhausted',
     });
+    expect(exhaustedResult.message).not.toContain('tx.example.com');
     expect(get).toHaveBeenCalledTimes(2);
 
     vi.doUnmock('axios');
@@ -439,7 +715,7 @@ describe('validate-code cache', () => {
     vi.doUnmock('axios');
   });
 
-  it('is cleared by ValueSetValidator.clearCache for settings and tx-server changes', async () => {
+  it('keeps validator-owned operation caches isolated and clears only its owner', async () => {
     vi.resetModules();
     vi.doMock('axios', async () => {
       const actual = await vi.importActual<typeof import('axios')>('axios');
@@ -458,24 +734,36 @@ describe('validate-code cache', () => {
       };
     });
 
-    const { TerminologyApiClient, getValidateCodeCacheSize: size } =
+    const { TerminologyApiClient } =
       await import('../terminology-api-client');
     const { ValueSetValidator } = await import('../valueset-validator');
+    const { ValueSetCache } = await import('../valueset-cache');
+    const { TerminologyOperationCache } = await import('../terminology-operation-cache');
+    const apiOperationCache = new TerminologyOperationCache();
     const client = new TerminologyApiClient({
       serverUrl: 'https://tx.example.com/r4',
       strategy: 'server-first',
-    });
+    }, new ValueSetCache(), apiOperationCache);
+    const size = () => apiOperationCache.getStats().validateCodeResultCount;
 
     await client.validateCode('A', 'http://x.sys', 'http://vs/1');
     expect(size()).toBe(1);
 
-    const validator = new ValueSetValidator();
+    const ownedOperationCache = new TerminologyOperationCache();
+    ownedOperationCache.storeValidateCode('owned-result', true);
+    const validator = new ValueSetValidator(
+      new ValueSetCache(),
+      ownedOperationCache,
+    );
     expect(validator.getCacheStats().validateCodeResultCount).toBe(1);
 
     validator.clearCache();
 
-    expect(size()).toBe(0);
+    expect(size()).toBe(1);
     expect(validator.getCacheStats().validateCodeResultCount).toBe(0);
+
+    apiOperationCache.clearValidateCode();
+    expect(size()).toBe(0);
 
     vi.doUnmock('axios');
   });

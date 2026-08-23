@@ -64,10 +64,23 @@ export function normalizeKnownStructureDefinitionCanonicalUrl(url: string): stri
     /^(https:\/\/www\.medizininformatik-initiative\.de\/fhir\/ext\/modul-molgen\/StructureDefinition\/)(genomic-study(?:-analysis)?)$/i,
     (_match, prefix: string, profileId: string) => `${prefix}mii-pr-molgen-${profileId}`,
   );
-  const normalized = normalizedMiiMolgen.replace(
+  const normalizedMiiIcu = normalizedMiiMolgen.replace(
     /^(https:\/\/www\.medizininformatik-initiative\.de\/fhir\/ext\/modul-icu\/StructureDefinition\/mii-pr-icu-)ect-(.+)$/i,
     '$1$2',
   );
+  const normalized = normalizedMiiIcu
+    .replace(
+      /^https:\/\/www\.medizininformatik-initiative\.de\/fhir\/ext\/modul-mtb\/StructureDefinition\/mii-pr-mtb-biomarker-insituhybridization$/i,
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-insituhybridization',
+    )
+    .replace(
+      /^https:\/\/www\.medizininformatik-initiative\.de\/fhir\/ext\/modul-mtb\/StructureDefinition\/mii-pr-mtb-immunohistochemistry-msi$/i,
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-msi',
+    )
+    .replace(
+      /^https:\/\/www\.medizininformatik-initiative\.de\/fhir\/ext\/modul-mtb\/StructureDefinition\/mii-pr-mtb-systemische-therapie-medication-statement$/i,
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-systemtherapie-medication-statement',
+    );
   return version ? `${normalized}|${version}` : normalized;
 }
 

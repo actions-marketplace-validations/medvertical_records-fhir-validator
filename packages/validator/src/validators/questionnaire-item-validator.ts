@@ -2,10 +2,10 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 
 interface QuestionnaireItemValidationState {
-    item: any;
+    item: Record<string, unknown>;
     path: string;
     type: string | undefined;
-    nestedItems: any[] | undefined;
+    nestedItems: unknown[] | undefined;
     hasAnswerOption: boolean;
     hasAnswerValueSet: boolean;
     hasInitial: boolean;
@@ -30,7 +30,7 @@ const QUESTIONNAIRE_ANSWER_SOURCE_TYPES = new Set([
  * Covers linkId uniqueness and FHIR R4 que-1 through que-12 item invariants.
  */
 export function validateQuestionnaireItems(
-    items: any[],
+    items: unknown[],
     linkIdSet: Set<string>,
     basePath: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
@@ -56,24 +56,25 @@ export function validateQuestionnaireItems(
     return issues;
 }
 
-function createItemState(item: any, path: string): QuestionnaireItemValidationState {
+function createItemState(item: unknown, path: string): QuestionnaireItemValidationState {
+    const record = asRecord(item) ?? {};
     return {
-        item,
+        item: record,
         path,
-        type: item?.type,
-        nestedItems: Array.isArray(item?.item) ? item.item : undefined,
-        hasAnswerOption: Array.isArray(item?.answerOption) && item.answerOption.length > 0,
-        hasAnswerValueSet: !!item?.answerValueSet,
-        hasInitial: Array.isArray(item?.initial) && item.initial.length > 0,
+        type: typeof record.type === 'string' ? record.type : undefined,
+        nestedItems: Array.isArray(record.item) ? record.item : undefined,
+        hasAnswerOption: Array.isArray(record.answerOption) && record.answerOption.length > 0,
+        hasAnswerValueSet: typeof record.answerValueSet === 'string' && record.answerValueSet.length > 0,
+        hasInitial: Array.isArray(record.initial) && record.initial.length > 0,
     };
 }
 
 function validateLinkId(
-    item: any,
+    item: Record<string, unknown>,
     path: string,
     linkIdSet: Set<string>,
 ): ValidationIssue[] {
-    if (!item.linkId) {
+    if (typeof item.linkId !== 'string' || item.linkId.length === 0) {
         return [createValidationIssue({
             code: 'questionnaire-missing-linkid',
             path: `${path}.linkId`,
@@ -240,8 +241,8 @@ function validateEnableWhenDefinition(state: QuestionnaireItemValidationState): 
 
     if (Array.isArray(enableWhen)) {
         for (let ewi = 0; ewi < enableWhen.length; ewi++) {
-            const ew = enableWhen[ewi];
-            if (ew?.operator === 'exists' && typeof ew?.answerBoolean !== 'boolean') {
+            const ew = asRecord(enableWhen[ewi]);
+            if (ew?.operator === 'exists' && typeof ew.answerBoolean !== 'boolean') {
                 issues.push(createValidationIssue({
                     code: 'questionnaire-invariant-que-7',
                     path: `${state.path}.enableWhen[${ewi}]`,
@@ -315,4 +316,10 @@ function validateInitialAndLength(state: QuestionnaireItemValidationState): Vali
 
 function canHaveMaxLength(type: string | undefined): boolean {
     return !!type && ['boolean', 'decimal', 'integer', 'string', 'text', 'url', 'open-choice'].includes(type);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
 }

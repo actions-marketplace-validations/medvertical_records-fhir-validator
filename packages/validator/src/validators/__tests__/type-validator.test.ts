@@ -350,6 +350,21 @@ describe('TypeValidator', () => {
       expect(issues).toHaveLength(0);
     });
 
+    it('prefers dateTime over the overlapping time suffix for concrete choice paths', async () => {
+      const types: ElementType[] = [
+        { code: 'time' },
+        { code: 'dateTime' },
+      ];
+
+      const issues = await validator.validate(
+        '2020-01-01',
+        types,
+        'Observation.valueDateTime',
+      );
+
+      expect(issues).toHaveLength(0);
+    });
+
     it('suggests adding seconds for dateTime values with hour and minute precision plus timezone', async () => {
       const types: ElementType[] = [{ code: 'dateTime' }];
       const issues = await validator.validate('2021-01-01T09:41Z', types, 'Observation.effective[x]');

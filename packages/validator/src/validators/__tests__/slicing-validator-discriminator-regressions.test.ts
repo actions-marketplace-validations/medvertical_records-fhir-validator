@@ -635,6 +635,43 @@ describe("SlicingValidator discriminator regressions", () => {
     );
   });
 
+  it("honors the configured severity for missing mustSupport slice children", () => {
+    const profile = testStructureDefinition({
+      url: "http://example.org/StructureDefinition/patient-slice",
+      name: "PatientSliceProfile",
+      type: "Patient",
+      snapshot: {
+        element: [
+          {
+            id: "Patient.name:name",
+            path: "Patient.name",
+            sliceName: "name",
+          },
+          {
+            id: "Patient.name:name.prefix",
+            path: "Patient.name.prefix",
+            mustSupport: true,
+          },
+        ],
+      },
+    });
+
+    const issues = emitMatchedSliceChildIssues(
+      { family: "Example" },
+      { path: "Patient.name", sliceName: "name" } as any,
+      "Patient.name[0]",
+      profile,
+      "information",
+    );
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        code: "profile-mustsupport-missing",
+        severity: "information",
+      }),
+    );
+  });
+
   it("matches value $this slices that constrain the whole Coding with patternCoding", async () => {
     const bodyTemperatureProfile = testStructureDefinition({
       url: "http://nictiz.nl/fhir/StructureDefinition/zib-BodyTemperature",

@@ -16,36 +16,14 @@ import type {
   ElementDefinition,
 } from "../../structure-definition-types";
 import type { ValidationIssue } from "../../../types";
-
-// Hoist mock constructor so it is available before module imports are evaluated
-const { MockValueSetValidator, getMockInstance } = vi.hoisted(() => {
-  let lastInstance: any = null;
-  class MockValueSetValidator {
-    validateBinding = vi.fn().mockResolvedValue([]);
-    isExternalCodeSystem = vi.fn().mockReturnValue(false);
-    validateCodeInCodeSystem = vi.fn().mockResolvedValue({ valid: true });
-    validateCodeInLocalCodeSystemOnly = vi.fn().mockResolvedValue(null);
-    setResolutionConfig = vi.fn();
-    getResolutionConfig = vi.fn().mockReturnValue({ strategy: "local" });
-    clearCache = vi.fn();
-    constructor() {
-      lastInstance = this;
-    }
-  }
-  return { MockValueSetValidator, getMockInstance: () => lastInstance };
-});
-
-// Mock path resolves relative to this test file and matches the import path
-// used in terminology-executor.ts.
-vi.mock("../../../validators/valueset-validator", () => ({
-  ValueSetValidator: MockValueSetValidator,
-}));
-
-// Now import after mocks are set up
 import {
   TerminologyExecutor,
   type TerminologyValidationContext,
 } from "../terminology-executor";
+import {
+  createTerminologyValidationPortMock,
+  type TerminologyValidationPortMock,
+} from "./terminology-validation-port.test-support";
 import {
   buildInvalidUcumIssueDetails,
   buildInvalidUcumMessage,
@@ -58,15 +36,14 @@ vi.mock("../../../logger", () => ({
 
 describe("TerminologyExecutor", () => {
   let executor: TerminologyExecutor;
+  let validatorInstance: TerminologyValidationPortMock;
   let mockContext: TerminologyValidationContext;
   let mockStructureDef: StructureDefinition;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    executor = new TerminologyExecutor();
-    // Reset the mock instance's validateBinding after construction
-    const instance = getMockInstance();
-    if (instance) instance.validateBinding.mockResolvedValue([]);
+    validatorInstance = createTerminologyValidationPortMock();
+    executor = new TerminologyExecutor(validatorInstance);
 
     mockStructureDef = {
       id: "test-structure",
@@ -158,8 +135,6 @@ describe("TerminologyExecutor", () => {
           status: null, // null value should be skipped
         },
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi.fn().mockResolvedValue([]); // Return empty array if called
       const originalMethod = validatorInstance.validateBinding;
       validatorInstance.validateBinding = validateBindingSpy;
@@ -200,8 +175,6 @@ describe("TerminologyExecutor", () => {
           },
         ],
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi.spyOn(validatorInstance, "validateBinding");
 
       const issues = await executor.validate({
@@ -285,8 +258,6 @@ describe("TerminologyExecutor", () => {
           },
         ],
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       validatorInstance.validateBinding.mockResolvedValue([]);
 
       const issues = await executor.validate({
@@ -401,8 +372,7 @@ describe("TerminologyExecutor", () => {
         },
       ];
 
-      const executorWithMock = new TerminologyExecutor();
-      const validatorInstance = (executorWithMock as any).valuesetValidator;
+      const executorWithMock = new TerminologyExecutor(validatorInstance);
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockImplementation(async (value, binding, path) => {
@@ -446,9 +416,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Observation.code") return resource.code;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -508,9 +475,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Observation.code") return resource.code;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "not-found",
@@ -563,9 +527,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Encounter.type") return resource.type;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -650,8 +611,6 @@ describe("TerminologyExecutor", () => {
         return undefined;
       };
 
-      const validatorInstance = (executor as any).valuesetValidator;
-
       await executor.validate(mockContext);
 
       expect(validatorInstance.validateBinding).toHaveBeenCalledTimes(2);
@@ -697,9 +656,6 @@ describe("TerminologyExecutor", () => {
           return resource.medicationCodeableConcept;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -748,9 +704,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Observation.code") return resource.code;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -800,9 +753,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Procedure.code") return resource.code;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -850,9 +800,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Procedure.code") return resource.code;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -903,9 +850,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Encounter.type") return resource.type;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -955,9 +899,6 @@ describe("TerminologyExecutor", () => {
           return resource.valueCodeableConcept;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         reason: "display-mismatch",
@@ -986,7 +927,7 @@ describe("TerminologyExecutor", () => {
       );
     });
 
-    it("keeps local LOINC display fallback mismatches as warnings", async () => {
+    it("accepts LOINC designations beyond the Long Common Name", async () => {
       mockStructureDef.snapshot!.element = [];
       mockContext.resource = {
         resourceType: "Observation",
@@ -1003,10 +944,30 @@ describe("TerminologyExecutor", () => {
 
       const issues = await executor.validate(mockContext);
 
+      expect(issues).toEqual([]);
+    });
+
+    it("flags locally known LOINC display mismatches as errors (Java parity)", async () => {
+      mockStructureDef.snapshot!.element = [];
+      mockContext.resource = {
+        resourceType: "Observation",
+        code: {
+          coding: [
+            {
+              system: "http://loinc.org",
+              code: "8716-3",
+              display: "Blood pressure",
+            },
+          ],
+        },
+      };
+
+      const issues = await executor.validate(mockContext);
+
       expect(issues).toHaveLength(1);
       expect(issues[0]).toEqual(
         expect.objectContaining({
-          severity: "warning",
+          severity: "error",
           code: "terminology-display-mismatch",
           path: "Observation.code.coding[0].display",
         }),
@@ -1036,9 +997,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Patient.maritalStatus") return resource.maritalStatus;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: false,
         issues: [
@@ -1090,9 +1048,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Condition.code") return resource.code;
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
-      validatorInstance.isExternalCodeSystem.mockReturnValue(true);
       validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
         valid: true,
         inactive: true,
@@ -1131,8 +1086,10 @@ describe("TerminologyExecutor", () => {
       expect(issues[0].aspect).toBe("terminology");
       expect(issues[0].severity).toBe("error");
       expect(issues[0].code).toBe("validation-error");
-      expect(issues[0].message).toContain("Terminology validation failed");
-      expect(issues[0].message).toContain("Test error");
+      expect(issues[0].message).toBe(
+        "Terminology validation could not be completed because the validator encountered an operational error.",
+      );
+      expect(issues[0].message).not.toContain("Test error");
     });
 
     it("should handle non-Error exceptions", async () => {
@@ -1143,7 +1100,7 @@ describe("TerminologyExecutor", () => {
       const issues = await executor.validate(mockContext);
 
       expect(issues).toHaveLength(1);
-      expect(issues[0].message).toContain("String error");
+      expect(issues[0].message).not.toContain("String error");
     });
 
     it("should handle different binding strengths", async () => {
@@ -1208,8 +1165,6 @@ describe("TerminologyExecutor", () => {
         }
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);
@@ -1263,8 +1218,6 @@ describe("TerminologyExecutor", () => {
         }
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);
@@ -1325,8 +1278,6 @@ describe("TerminologyExecutor", () => {
         }
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);
@@ -1406,8 +1357,6 @@ describe("TerminologyExecutor", () => {
         }
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);
@@ -1674,7 +1623,6 @@ describe("TerminologyExecutor", () => {
         if (path === "Observation.component") return resource.component;
         return undefined;
       };
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);
@@ -1762,8 +1710,6 @@ describe("TerminologyExecutor", () => {
         }
         return undefined;
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);
@@ -1859,8 +1805,6 @@ describe("TerminologyExecutor", () => {
           return undefined;
         },
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);
@@ -1953,8 +1897,6 @@ describe("TerminologyExecutor", () => {
           return undefined;
         },
       };
-
-      const validatorInstance = (executor as any).valuesetValidator;
       const validateBindingSpy = vi
         .spyOn(validatorInstance, "validateBinding")
         .mockResolvedValue([]);

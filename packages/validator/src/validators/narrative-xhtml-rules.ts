@@ -1,48 +1,68 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
+import {
+    findDisallowedNarrativeElements,
+    findForbiddenNarrativePatterns,
+    findInvalidNarrativeAttributes,
+    findXxeDeclarations,
+    hasNonWhitespaceNarrativeContent,
+    hasValidNarrativeRoot,
+    isNarrativeXhtmlWellformed,
+} from './narrative-xhtml-scanner';
 
 /**
- * Elements allowed in FHIR Narrative (per FHIR spec)
- * @see https://www.hl7.org/fhir/narrative.html#xhtml
+ * htmlChecks() on non-narrative xhtml (e.g. the rendering-xhtml extension's
+ * valueString, constrained by xhtml-ext-1) validates an XHTML *fragment*:
+ * well-formedness and the content policy apply, but the Narrative-only
+ * root-div and txt-2 rules do not — `<img src="..."/>` alone is legal there.
  */
-const ALLOWED_ELEMENTS = new Set([
-    'div', 'p', 'br', 'span',
-    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'ul', 'ol', 'li', 'dl', 'dt', 'dd',
-    'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption', 'colgroup', 'col',
-    'b', 'i', 'u', 's', 'strike', 'em', 'strong', 'small', 'big', 'sub', 'sup', 'tt', 'code', 'pre',
-    'blockquote', 'q', 'dfn', 'abbr', 'acronym', 'cite', 'samp', 'kbd', 'var', 'ins', 'del',
-    'a', 'img',
-    'hr',
-]);
+export function validateXhtmlFragment(
+    fragment: string,
+    path: string,
+    resourceType: string,
+): ValidationIssue[] {
+    const issues = checkXxeDeclarations(fragment, path, resourceType);
 
-const ALLOWED_ATTRIBUTES: Record<string, Set<string>> = {
-    '*': new Set(['id', 'class', 'style', 'title', 'lang', 'xml:lang', 'dir', 'xmlns']),
-    a: new Set(['href', 'name', 'rel', 'rev', 'target']),
-    img: new Set(['src', 'alt', 'height', 'width', 'longdesc', 'usemap']),
-    table: new Set(['border', 'cellpadding', 'cellspacing', 'summary', 'width']),
-    th: new Set(['colspan', 'rowspan', 'headers', 'scope', 'abbr', 'axis', 'align', 'valign']),
-    td: new Set(['colspan', 'rowspan', 'headers', 'abbr', 'axis', 'align', 'valign']),
-    col: new Set(['span', 'width', 'align', 'valign']),
-    colgroup: new Set(['span', 'width', 'align', 'valign']),
-    ol: new Set(['start', 'type']),
-    ul: new Set(['type']),
-    li: new Set(['value']),
-    blockquote: new Set(['cite']),
-    q: new Set(['cite']),
-    ins: new Set(['cite', 'datetime']),
-    del: new Set(['cite', 'datetime']),
-};
+    if (!isNarrativeXhtmlWellformed(fragment)) {
+        issues.push(createValidationIssue({
+            code: 'narrative-malformed-xhtml',
+            path,
+            resourceType,
+            severityOverride: 'error',
+            customMessage: 'Error parsing XHTML: Malformed XHTML content',
+        }));
+        return issues;
+    }
 
-const FORBIDDEN_PATTERNS = [
-    /<script[\s>]/i,
-    /javascript:/i,
-];
-
-const VOID_ELEMENTS = new Set([
-    'br', 'hr', 'img', 'area', 'base', 'col', 'embed',
-    'input', 'link', 'meta', 'param', 'source', 'track', 'wbr',
-]);
+    for (const pattern of findForbiddenNarrativePatterns(fragment)) {
+        issues.push(createValidationIssue({
+            code: 'narrative-forbidden-content',
+            path,
+            resourceType,
+            customMessage: `XHTML contains forbidden content: ${pattern}`,
+            details: { pattern },
+        }));
+    }
+    for (const element of findDisallowedNarrativeElements(fragment)) {
+        issues.push(createValidationIssue({
+            code: 'narrative-invalid-element',
+            path,
+            resourceType,
+            customMessage: `XHTML contains disallowed element: <${element}>`,
+            details: { element },
+        }));
+    }
+    for (const { element, attribute } of findInvalidNarrativeAttributes(fragment)) {
+        issues.push(createValidationIssue({
+            code: 'narrative-invalid-attribute',
+            path,
+            resourceType,
+            customMessage: `XHTML contains disallowed attribute '${attribute}' on <${element}>`,
+            details: { element, attribute },
+        }));
+    }
+    return issues;
+}
 
 export function validateNarrativeDiv(div: unknown, basePath: string, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
@@ -61,10 +81,10 @@ export function validateNarrativeDiv(div: unknown, basePath: string, resourceTyp
         })];
     }
 
-    const xxeIssues = checkXxeDeclarations(div, basePath, resourceType);
+    const xxeIssues = checkXxeDeclarations(div, `${basePath}.div`, resourceType);
     issues.push(...xxeIssues);
 
-    if (!isWellformed(div)) {
+    if (!isNarrativeXhtmlWellformed(div)) {
         issues.push(createValidationIssue({
             code: 'narrative-malformed-xhtml',
             path: `${basePath}.div`,
@@ -83,7 +103,7 @@ export function validateNarrativeDiv(div: unknown, basePath: string, resourceTyp
         return issues;
     }
 
-    if (!hasValidRootElement(div)) {
+    if (!hasValidNarrativeRoot(div)) {
         issues.push(createValidationIssue({
             code: 'narrative-invalid-root',
             path: `${basePath}.div`,
@@ -93,7 +113,19 @@ export function validateNarrativeDiv(div: unknown, basePath: string, resourceTyp
         }));
     }
 
-    const forbiddenPatterns = checkForbiddenPatterns(div);
+    if (!hasNonWhitespaceNarrativeContent(div)) {
+        issues.push(createValidationIssue({
+            code: 'narrative-txt2-violation',
+            path: `${basePath}.div`,
+            resourceType,
+            severityOverride: 'error',
+            customMessage:
+                `Constraint failed: txt-2: 'The narrative SHALL have some non-whitespace content' ` +
+                `(defined in http://hl7.org/fhir/StructureDefinition/Narrative)`,
+        }));
+    }
+
+    const forbiddenPatterns = findForbiddenNarrativePatterns(div);
     for (const pattern of forbiddenPatterns) {
         issues.push(createValidationIssue({
             code: 'narrative-forbidden-content',
@@ -104,7 +136,7 @@ export function validateNarrativeDiv(div: unknown, basePath: string, resourceTyp
         }));
     }
 
-    const disallowedElements = findDisallowedElements(div);
+    const disallowedElements = findDisallowedNarrativeElements(div);
     for (const element of disallowedElements) {
         issues.push(createValidationIssue({
             code: 'narrative-invalid-element',
@@ -115,7 +147,7 @@ export function validateNarrativeDiv(div: unknown, basePath: string, resourceTyp
         }));
     }
 
-    const invalidAttributes = findInvalidAttributes(div);
+    const invalidAttributes = findInvalidNarrativeAttributes(div);
     for (const { element, attribute } of invalidAttributes) {
         issues.push(createValidationIssue({
             code: 'narrative-invalid-attribute',
@@ -145,18 +177,15 @@ export function validateNarrativeDiv(div: unknown, basePath: string, resourceTyp
 
 function checkXxeDeclarations(
     div: string,
-    basePath: string,
+    issuePath: string,
     resourceType: string,
 ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-    const scannable = div
-        .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '')
-        .replace(/<!--[\s\S]*?-->/g, '');
-
-    if (/<!DOCTYPE\b/i.test(scannable)) {
+    const declarations = findXxeDeclarations(div);
+    if (declarations.includes('doctype')) {
         issues.push(createValidationIssue({
             code: 'narrative-malformed-xhtml',
-            path: `${basePath}.div`,
+            path: issuePath,
             resourceType,
             severityOverride: 'error',
             customMessage:
@@ -165,7 +194,7 @@ function checkXxeDeclarations(
         }));
         issues.push(createValidationIssue({
             code: 'narrative-content-xxe-doctype',
-            path: `${basePath}.div`,
+            path: issuePath,
             resourceType,
             severityOverride: 'error',
             customMessage:
@@ -174,10 +203,10 @@ function checkXxeDeclarations(
         }));
     }
 
-    if (/<!ENTITY\b/i.test(scannable)) {
+    if (declarations.includes('entity')) {
         issues.push(createValidationIssue({
             code: 'narrative-malformed-xhtml',
-            path: `${basePath}.div`,
+            path: issuePath,
             resourceType,
             severityOverride: 'error',
             customMessage:
@@ -186,7 +215,7 @@ function checkXxeDeclarations(
         }));
         issues.push(createValidationIssue({
             code: 'narrative-content-xxe-entity',
-            path: `${basePath}.div`,
+            path: issuePath,
             resourceType,
             severityOverride: 'error',
             customMessage:
@@ -196,182 +225,4 @@ function checkXxeDeclarations(
     }
 
     return issues;
-}
-
-function isWellformed(div: string): boolean {
-    try {
-        const scannable = div
-            .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '')
-            .replace(/<!--[\s\S]*?-->/g, '');
-
-        const bareAmpersand = /&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#x[0-9a-fA-F]+);)/;
-        if (bareAmpersand.test(scannable)) {
-            return false;
-        }
-
-        const openTags: string[] = [];
-        const tagRegex = /<\/?((?:[a-zA-Z][a-zA-Z0-9]*:)?[a-zA-Z][a-zA-Z0-9]*)[^>]*\/?>/g;
-        let match;
-
-        while ((match = tagRegex.exec(scannable)) !== null) {
-            const fullMatch = match[0];
-            const tagName = match[1].toLowerCase();
-            const localName = tagName.includes(':') ? tagName.split(':')[1] : tagName;
-            if (fullMatch.endsWith('/>') || VOID_ELEMENTS.has(localName)) {
-                continue;
-            }
-
-            if (fullMatch.startsWith('</')) {
-                if (openTags.length === 0 || openTags.pop() !== tagName) {
-                    return false;
-                }
-            } else {
-                openTags.push(tagName);
-            }
-        }
-
-        return openTags.length === 0;
-    } catch {
-        return false;
-    }
-}
-
-function hasValidRootElement(div: string): boolean {
-    const trimmed = div
-        .replace(/^<\?xml[^?]*\?>/, '')
-        .replace(/^\s+/, '');
-
-    const divMatch = trimmed.match(/^<([a-zA-Z][a-zA-Z0-9]*:)?div\b[^>]*>/);
-    if (!divMatch) return false;
-
-    const rootTag = divMatch[0];
-    const prefix = divMatch[1];
-
-    if (prefix) {
-        const nsPrefix = prefix.slice(0, -1);
-        const xmlnsMatch = rootTag.match(
-            new RegExp(`\\bxmlns:${nsPrefix}\\s*=\\s*(["'])([^"']*)\\1`)
-        );
-        if (!xmlnsMatch) return false;
-        return xmlnsMatch[2] === 'http://www.w3.org/1999/xhtml';
-    }
-
-    const xmlnsMatch = rootTag.match(/\bxmlns\s*=\s*(["'])([^"']*)\1/);
-    if (!xmlnsMatch) return false;
-    return xmlnsMatch[2] === 'http://www.w3.org/1999/xhtml';
-}
-
-function checkForbiddenPatterns(div: string): string[] {
-    const found: string[] = [];
-    for (const pattern of FORBIDDEN_PATTERNS) {
-        if (pattern.test(div)) {
-            found.push(pattern.source);
-        }
-    }
-    return found;
-}
-
-function findDisallowedElements(div: string): string[] {
-    const disallowed: string[] = [];
-    const tagRegex = /<([a-zA-Z][a-zA-Z0-9]*:)?([a-zA-Z][a-zA-Z0-9]*)[^>]*>/g;
-    let match;
-
-    while ((match = tagRegex.exec(div)) !== null) {
-        const tagName = match[2].toLowerCase();
-        if (!ALLOWED_ELEMENTS.has(tagName) && !disallowed.includes(tagName)) {
-            disallowed.push(tagName);
-        }
-    }
-
-    return disallowed;
-}
-
-function findInvalidAttributes(div: string): Array<{ element: string; attribute: string }> {
-    const invalid: Array<{ element: string; attribute: string }> = [];
-    const tagRegex = /<([a-zA-Z][a-zA-Z0-9]*:)?([a-zA-Z][a-zA-Z0-9]*)([^>]*)>/g;
-    let match;
-
-    while ((match = tagRegex.exec(div)) !== null) {
-        const tagName = match[2].toLowerCase();
-        const attrString = match[3];
-
-        for (const attrNameRaw of parseTagAttributeNames(attrString)) {
-            const attrName = attrNameRaw.toLowerCase();
-            if (attrName.startsWith('xmlns')) continue;
-
-            const globalAllowed = ALLOWED_ATTRIBUTES['*'];
-            const elementAllowed = ALLOWED_ATTRIBUTES[tagName] || new Set();
-
-            if (!globalAllowed.has(attrName) && !elementAllowed.has(attrName)) {
-                invalid.push({ element: tagName, attribute: attrName });
-            }
-        }
-    }
-
-    return invalid;
-}
-
-function parseTagAttributeNames(attrString: string): string[] {
-    const attributes: string[] = [];
-    let index = 0;
-
-    while (index < attrString.length) {
-        index = skipWhitespace(attrString, index);
-        if (index >= attrString.length || attrString[index] === '/' || attrString[index] === '>') break;
-
-        const nameStart = index;
-        while (
-            index < attrString.length &&
-            !isWhitespace(attrString[index]) &&
-            attrString[index] !== '=' &&
-            attrString[index] !== '/' &&
-            attrString[index] !== '>'
-        ) {
-            index += 1;
-        }
-
-        if (index === nameStart) {
-            index += 1;
-            continue;
-        }
-
-        attributes.push(attrString.slice(nameStart, index));
-        index = skipWhitespace(attrString, index);
-
-        if (attrString[index] !== '=') continue;
-        index += 1;
-        index = skipWhitespace(attrString, index);
-
-        const quote = attrString[index];
-        if (quote === '"' || quote === "'") {
-            index += 1;
-            while (index < attrString.length && attrString[index] !== quote) {
-                index += 1;
-            }
-            if (index < attrString.length) index += 1;
-            continue;
-        }
-
-        while (
-            index < attrString.length &&
-            !isWhitespace(attrString[index]) &&
-            attrString[index] !== '/' &&
-            attrString[index] !== '>'
-        ) {
-            index += 1;
-        }
-    }
-
-    return attributes;
-}
-
-function skipWhitespace(value: string, index: number): number {
-    while (index < value.length && isWhitespace(value[index])) {
-        index += 1;
-    }
-    return index;
-}
-
-function isWhitespace(value: string | undefined): boolean {
-    return value === ' ' || value === '\n' || value === '\r' || value === '\t' || value === '\f';
 }

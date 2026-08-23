@@ -8,11 +8,10 @@
  * extraction from `server/services/validation/` happened during the
  * engine-extraction work; this index file is what other engine
  * modules and a few external server consumers (HAPI pipeline,
- * error-mapping-service, metadata validators) import.
+ * server-side error mapping and metadata validators) import.
  *
- * Module identity matters here: the issue counter and message
- * templates carry mutable state, so all consumers must reach the same
- * physical module instance. Re-exports preserve that identity.
+ * Re-exports keep consumers on one stable construction API while the
+ * implementation remains split into focused modules.
  */
 
 export {
@@ -20,6 +19,7 @@ export {
     createValidationIssue,
     createBindingViolation,
     createBindingUnverified,
+    createValueSetUnavailable,
     createRequiredElementMissing,
     createReferenceTypeMismatch,
     createConstraintViolation,

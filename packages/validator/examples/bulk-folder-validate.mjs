@@ -62,7 +62,11 @@ for (const file of walkJson(folder)) {
   const profileUrl = `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`;
   let issues;
   try {
-    issues = await recordsValidator.validate(resource, profileUrl, 'R4');
+    issues = await recordsValidator.validateRequest({
+      resource,
+      profileUrl,
+      fhirVersion: 'R4',
+    });
   } catch (err) {
     console.error(`VALIDATOR ERROR ${file}: ${err.message}`);
     totalErrors++;

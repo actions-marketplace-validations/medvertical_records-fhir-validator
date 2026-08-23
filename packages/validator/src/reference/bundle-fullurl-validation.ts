@@ -24,7 +24,8 @@ function validateFullUrlUniqueness(entries: BundleEntry[]): BundleIssue[] {
   entries.forEach((entry, index) => {
     if (typeof entry.fullUrl !== 'string' || entry.fullUrl.length === 0) return;
 
-    const versionId = entry.resource?.meta?.versionId;
+    const meta = toRecord(entry.resource?.meta);
+    const versionId = getString(meta, 'versionId');
     const key = versionId ? `${entry.fullUrl}|${versionId}` : entry.fullUrl;
     if (!fullUrlMap.has(key)) {
       fullUrlMap.set(key, []);
@@ -57,12 +58,14 @@ function validateFullUrlConsistency(entries: BundleEntry[]): BundleIssue[] {
     if (!parsedFullUrlIdentity) return;
 
     const resource = entry.resource;
+    const resourceType = getString(resource, 'resourceType');
+    const resourceId = getString(resource, 'id');
     if (
-      resource.id &&
-      (parsedFullUrlIdentity.resourceType !== resource.resourceType ||
-        parsedFullUrlIdentity.id !== resource.id)
+      resourceId &&
+      (parsedFullUrlIdentity.resourceType !== resourceType ||
+        parsedFullUrlIdentity.id !== resourceId)
     ) {
-      const expectedSuffix = `${resource.resourceType}/${resource.id}`;
+      const expectedSuffix = `${resourceType ?? 'Unknown'}/${resourceId}`;
       issues.push({
         severity: 'warning',
         code: 'bundle-fullurl-mismatch',
@@ -73,4 +76,18 @@ function validateFullUrlConsistency(entries: BundleEntry[]): BundleIssue[] {
   });
 
   return issues;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getString(
+  record: Record<string, unknown> | null | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === 'string' ? value : undefined;
 }

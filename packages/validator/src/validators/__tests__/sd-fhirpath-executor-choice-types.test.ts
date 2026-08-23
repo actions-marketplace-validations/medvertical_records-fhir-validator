@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { sdFHIRPathExecutor } from '../sd-fhirpath-executor';
+import { SDFHIRPathExecutor } from '../sd-fhirpath-executor';
 import { MustSupportValidator } from '../must-support-validator';
-import { valueSetCache } from '../valueset-cache';
+import { ValueSetCache } from '../valueset-cache';
 import type { StructureDefinition } from '../../core/structure-definition-types';
-
+const valueSetCache = new ValueSetCache();
+const sdFHIRPathExecutor = new SDFHIRPathExecutor(valueSetCache);
 const bloodPressureObservation = {
   resourceType: 'Observation',
   id: 'bp-panel',
@@ -18,7 +19,6 @@ const bloodPressureObservation = {
     },
   ],
 };
-
 const vitalsProfile = {
   resourceType: 'StructureDefinition',
   url: 'http://hl7.org/fhir/StructureDefinition/vitalsigns',

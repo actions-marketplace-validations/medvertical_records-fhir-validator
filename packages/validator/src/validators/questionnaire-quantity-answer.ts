@@ -1,8 +1,9 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
+import type { QuestionnaireQuantity } from './questionnaire-types';
 
 export function validateQuestionnaireQuantityAnswer(
-    quantity: Record<string, unknown>,
+    quantity: QuestionnaireQuantity,
     extensions: Array<Record<string, unknown>>,
     answerPath: string,
 ): ValidationIssue[] {
@@ -37,7 +38,7 @@ export function validateQuestionnaireQuantityAnswer(
 
     for (const ext of extensions) {
         if (ext?.url !== minQuantityUrl && ext?.url !== maxQuantityUrl) continue;
-        const bound = ext.valueQuantity as Record<string, unknown> | undefined;
+        const bound = asQuestionnaireQuantity(ext.valueQuantity);
         if (!bound) continue;
         issues.push(...compareQuantityBound(quantity, bound, ext.url === minQuantityUrl, answerPath));
     }
@@ -45,17 +46,17 @@ export function validateQuestionnaireQuantityAnswer(
     return issues;
 }
 
-function formatQuantityForMessage(q: Record<string, unknown>): string {
+function formatQuantityForMessage(q: QuestionnaireQuantity): string {
     const value = q.value;
     const unit = q.unit ?? '';
-    const code = q.code as string | undefined;
+    const code = q.code;
     const base = `${value} ${unit}`.trimEnd();
     return code ? `${base} (UCUM#${code})` : base;
 }
 
 function compareQuantityBound(
-    actual: Record<string, unknown>,
-    bound: Record<string, unknown>,
+    actual: QuestionnaireQuantity,
+    bound: QuestionnaireQuantity,
     isMin: boolean,
     answerPath: string,
 ): ValidationIssue[] {
@@ -80,7 +81,7 @@ function compareQuantityBound(
     const boundValue = typeof bound.value === 'number' ? bound.value : Number(bound.value);
     if (!Number.isFinite(actualValue) || !Number.isFinite(boundValue)) return [];
 
-    const converted = convertUcumValue(actualValue, actual.code as string, bound.code as string);
+    const converted = convertUcumValue(actualValue, actual.code!, bound.code!);
     if (converted === null) {
         return [createValidationIssue({
             code: 'invariant',
@@ -106,6 +107,22 @@ function compareQuantityBound(
             `allowed ${label} of ${formatQuantityForMessage(bound)}`,
         severityOverride: 'error',
     })];
+}
+
+function asQuestionnaireQuantity(value: unknown): QuestionnaireQuantity | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const quantity = value as Record<string, unknown>;
+    if (quantity.value !== undefined && typeof quantity.value !== 'number') return undefined;
+    for (const field of ['unit', 'system', 'code'] as const) {
+        if (quantity[field] !== undefined && typeof quantity[field] !== 'string') return undefined;
+    }
+    return {
+        ...quantity,
+        value: typeof quantity.value === 'number' ? quantity.value : undefined,
+        unit: typeof quantity.unit === 'string' ? quantity.unit : undefined,
+        system: typeof quantity.system === 'string' ? quantity.system : undefined,
+        code: typeof quantity.code === 'string' ? quantity.code : undefined,
+    };
 }
 
 function convertUcumValue(value: number, fromCode: string, toCode: string): number | null {

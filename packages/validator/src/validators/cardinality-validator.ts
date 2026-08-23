@@ -1,129 +1,12 @@
-/* eslint-disable max-lines-per-function */
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import type { ElementDefinition } from '../core/structure-definition-types';
 import { shouldValidateRequired, getValidationTargets } from '../business-rules';
 import { logger } from '../logger';
-
-const CHOICE_BASES = [
-  'value', 'effective', 'onset', 'abatement', 'deceased', 'multipleBirth',
-  'defaultValue', 'medication', 'reported', 'occurrence', 'timing',
-  'product', 'serviced', 'location', 'allowed', 'used',
-  'rate', 'born', 'age',
-];
-
-const CONFORMANCE_RESOURCE_TYPES = new Set([
-  'ActivityDefinition',
-  'CapabilityStatement',
-  'ChargeItemDefinition',
-  'CodeSystem',
-  'CompartmentDefinition',
-  'ConceptMap',
-  'EventDefinition',
-  'ExampleScenario',
-  'GraphDefinition',
-  'ImplementationGuide',
-  'Library',
-  'Measure',
-  'MessageDefinition',
-  'NamingSystem',
-  'OperationDefinition',
-  'PlanDefinition',
-  'Questionnaire',
-  'SearchParameter',
-  'StructureDefinition',
-  'StructureMap',
-  'TerminologyCapabilities',
-  'ValueSet',
-]);
+import { shouldSkipMustSupportForResource } from './must-support-applicability';
 
 interface CardinalityValidationOptions {
   parentExists?: boolean;
-}
-
-function hasChoiceValue(element: any, base: string): boolean {
-  if (!element || typeof element !== 'object') return false;
-  if (element[base] !== undefined && element[base] !== null) return true;
-
-  return Object.keys(element).some(key =>
-    key.startsWith(base) &&
-    key.length > base.length &&
-    key[base.length] === key[base.length].toUpperCase() &&
-    element[key] !== undefined &&
-    element[key] !== null
-  );
-}
-
-function hasAnyChoiceValue(element: any): boolean {
-  return CHOICE_BASES.some(base => hasChoiceValue(element, base));
-}
-
-function shouldSkipObservationAlternativeMustSupport(resource: any, path: string): boolean {
-  if (!resource || resource.resourceType !== 'Observation') return false;
-
-  if (/^Observation\.value\[x\]$/i.test(path)) {
-    return (resource.dataAbsentReason !== undefined && resource.dataAbsentReason !== null) ||
-      (Array.isArray(resource.component) && resource.component.some(hasAnyChoiceValue));
-  }
-
-  if (/^Observation\.component$/i.test(path)) {
-    return hasChoiceValue(resource, 'value') ||
-      (resource.dataAbsentReason !== undefined && resource.dataAbsentReason !== null);
-  }
-
-  if (/^Observation\.dataAbsentReason$/i.test(path)) {
-    return hasChoiceValue(resource, 'value') ||
-      (Array.isArray(resource.component) && resource.component.some(hasAnyChoiceValue));
-  }
-
-  if (/^Observation\.component(?::[^.]+)?\.dataAbsentReason$/i.test(path)) {
-    return Array.isArray(resource.component) &&
-      resource.component.length > 0 &&
-      resource.component.every(hasAnyChoiceValue);
-  }
-
-  return false;
-}
-
-function shouldSkipContextualMustSupport(resource: any, path: string): boolean {
-  if (!resource) return false;
-
-  if (
-    resource.resourceType === 'Observation' &&
-    /^Observation\.(performer|specimen|interpretation|referenceRange)$/i.test(path)
-  ) {
-    return true;
-  }
-
-  if (resource.resourceType === 'DiagnosticReport' && /^DiagnosticReport\.resultsInterpreter$/i.test(path)) {
-    return true;
-  }
-
-  if (resource.resourceType === 'Patient' && /^Patient\.address\.postalCode$/i.test(path)) {
-    return true;
-  }
-
-  if (resource.resourceType === 'Encounter' && /^Encounter\.hospitalization$/i.test(path)) {
-    const classCode = resource.class?.code;
-    return typeof classCode === 'string' && classCode !== 'IMP';
-  }
-
-  if (resource.resourceType === 'Encounter' && /^Encounter\.reasonCode$/i.test(path)) {
-    return (Array.isArray(resource.type) && resource.type.length > 0) ||
-      (Array.isArray(resource.reasonReference) && resource.reasonReference.length > 0) ||
-      (Array.isArray(resource.diagnosis) && resource.diagnosis.length > 0);
-  }
-
-  if (resource.resourceType === 'Patient' && /^Patient\.address\.period$/i.test(path)) {
-    return !Array.isArray(resource.address) ||
-      !resource.address.some((address: any) => address?.use === 'old');
-  }
-
-  return false;
-}
-
-function shouldSkipConformanceMustSupport(resource: any): boolean {
-  return CONFORMANCE_RESOURCE_TYPES.has(resource?.resourceType);
 }
 
 function resourceTypeFromPath(path: string): string {
@@ -131,33 +14,35 @@ function resourceTypeFromPath(path: string): string {
   return firstSegment || 'Unknown';
 }
 
-function buildMinCardinalityFixHint(path: string, min: number, resource?: any): string {
+function buildMinCardinalityFixHint(path: string, min: number, resource?: unknown): string {
   const contextualHint = buildPlanDefinitionRelatedActionTargetIdFixHint(path, resource);
   if (contextualHint) return contextualHint;
 
   return `Add '${path}' with at least ${min} value${min === 1 ? '' : 's'}.`;
 }
 
-function buildPlanDefinitionRelatedActionTargetIdFixHint(path: string, resource?: any): string | undefined {
-  if (resource?.resourceType !== 'PlanDefinition') return undefined;
+function buildPlanDefinitionRelatedActionTargetIdFixHint(path: string, resource?: unknown): string | undefined {
+  if (!isRecord(resource) || resource.resourceType !== 'PlanDefinition') return undefined;
   if (!path.endsWith('.targetId') || !path.includes('.relatedAction[')) return undefined;
 
   const relatedAction = resolveIndexedPathParent(resource, path);
-  const misplacedId = relatedAction?.id;
-  if (typeof misplacedId !== 'string' || misplacedId.trim().length === 0 || relatedAction?.targetId !== undefined) {
+  if (!isRecord(relatedAction)) return undefined;
+  const misplacedId = relatedAction.id;
+  if (typeof misplacedId !== 'string' || misplacedId.trim().length === 0 || relatedAction.targetId !== undefined) {
     return undefined;
   }
 
   return `Add '${path}'. This relatedAction has element id '${misplacedId}' but no targetId; in FHIR R5, relatedAction.targetId is the required link to the related action. Move the workflow reference from id to targetId when '${misplacedId}' is meant to identify the target action.`;
 }
 
-function resolveIndexedPathParent(resource: any, path: string): any {
+function resolveIndexedPathParent(resource: unknown, path: string): unknown {
   const segments = path.split('.').slice(1, -1);
-  let current = resource;
+  let current: unknown = resource;
 
   for (const segment of segments) {
     if (current === undefined || current === null) return undefined;
 
+    if (!isRecord(current)) return undefined;
     const indexed = /^([A-Za-z][A-Za-z0-9]*)\[(\d+)\]$/.exec(segment);
     if (indexed) {
       const [, key, rawIndex] = indexed;
@@ -181,11 +66,11 @@ export class CardinalityValidator {
   }
 
   validate(
-    value: any,
+    value: unknown,
     elementDef: ElementDefinition,
     path: string,
     profileUrl?: string,
-    resource?: any,
+    resource?: unknown,
     options: CardinalityValidationOptions = {},
   ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
@@ -200,7 +85,7 @@ export class CardinalityValidator {
       issues.push(createValidationIssue({
         code: 'structural-validation-error',
         path,
-        resourceType: resource?.resourceType || resourceTypeFromPath(path),
+        resourceType: getResourceType(resource, path),
         profile: profileUrl,
         customMessage: `Element '${elementName}' must be an array (max cardinality is ${max})`,
         messageParams: { element: elementName, max },
@@ -209,13 +94,14 @@ export class CardinalityValidator {
     }
 
     if (count < min) {
-      const shouldValidate = options.parentExists ?? (resource ? shouldValidateRequired(resource, path) : true);
+      const shouldValidate = options.parentExists ??
+        (resource !== undefined ? shouldValidateRequired(resource, path) : true);
 
       if (shouldValidate) {
         issues.push(createValidationIssue({
           code: 'structural-cardinality-min',
           path,
-          resourceType: resource?.resourceType || resourceTypeFromPath(path),
+          resourceType: getResourceType(resource, path),
           profile: profileUrl,
           messageParams: { element: path, actual: count, min },
           details: {
@@ -236,7 +122,7 @@ export class CardinalityValidator {
         issues.push(createValidationIssue({
           code: 'structural-cardinality-max',
           path,
-          resourceType: resource?.resourceType || resourceTypeFromPath(path),
+          resourceType: getResourceType(resource, path),
           profile: profileUrl,
           messageParams: { element: path, actual: count, max },
         }));
@@ -244,23 +130,17 @@ export class CardinalityValidator {
     }
 
     if (elementDef.mustSupport === true) {
-      const shouldValidateMustSupport = options.parentExists ?? (resource ? shouldValidateRequired(resource, path) : true);
-      const shouldSkipObservationAlternative =
-        shouldSkipObservationAlternativeMustSupport(resource, path);
-      const shouldSkipContextual =
-        shouldSkipContextualMustSupport(resource, path);
-      const shouldSkipConformance =
-        shouldSkipConformanceMustSupport(resource);
+      const shouldValidateMustSupport = options.parentExists ??
+        (resource !== undefined ? shouldValidateRequired(resource, path) : true);
+      const shouldSkipMustSupport = shouldSkipMustSupportForResource(resource, path);
 
       if (
         shouldValidateMustSupport &&
-        !shouldSkipObservationAlternative &&
-        !shouldSkipContextual &&
-        !shouldSkipConformance
+        !shouldSkipMustSupport
       ) {
         let elementActuallyExists = count > 0;
 
-        if (!elementActuallyExists && resource) {
+        if (!elementActuallyExists && resource !== undefined) {
           const validationTargets = getValidationTargets(resource, path);
           if (validationTargets.length > 0) {
             const hasNonEmptyValue = validationTargets.some(target => {
@@ -271,7 +151,7 @@ export class CardinalityValidator {
               if (Array.isArray(targetValue)) {
                 return targetValue.length > 0;
               }
-              if (typeof targetValue === 'object') {
+              if (isRecord(targetValue)) {
                 return Object.keys(targetValue).length > 0;
               }
               if (typeof targetValue === 'string') {
@@ -284,12 +164,11 @@ export class CardinalityValidator {
         }
 
         const mustSupportIssues = this.validateMustSupport(
-          value,
           count,
           path,
           profileUrl,
           elementActuallyExists,
-          resource?.resourceType || resourceTypeFromPath(path)
+          getResourceType(resource, path)
         );
         issues.push(...mustSupportIssues);
       } else if (!shouldValidateMustSupport) {
@@ -309,7 +188,6 @@ export class CardinalityValidator {
   }
 
   private validateMustSupport(
-    value: any,
     count: number,
     path: string,
     profileUrl?: string,
@@ -334,7 +212,7 @@ export class CardinalityValidator {
     return issues;
   }
 
-  private getCount(value: any): number {
+  private getCount(value: unknown): number {
     if (value === undefined || value === null) {
       return 0;
     }
@@ -368,4 +246,14 @@ export class CardinalityValidator {
     const max = elementDef.max ?? '*';
     return `${min}..${max}`;
   }
+}
+
+function getResourceType(resource: unknown, path: string): string {
+  return isRecord(resource) && typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : resourceTypeFromPath(path);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -1,56 +1,37 @@
 import {
-  CANONICAL_RESOURCE_TYPES,
-  CANONICAL_URL_PATTERN,
-  CANONICAL_URN_PATTERN,
   COMMON_CANONICAL_BASE_URLS,
   type CanonicalResourceType,
 } from './canonical-reference-definitions';
 import { extractCanonicalUrlsFromResource } from './canonical-url-extraction';
+import { classifyReferenceRequestFailure } from './reference-request-failure';
+import {
+  extractCanonicalResourceType,
+  matchesCanonicalPattern,
+  parseCanonicalReference,
+  type CanonicalReferenceInfo,
+} from './canonical-reference-format';
 
 export type { CanonicalResourceType } from './canonical-reference-definitions';
-
-export interface CanonicalReferenceInfo {
-  canonical: string;
-  baseUrl: string;
-  version?: string;
-  expectedResourceType?: CanonicalResourceType;
-  isValidFormat: boolean;
-  isConformanceResource: boolean;
-}
+export type { CanonicalReferenceInfo } from './canonical-reference-format';
 
 export interface CanonicalValidationResult {
   isValid: boolean;
   severity: 'error' | 'warning' | 'info';
   message: string;
   canonicalInfo?: CanonicalReferenceInfo;
-  details?: any;
+  details?: Record<string, unknown>;
 }
 
 export interface CanonicalResolutionResult {
   found: boolean;
-  resource?: any;
+  resource?: unknown;
   errorMessage?: string;
   source?: 'local' | 'registry' | 'remote';
 }
 
 export class CanonicalReferenceValidator {
   parseCanonicalUrl(canonical: string): CanonicalReferenceInfo {
-    const trimmed = canonical.trim();
-
-    const [baseUrl, version] = trimmed.includes('|')
-      ? trimmed.split('|')
-      : [trimmed, undefined];
-
-    const isValidFormat = this.isValidCanonicalFormat(baseUrl);
-    const isConformanceResource = this.isConformanceResourceUrl(baseUrl);
-
-    return {
-      canonical: trimmed,
-      baseUrl,
-      version,
-      isValidFormat,
-      isConformanceResource,
-    };
+    return parseCanonicalReference(canonical);
   }
 
   validateCanonicalUrl(
@@ -107,44 +88,8 @@ export class CanonicalReferenceValidator {
     };
   }
 
-  private isValidCanonicalFormat(url: string): boolean {
-    if (CANONICAL_URL_PATTERN.test(url)) {
-      return true;
-    }
-
-    if (CANONICAL_URN_PATTERN.test(url)) {
-      return true;
-    }
-
-    return false;
-  }
-
-  private isConformanceResourceUrl(url: string): boolean {
-    for (const resourceType of CANONICAL_RESOURCE_TYPES) {
-      if (url.includes(`/${resourceType}/`)) {
-        return true;
-      }
-    }
-
-    if (url.includes('/fhir/') && (
-      url.includes('profile') ||
-      url.includes('extension') ||
-      url.includes('valueset') ||
-      url.includes('codesystem')
-    )) {
-      return true;
-    }
-
-    return false;
-  }
-
   extractResourceTypeFromUrl(url: string): CanonicalResourceType | null {
-    for (const resourceType of CANONICAL_RESOURCE_TYPES) {
-      if (url.includes(`/${resourceType}/`)) {
-        return resourceType;
-      }
-    }
-    return null;
+    return extractCanonicalResourceType(url);
   }
 
   validateProfileCanonical(canonical: string): CanonicalValidationResult {
@@ -159,18 +104,18 @@ export class CanonicalReferenceValidator {
     return this.validateCanonicalUrl(canonical, 'CodeSystem');
   }
 
-  extractCanonicalUrls(resource: any): CanonicalReferenceInfo[] {
+  extractCanonicalUrls(resource: unknown): CanonicalReferenceInfo[] {
     return extractCanonicalUrlsFromResource(resource, canonical => this.parseCanonicalUrl(canonical));
   }
 
-  validateResourceCanonicals(resource: any): CanonicalValidationResult[] {
+  validateResourceCanonicals(resource: unknown): CanonicalValidationResult[] {
     const canonicals = this.extractCanonicalUrls(resource);
     return canonicals.map(info => this.validateCanonicalUrl(info.canonical));
   }
 
   async resolveCanonical(
     canonical: string,
-    resourceFetcher?: (url: string, resourceType?: string) => Promise<any>
+    resourceFetcher?: (url: string, resourceType?: string) => Promise<unknown>
   ): Promise<CanonicalResolutionResult> {
     const canonicalInfo = this.parseCanonicalUrl(canonical);
 
@@ -193,20 +138,23 @@ export class CanonicalReferenceValidator {
       const resource = await resourceFetcher(canonicalInfo.baseUrl, resourceType || undefined);
 
       if (resource) {
-        if (resource.url && resource.url !== canonicalInfo.baseUrl) {
+        const resourceRecord = toRecord(resource);
+        const resourceUrl = getStringProperty(resourceRecord, 'url');
+        const resourceVersion = getStringProperty(resourceRecord, 'version');
+        if (resourceUrl && resourceUrl !== canonicalInfo.baseUrl) {
           return {
             found: true,
             resource,
-            errorMessage: `Canonical URL mismatch: expected ${canonicalInfo.baseUrl}, found ${resource.url}`,
+            errorMessage: `Canonical URL mismatch: expected ${canonicalInfo.baseUrl}, found ${resourceUrl}`,
             source: 'remote',
           };
         }
 
-        if (canonicalInfo.version && resource.version && resource.version !== canonicalInfo.version) {
+        if (canonicalInfo.version && resourceVersion && resourceVersion !== canonicalInfo.version) {
           return {
             found: true,
             resource,
-            errorMessage: `Version mismatch: expected ${canonicalInfo.version}, found ${resource.version}`,
+            errorMessage: `Version mismatch: expected ${canonicalInfo.version}, found ${resourceVersion}`,
             source: 'remote',
           };
         }
@@ -223,9 +171,10 @@ export class CanonicalReferenceValidator {
         errorMessage: `Canonical resource not found: ${canonical}`,
       };
     } catch (error) {
+      const failure = classifyReferenceRequestFailure(error);
       return {
         found: false,
-        errorMessage: `Error resolving canonical: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        errorMessage: failure.message,
       };
     }
   }
@@ -239,13 +188,7 @@ export class CanonicalReferenceValidator {
 
   matchesPattern(canonical: string, pattern: string): boolean {
     const info = this.parseCanonicalUrl(canonical);
-
-    if (pattern.includes('*')) {
-      const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
-      return regex.test(info.baseUrl);
-    }
-
-    return info.baseUrl.includes(pattern);
+    return matchesCanonicalPattern(info.baseUrl, pattern);
   }
 
   stripVersion(canonical: string): string {
@@ -257,7 +200,7 @@ export class CanonicalReferenceValidator {
     return `${baseUrl}|${version}`;
   }
 
-  validateBundleCanonicals(bundle: any): {
+  validateBundleCanonicals(bundle: unknown): {
     isValid: boolean;
     results: CanonicalValidationResult[];
     duplicateCanonicals?: Array<{
@@ -268,11 +211,13 @@ export class CanonicalReferenceValidator {
   } {
     const results: CanonicalValidationResult[] = [];
     const canonicalMap = new Map<string, number[]>();
+    const entries = toRecord(bundle)?.entry;
 
-    if (bundle.entry && Array.isArray(bundle.entry)) {
-      bundle.entry.forEach((entry: any, index: number) => {
-        if (entry.resource) {
-          const canonicals = this.extractCanonicalUrls(entry.resource);
+    if (Array.isArray(entries)) {
+      entries.forEach((entry, index) => {
+        const resource = toRecord(entry)?.resource;
+        if (resource) {
+          const canonicals = this.extractCanonicalUrls(resource);
 
           canonicals.forEach(info => {
             const validationResult = this.validateCanonicalUrl(info.canonical);
@@ -320,15 +265,24 @@ export class CanonicalReferenceValidator {
   }
 }
 
-let validatorInstance: CanonicalReferenceValidator | null = null;
-
 export function getCanonicalReferenceValidator(): CanonicalReferenceValidator {
-  if (!validatorInstance) {
-    validatorInstance = new CanonicalReferenceValidator();
-  }
-  return validatorInstance;
+  return new CanonicalReferenceValidator();
 }
 
 export function resetCanonicalReferenceValidator(): void {
-  validatorInstance = null;
+  // Compatibility no-op: validator instances are caller-owned.
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getStringProperty(
+  record: Record<string, unknown> | null,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === 'string' ? value : undefined;
 }

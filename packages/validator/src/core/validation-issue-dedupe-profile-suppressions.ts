@@ -1,36 +1,29 @@
-import { getEffectiveIssueRuleId, getSpecificIssueRuleId } from '@records-fhir/validation-types';
 import type { ValidationIssue } from '../types';
 import {
   getConstraintDedupeKeys,
   normalizeIssuePathForDedupe,
 } from './validation-issue-dedupe-constraints';
+import {
+  getEffectiveRuleId,
+  getSpecificConstraintKey,
+} from './validation-issue-dedupe-profile-signals';
 import { normalizeRequiredElementPath } from './validation-issue-dedupe-utils';
-
-export function isStructuralDateTimeMissingTimezoneIssue(issue: ValidationIssue): boolean {
-  if (issue.code !== 'invalid' || issue.aspect !== 'structural') return false;
-  const details = issue.details;
-  const expectedType = details && typeof details === 'object' && !Array.isArray(details)
-    ? (details as Record<string, unknown>).expectedType
-    : undefined;
-  if (expectedType !== 'dateTime' && expectedType !== 'instant') return false;
-  const message = issue.message?.toLowerCase() ?? '';
-  return message.includes('date has a time') && message.includes('timezone');
-}
-
-export function isSpecificNameInvariantIssue(issue: ValidationIssue): boolean {
-  if (!issue.code?.startsWith('constraint-violation-') &&
-      issue.code !== 'profile-constraint-warning' &&
-      issue.code !== 'profile-constraint-violation') return false;
-  return (issue.message?.toLowerCase() ?? '').includes('name should be usable as an identifier');
-}
 
 export function isRedundantNameInvariantIssue(
   issue: ValidationIssue,
-  specificNameInvariantPaths: Set<string>,
+  specificNameInvariantRulesByPath: Map<string, Set<string>>,
 ): boolean {
-  return specificNameInvariantPaths.size > 0 &&
-    isGenericNameInvariantIssue(issue) &&
-    specificNameInvariantPaths.has(normalizeRequiredElementPath(issue));
+  if (!isGenericNameInvariantIssue(issue)) return false;
+  const specificRules = specificNameInvariantRulesByPath.get(normalizeRequiredElementPath(issue));
+  if (!specificRules || specificRules.size === 0) return false;
+
+  // A specialised and a profile-derived diagnostic for the same invariant
+  // must not suppress each other. In that case the invariant-specific
+  // diagnostic wins via `profile-specific-over-invariant-specific`.
+  // Only a genuinely resource-specific name rule (for example msd-0 over
+  // generic cnl-0) suppresses the generic canonical-resource diagnostic.
+  const genericRule = getEffectiveRuleId(issue) ?? '';
+  return Array.from(specificRules).some(specificRule => specificRule !== genericRule);
 }
 
 function isGenericNameInvariantIssue(issue: ValidationIssue): boolean {
@@ -83,13 +76,6 @@ export function isRedundantBundleInvariantPresenceIssue(
   return bundleInvariantPresencePaths.has(normalizeRequiredElementPath(issue));
 }
 
-export function isGermanGenderExtensionMissingIssue(issue: ValidationIssue): boolean {
-  if (issue.code !== 'profile-extension-missing') return false;
-  const details = issue.details;
-  return Boolean(details && typeof details === 'object' && !Array.isArray(details) &&
-    (details as Record<string, unknown>).expectedExtension === 'http://fhir.de/StructureDefinition/gender-amtlich-de');
-}
-
 export function isMiiGenderConstraintIssue(issue: ValidationIssue): boolean {
   if (issue.code === 'constraint-violation-mii-pat-1') return true;
   const details = issue.details;
@@ -97,14 +83,6 @@ export function isMiiGenderConstraintIssue(issue: ValidationIssue): boolean {
     details && typeof details === 'object' && !Array.isArray(details) &&
     (details as Record<string, unknown>).constraintKey === 'mii-pat-1'
   );
-}
-
-export function getSpecificConstraintKey(issue: ValidationIssue): string | null {
-  return getSpecificIssueRuleId(issue);
-}
-
-export function getEffectiveRuleId(issue: ValidationIssue): string | null {
-  return getEffectiveIssueRuleId(issue);
 }
 
 export function isRedundantGenericConstraintIssue(issue: ValidationIssue, specificKeys: Set<string>): boolean {
@@ -124,10 +102,6 @@ export function isRedundantProfileSpecificConstraintIssue(
   if (invariantSpecificKeys.size === 0 || !issue.code?.startsWith('constraint-violation-')) return false;
   const constraintKey = getSpecificConstraintKey(issue);
   return Boolean(constraintKey && getConstraintDedupeKeys(issue, constraintKey).some(key => invariantSpecificKeys.has(key)));
-}
-
-export function isInvariantSpecificConstraintIssue(issue: ValidationIssue): boolean {
-  return Boolean(issue.code?.trim().toLowerCase().match(/^(?:[a-z][a-z0-9]*-)+invariant-(.+)$/));
 }
 
 export function isRedundantBundleInvariantIssue(issue: ValidationIssue, specificKeys: Set<string>): boolean {

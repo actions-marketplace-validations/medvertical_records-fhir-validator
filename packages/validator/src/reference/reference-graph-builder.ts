@@ -7,7 +7,10 @@
  */
 
 import { parseReference } from './reference-type-extractor';
-import { logger } from '../logger';
+import {
+  extractBundleEntries,
+  findReferencesInResource,
+} from './bundle-reference-finder';
 
 // ============================================================================
 // Types
@@ -43,19 +46,23 @@ export interface ReferenceGraph {
  * Build a reference graph from a resource
  */
 export function buildReferenceGraph(
-  resource: any,
-  visitedObjects: WeakSet<object>
+  resource: unknown,
 ): ReferenceGraph {
   const nodes = new Map<string, ReferenceNode>();
   const adjacencyList = new Map<string, Set<string>>();
   const rootNodes = new Set<string>();
 
+  const resourceRecord = toRecord(resource);
+  if (!resourceRecord) {
+    return { nodes, adjacencyList, rootNodes };
+  }
+
   // Handle Bundle resources
-  if (resource.resourceType === 'Bundle' && resource.entry) {
-    buildBundleGraph(resource, nodes, adjacencyList, rootNodes, visitedObjects);
+  if (resourceRecord.resourceType === 'Bundle') {
+    buildBundleGraph(resourceRecord, nodes, adjacencyList, rootNodes);
   } else {
     // Handle single resource
-    buildResourceGraph(resource, nodes, adjacencyList, rootNodes, visitedObjects);
+    buildResourceGraph(resourceRecord, nodes, adjacencyList, rootNodes);
   }
 
   return { nodes, adjacencyList, rootNodes };
@@ -65,25 +72,22 @@ export function buildReferenceGraph(
  * Build graph for Bundle resources
  */
 function buildBundleGraph(
-  bundle: any,
+  bundle: unknown,
   nodes: Map<string, ReferenceNode>,
   adjacencyList: Map<string, Set<string>>,
   rootNodes: Set<string>,
-  visitedObjects: WeakSet<object>
 ): void {
-  if (!bundle.entry || !Array.isArray(bundle.entry)) {
-    return;
-  }
+  const entries = extractBundleEntries(bundle);
 
   // First pass: create nodes for all entries
-  bundle.entry.forEach((entry: any, index: number) => {
+  entries.forEach((entry, index) => {
     if (entry.resource) {
       const nodeId = entry.fullUrl || `entry[${index}]`;
-      const references = extractReferencesFromResource(entry.resource, visitedObjects);
+      const references = extractReferenceStrings(entry.resource);
 
       nodes.set(nodeId, {
         id: nodeId,
-        resourceType: entry.resource.resourceType,
+        resourceType: getString(entry.resource, 'resourceType'),
         references,
         depth: 0,
       });
@@ -111,25 +115,27 @@ function buildBundleGraph(
  * Build graph for single resource
  */
 function buildResourceGraph(
-  resource: any,
+  resource: Record<string, unknown>,
   nodes: Map<string, ReferenceNode>,
   adjacencyList: Map<string, Set<string>>,
   rootNodes: Set<string>,
-  visitedObjects: WeakSet<object>
 ): void {
-  const nodeId = resource.resourceType && resource.id
-    ? `${resource.resourceType}/${resource.id}`
-    : resource.id || 'root';
+  const resourceType = getString(resource, 'resourceType');
+  const resourceId = getString(resource, 'id');
+  const nodeId = resourceType && resourceId
+    ? `${resourceType}/${resourceId}`
+    : resourceId || 'root';
 
-  const references = extractReferencesFromResource(resource, visitedObjects);
+  const references = extractReferenceStrings(resource);
 
   // Only create node if there are references or contained resources
-  const hasContained = resource.contained && Array.isArray(resource.contained) && resource.contained.length > 0;
+  const contained = resource.contained;
+  const hasContained = Array.isArray(contained) && contained.length > 0;
 
   if (references.length > 0 || hasContained) {
     nodes.set(nodeId, {
       id: nodeId,
-      resourceType: resource.resourceType,
+      resourceType,
       references,
       depth: 0,
     });
@@ -139,15 +145,18 @@ function buildResourceGraph(
   }
 
   // Also add contained resources as nodes
-  if (hasContained) {
-    resource.contained.forEach((contained: any) => {
-      if (contained.id && contained.resourceType) {
-        const containedId = `#${contained.id}`;
-        const containedRefs = extractReferencesFromResource(contained, visitedObjects);
+  if (Array.isArray(contained)) {
+    contained.forEach((candidate) => {
+      const containedResource = toRecord(candidate);
+      const containedResourceId = containedResource && getString(containedResource, 'id');
+      const containedResourceType = containedResource && getString(containedResource, 'resourceType');
+      if (containedResource && containedResourceId && containedResourceType) {
+        const containedId = `#${containedResourceId}`;
+        const containedRefs = extractReferenceStrings(containedResource);
 
         nodes.set(containedId, {
           id: containedId,
-          resourceType: contained.resourceType,
+          resourceType: containedResourceType,
           references: containedRefs,
           depth: 1,
           parent: nodeId,
@@ -179,10 +188,14 @@ export function findNodeByReference(reference: string, nodes: Map<string, Refere
     }
   }
 
-  // Try to find by matching resource type and ID
-  for (const [nodeId, _node] of nodes) {
-    if (parseResult.resourceType && parseResult.resourceId) {
-      if (nodeId.includes(parseResult.resourceType) && nodeId.includes(parseResult.resourceId)) {
+  // Match absolute/fullUrl node IDs by their exact parsed resource identity.
+  if (parseResult.resourceType && parseResult.resourceId) {
+    for (const nodeId of nodes.keys()) {
+      const nodeReference = parseReference(nodeId);
+      if (
+        nodeReference.resourceType === parseResult.resourceType
+        && nodeReference.resourceId === parseResult.resourceId
+      ) {
         return nodeId;
       }
     }
@@ -191,59 +204,17 @@ export function findNodeByReference(reference: string, nodes: Map<string, Refere
   return null;
 }
 
-/**
- * Extract all reference strings from a resource
- */
-function extractReferencesFromResource(
-  resource: any,
-  visitedObjects: WeakSet<object>,
-  path: string = '',
-  depth: number = 0
-): string[] {
-  const references: string[] = [];
+function extractReferenceStrings(resource: unknown): string[] {
+  return findReferencesInResource(resource).map(({ reference }) => reference);
+}
 
-  // Safety check: prevent deep recursion
-  if (depth > 50) {
-    logger.warn(`[CircularReferenceDetector] Max recursion depth reached at path: ${path}`);
-    return references;
-  }
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
 
-  if (!resource || typeof resource !== 'object') {
-    return references;
-  }
-
-  // Prevent infinite recursion on circular object structures
-  if (visitedObjects.has(resource)) {
-    return references;
-  }
-  visitedObjects.add(resource);
-
-  // Check if this is a reference object
-  if (resource.reference && typeof resource.reference === 'string') {
-    references.push(resource.reference);
-  }
-
-  // Recursively check all properties
-  try {
-    for (const [key, value] of Object.entries(resource)) {
-      // Skip contained to avoid confusion with Bundle entries
-      if (key === 'contained' && path === '') {
-        continue;
-      }
-
-      if (Array.isArray(value)) {
-        value.forEach((item, index) => {
-          if (item && typeof item === 'object') {
-            references.push(...extractReferencesFromResource(item, visitedObjects, `${path}.${key}[${index}]`, depth + 1));
-          }
-        });
-      } else if (value && typeof value === 'object') {
-        references.push(...extractReferencesFromResource(value, visitedObjects, `${path}.${key}`, depth + 1));
-      }
-    }
-  } catch (error) {
-    logger.warn(`[CircularReferenceDetector] Error extracting references at path ${path}:`, error instanceof Error ? error.message : 'Unknown error');
-  }
-
-  return references;
+function getString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
 }

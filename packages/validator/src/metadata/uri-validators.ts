@@ -73,7 +73,7 @@ export function validateUriFormat(uri: string): UriValidationResult {
   }
 
   // Check for relative reference (ResourceType/id or relative path)
-  if (/^[A-Z][a-zA-Z]+\/[A-Za-z0-9\-\.]+/.test(uri) || uri.startsWith('/') || uri.startsWith('#')) {
+  if (/^[A-Z][a-zA-Z]+\/[A-Za-z0-9.-]+/.test(uri) || uri.startsWith('/') || uri.startsWith('#')) {
     return { isValid: true, type: 'relative' };
   }
 
@@ -96,7 +96,7 @@ export function validateUriFormat(uri: string): UriValidationResult {
  * Matches patterns like: Patient/123, Organization/xyz, etc.
  */
 export function looksLikeReference(uri: string): boolean {
-  const referencePattern = /^[A-Z][a-zA-Z]+\/[A-Za-z0-9\-\.]+/;
+  const referencePattern = /^[A-Z][a-zA-Z]+\/[A-Za-z0-9.-]+/;
   return referencePattern.test(uri);
 }
 

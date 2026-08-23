@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { getDirectValue, getNestedValue } from '../structural-executor-helpers';
+import { getDirectValue, getNestedValue, isPrimitiveType } from '../structural-executor-helpers';
+
+describe('isPrimitiveType', () => {
+  it('classifies every FHIR primitive, including uuid, xhtml, and integer64', () => {
+    // uuid missing here let value[x] complex-type resolution treat uuid as a
+    // complex candidate and deep-walk Quantity values with the uuid SD.
+    for (const code of ['uuid', 'xhtml', 'integer64', 'decimal', 'string', 'boolean']) {
+      expect(isPrimitiveType(code)).toBe(true);
+    }
+    for (const code of ['Quantity', 'CodeableConcept', 'Reference']) {
+      expect(isPrimitiveType(code)).toBe(false);
+    }
+  });
+});
 
 describe('structural executor value helpers', () => {
   it('treats primitive sidecar extensions as present values', () => {

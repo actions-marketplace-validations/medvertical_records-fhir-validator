@@ -8,6 +8,8 @@
  */
 
 import type { ValidationAspectType, ValidationSeverityType } from './aspect-enums';
+import type { FindingAspectType, FindingSourceType } from './finding-source';
+import { removeAsciiControlCharacters } from './text-normalization';
 
 // ============================================================================
 // Message Signature Types
@@ -129,7 +131,8 @@ export interface AggregatedValidationResult {
  */
 export interface ValidationMessageGroupDTO {
     signature: string;
-    aspect: ValidationAspectType;
+    aspect: FindingAspectType;
+    findingSource?: FindingSourceType;
     severity: ValidationSeverityType;
     code?: string;
     canonicalPath: string;
@@ -149,6 +152,7 @@ export interface ValidationMessageGroupDTO {
     serverId?: number; // Server ID (for single-server queries, or first seen for multi-server)
     resourceType?: string; // Primary resource type for this issue group
     resourceTypeCounts?: Record<string, number>; // Per-type resource counts (e.g. { Patient: 5, Encounter: 3 })
+    profiles?: string[]; // Distinct profiles that produced occurrences in this group
     validatorPackageVersion?: string; // Validator package version observed for the affected resource/aspect results
     validationRulesetVersion?: string; // Ruleset version observed for the affected resource/aspect results
 }
@@ -161,7 +165,7 @@ export interface ValidationGroupMemberDTO {
     fhirId: string;
     validatedAt: Date;
     perAspect: {
-        aspect: ValidationAspectType;
+        aspect: FindingAspectType;
         isValid: boolean;
         errorCount: number;
         warningCount: number;
@@ -201,7 +205,7 @@ export interface ResourceMessagesDTO {
  * Settings snapshot for validation (canonical format)
  */
 export interface ValidationSettingsSnapshot {
-    [key: string]: any; // Allow additional settings
+    [key: string]: unknown; // Forward-compatible settings remain opaque to consumers.
     aspects: {
         structural: { enabled: boolean; severity: 'inherit' | 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
         profile: { enabled: boolean; severity: 'inherit' | 'warning' | 'information'; timeoutMs: number; engine?: string };
@@ -290,7 +294,7 @@ export function aggregateAspectScores(
  * - removes whitespace/control characters and lowercases for stable grouping.
  */
 export function normalizeCanonicalPath(path: string, maxLength: number = 256): { normalized: string; truncated: boolean } {
-    let normalized = path
+    let normalized = removeAsciiControlCharacters(path)
         .trim()
         // Remove Records embedded resource markers from Bundle paths.
         .replace(/\/\*[^*]*\*\//g, '')
@@ -300,9 +304,6 @@ export function normalizeCanonicalPath(path: string, maxLength: number = 256): {
         .replace(/\[x\]/gi, '')
         // Remove quoted slice/type annotations that sometimes appear in diagnostics.
         .replace(/\x60([^\x60]+)\x60/g, '$1')
-        // Remove control characters
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\u0000-\u001F\u007F]/g, '')
         // Remove multiple dots
         .replace(/\.{2,}/g, '.')
         // Remove leading/trailing dots
@@ -325,16 +326,13 @@ export function normalizeCanonicalPath(path: string, maxLength: number = 256): {
  * Trim, collapse whitespace, lowercase, remove control chars
  */
 export function normalizeMessageText(text: string, maxLength: number = 512): { normalized: string; truncated: boolean } {
-    let normalized = text
+    let normalized = removeAsciiControlCharacters(text
         // Trim
         .trim()
         // Collapse whitespace
         .replace(/\s+/g, ' ')
         // Lowercase
-        .toLowerCase()
-        // Remove control characters (excluding common whitespace)
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\u0000-\u001F\u007F]/g, '');
+        .toLowerCase());
 
     const truncated = normalized.length > maxLength;
     if (truncated) {

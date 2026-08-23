@@ -1,4 +1,8 @@
 import type { ValidationIssue } from '../types';
+import {
+    isErrorValidationSeverity,
+    isInformationValidationSeverity,
+} from '@records-fhir/validation-types';
 import { getFixSuggestion } from '../issues';
 import { buildJsonSourceMap, type JsonSourceMap } from './json-source-map';
 
@@ -11,7 +15,7 @@ export interface LSPDiagnostic {
     codeDescription?: { href: string };
     relatedInformation?: LSPRelatedInfo[];
     tags?: number[];
-    data?: any;
+    data?: Record<string, unknown>;
 }
 
 export interface LSPPosition {
@@ -28,8 +32,8 @@ export interface QuickFix {
     title: string;
     kind: 'quickfix' | 'refactor' | 'source';
     diagnosticCode: string;
-    edit?: { path: string; newValue: any };
-    command?: { command: string; arguments: any[] };
+    edit?: { path: string; newValue: unknown };
+    command?: { command: string; arguments: unknown[] };
 }
 
 export interface CLISummary {
@@ -82,7 +86,11 @@ export class DiagnosticFormatter {
     private currentSourceMap: JsonSourceMap | null = null;
 
     setSpecBaseUrl(url: string): void {
-        this.specBaseUrl = url;
+        const parsed = new URL(url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            throw new TypeError('FHIR specification URL must use HTTP or HTTPS');
+        }
+        this.specBaseUrl = `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
     }
 
     toLSPDiagnostics(
@@ -170,6 +178,7 @@ export class DiagnosticFormatter {
             return `${this.specBaseUrl}/profiling.html`;
         }
         if (resourceType) {
+            if (!/^[A-Za-z][A-Za-z0-9]*$/.test(resourceType)) return undefined;
             return `${this.specBaseUrl}/${resourceType.toLowerCase()}.html`;
         }
         return undefined;
@@ -222,14 +231,14 @@ export class DiagnosticFormatter {
         };
     }
 
-    toCLISummary(resource: any, issues: ValidationIssue[]): CLISummary {
-        const errors = issues.filter(i => i.severity === 'error').length;
+    toCLISummary(resource: unknown, issues: ValidationIssue[]): CLISummary {
+        const errors = issues.filter(i => isErrorValidationSeverity(i.severity)).length;
         const warnings = issues.filter(i => i.severity === 'warning').length;
-        const information = issues.filter(i => i.severity === 'info').length;
+        const information = issues.filter(i => isInformationValidationSeverity(i.severity)).length;
 
         return {
-            resourceType: resource?.resourceType || 'Unknown',
-            resourceId: resource?.id,
+            resourceType: getResourceString(resource, 'resourceType') || 'Unknown',
+            resourceId: getResourceString(resource, 'id'),
             totalIssues: issues.length,
             errors,
             warnings,
@@ -272,7 +281,7 @@ export class DiagnosticFormatter {
         return lines.join('\n');
     }
 
-    formatBatchReport(results: Map<any, ValidationIssue[]>): string {
+    formatBatchReport(results: ReadonlyMap<unknown, ValidationIssue[]>): string {
         const lines: string[] = [];
         let totalErrors = 0;
         let totalWarnings = 0;
@@ -290,7 +299,7 @@ export class DiagnosticFormatter {
                 lines.push(`✅ ${summary.resourceType}/${summary.resourceId || '?'}`);
             } else {
                 lines.push(`❌ ${summary.resourceType}/${summary.resourceId || '?'} (${summary.errors} errors)`);
-                for (const issue of summary.issues.filter(i => i.severity === 'error').slice(0, 3)) {
+                for (const issue of summary.issues.filter(i => isErrorValidationSeverity(i.severity)).slice(0, 3)) {
                     lines.push(`   • ${issue.message.substring(0, 60)}...`);
                 }
             }
@@ -307,4 +316,10 @@ export class DiagnosticFormatter {
     }
 }
 
-export const diagnosticFormatter = new DiagnosticFormatter();
+function getResourceString(resource: unknown, field: string): string | undefined {
+    if (typeof resource !== 'object' || resource === null || Array.isArray(resource)) {
+        return undefined;
+    }
+    const value = (resource as Record<string, unknown>)[field];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+}

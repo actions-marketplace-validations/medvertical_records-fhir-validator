@@ -1,9 +1,7 @@
-const CHOICE_BASES = [
-    'value', 'effective', 'onset', 'abatement', 'deceased', 'multipleBirth',
-    'defaultValue', 'medication', 'reported', 'occurrence', 'timing',
-    'product', 'serviced', 'location', 'allowed', 'used',
-    'rate', 'born', 'age',
-];
+import {
+    isConcreteChoiceProperty,
+    splitConcreteChoiceProperty,
+} from '../core/fhir-choice-property';
 
 /**
  * FHIR primitive type codes. Choice property names capitalise the first
@@ -15,6 +13,14 @@ const FHIR_PRIMITIVE_TYPES = new Set([
     'decimal', 'id', 'instant', 'integer', 'integer64', 'markdown', 'oid',
     'positiveInt', 'string', 'time', 'unsignedInt', 'uri', 'url', 'uuid',
 ]);
+
+type ObjectRecord = Record<string, unknown>;
+
+interface ChoiceMatchInput {
+    element?: unknown;
+    resourcePath?: unknown;
+    data?: unknown;
+}
 
 export interface ChoiceTypeCastResolution {
     /** Skip the constraint entirely (fail open) — concrete type matches no cast. */
@@ -40,15 +46,16 @@ export interface ChoiceTypeCastResolution {
  * Mixed-target expressions (`(value as Quantity) or (value as string)`) are
  * left untouched to avoid unsafe rewrites.
  */
-export function resolveChoiceTypeCast(expression: string, matched: any): ChoiceTypeCastResolution {
+export function resolveChoiceTypeCast(expression: string, matched: unknown): ChoiceTypeCastResolution {
     const unchanged: ChoiceTypeCastResolution = { skip: false, expression };
-    if (!matched?.element?.path?.includes('[x]')) return unchanged;
+    const match = toChoiceMatch(matched);
+    if (!getElementPath(match)?.includes('[x]')) return unchanged;
 
     const castTargets = extractCastTargets(expression);
     if (castTargets.length === 0) return unchanged;
 
     const concreteType =
-        deriveChoiceTypeFromConcretePath(matched) ?? inferChoiceRuntimeType(matched.data);
+        deriveChoiceTypeFromConcretePath(match) ?? inferChoiceRuntimeType(match?.data);
     if (!concreteType) return unchanged;
 
     if (!castTargets.includes(concreteType)) {
@@ -103,9 +110,10 @@ function extractCastTargets(expression: string): string[] {
  * structural `inferChoiceRuntimeType` heuristic is blind (primitives, Coding,
  * Identifier, Range, Money, …).
  */
-export function deriveChoiceTypeFromConcretePath(matched: any): string | null {
-    const resourcePath: string | undefined = matched?.resourcePath;
-    const sdPath: string | undefined = matched?.element?.path;
+export function deriveChoiceTypeFromConcretePath(matched: unknown): string | null {
+    const match = toChoiceMatch(matched);
+    const resourcePath = typeof match?.resourcePath === 'string' ? match.resourcePath : undefined;
+    const sdPath = getElementPath(match);
     if (!resourcePath || !sdPath) return null;
 
     const concreteProp = lastSegment(resourcePath).replace(/\[\d+\]$/, '');
@@ -113,8 +121,7 @@ export function deriveChoiceTypeFromConcretePath(matched: any): string | null {
     if (!polymorphicSegment.endsWith('[x]')) return null;
 
     const base = polymorphicSegment.slice(0, -'[x]'.length);
-    if (!CHOICE_BASES.includes(base)) return null;
-    if (!concreteProp.startsWith(base) || concreteProp.length <= base.length) return null;
+    if (!isConcreteChoiceProperty(concreteProp, base)) return null;
 
     const suffix = concreteProp.slice(base.length);
     const primitiveCandidate = suffix.charAt(0).toLowerCase() + suffix.slice(1);
@@ -126,45 +133,71 @@ function lastSegment(path: string): string {
     return dot >= 0 ? path.slice(dot + 1) : path;
 }
 
-export function prepareElementContext(context: any, expression: string): any {
+export function prepareElementContext(context: unknown, expression: string): unknown {
+    return prepareElementContextValue(context, expression, new WeakMap<object, unknown>());
+}
+
+function prepareElementContextValue(
+    context: unknown,
+    expression: string,
+    visited: WeakMap<object, unknown>,
+): unknown {
     if (Array.isArray(context)) {
-        return context.map(item => prepareElementContext(item, expression));
+        const existing = visited.get(context);
+        if (existing !== undefined) return existing;
+
+        const normalizedItems: unknown[] = [];
+        visited.set(context, normalizedItems);
+        for (const item of context) {
+            normalizedItems.push(prepareElementContextValue(item, expression, visited));
+        }
+        return normalizedItems;
     }
 
-    if (!context || typeof context !== 'object' || context.resourceType) {
+    if (!isObjectRecord(context) || typeof context.resourceType === 'string') {
         return context;
     }
 
     const keys = Object.keys(context);
-    let normalized: any | undefined;
+    let normalized: ObjectRecord | undefined;
 
-    for (const base of CHOICE_BASES) {
+    const concreteChoices = keys
+        .map(key => ({ key, choice: splitConcreteChoiceProperty(key) }))
+        .filter((entry): entry is { key: string; choice: { baseName: string; typeSuffix: string } } =>
+            entry.choice !== null
+        );
+    for (const { key: concreteKey, choice } of concreteChoices) {
+        const base = choice.baseName;
         if (!new RegExp(`\\b${base}\\b`).test(expression)) continue;
         if (context[base] !== undefined) continue;
-
-        const concreteKey = keys.find(key =>
-            key.startsWith(base) &&
-            key.length > base.length &&
-            key[base.length] === key[base.length].toUpperCase()
-        );
-
-        if (concreteKey) {
-            normalized ??= { ...context };
-            normalized[base] = context[concreteKey];
-        }
+        normalized ??= { ...context };
+        normalized[base] = context[concreteKey];
     }
 
     return normalized ?? context;
 }
 
-function inferChoiceRuntimeType(value: any): string | null {
+function inferChoiceRuntimeType(value: unknown): string | null {
     if (value === null || value === undefined) return null;
     if (typeof value === 'boolean') return 'boolean';
     if (typeof value === 'number') return Number.isInteger(value) ? 'integer' : 'decimal';
-    if (typeof value !== 'object') return null;
+    if (!isObjectRecord(value)) return null;
     if ('start' in value || 'end' in value) return 'Period';
     if ('value' in value && ('unit' in value || 'code' in value || 'system' in value)) return 'Quantity';
     if ('coding' in value || 'text' in value) return 'CodeableConcept';
     if ('reference' in value) return 'Reference';
     return null;
+}
+
+function toChoiceMatch(value: unknown): ChoiceMatchInput | null {
+    return isObjectRecord(value) ? value : null;
+}
+
+function getElementPath(match: ChoiceMatchInput | null): string | undefined {
+    if (!isObjectRecord(match?.element)) return undefined;
+    return typeof match.element.path === 'string' ? match.element.path : undefined;
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

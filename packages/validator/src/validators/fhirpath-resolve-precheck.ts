@@ -1,12 +1,16 @@
-import { getOrCompileFHIRPathExpression } from './constraint-expression-cache';
+import {
+  ConstraintExpressionCache,
+  type SynchronousFHIRPathExpressionCache,
+} from './constraint-expression-cache';
 import { createFHIRPathContext, resolveFunction } from './fhirpath-functions';
 
 type FhirVersion = 'R4' | 'R5' | 'R6';
+type ObjectRecord = Record<string, unknown>;
 
-type BundleResourceInput =
-  | Map<string, any>
-  | any[]
-  | { entry?: any[] }
+export type BundleResourceInput =
+  | Map<string, unknown>
+  | unknown[]
+  | { entry?: unknown[] }
   | undefined;
 
 export type ResolvePrecheckResult = boolean | null;
@@ -16,10 +20,11 @@ const RESOLVE_EXISTS_PATTERN =
 
 export interface ResolvePrecheckOptions {
   expression: string;
-  context: any;
-  rootResource: any;
+  context: unknown;
+  rootResource: unknown;
   fhirVersion?: FhirVersion;
   bundle?: BundleResourceInput;
+  expressionCache?: SynchronousFHIRPathExpressionCache;
 }
 
 /**
@@ -45,17 +50,21 @@ export function evaluateResolveExistsConstraint(
   const predicate = match[3]?.trim();
   const fhirVersion = options.fhirVersion ?? 'R4';
   const fhirPathContext = createFHIRPathContext(options.rootResource, options.bundle);
+  const rootResourceType = isObjectRecord(options.rootResource) &&
+    typeof options.rootResource.resourceType === 'string'
+    ? options.rootResource.resourceType
+    : undefined;
   const referenceValues = referencePath === '$this'
     ? [options.context]
     : getValuesAtPath(
       options.context,
-      stripResourcePrefix(referencePath, options.rootResource?.resourceType),
+      stripResourcePrefix(referencePath, rootResourceType),
     );
 
   if (referenceValues.length === 0) return false;
 
   let unresolvedNeedsExternalResolution = false;
-  const resolvedTargets: any[] = [];
+  const resolvedTargets: unknown[] = [];
   for (const value of referenceValues) {
     const resolved = resolveFunction([value], fhirPathContext);
     if (resolved.length > 0) {
@@ -69,12 +78,20 @@ export function evaluateResolveExistsConstraint(
   }
 
   const typedTargets = expectedType
-    ? resolvedTargets.filter(target => target?.resourceType === expectedType)
+    ? resolvedTargets.filter(target =>
+      isObjectRecord(target) && target.resourceType === expectedType
+    )
     : resolvedTargets;
 
   if (predicate) {
     const matchingTargets = typedTargets.filter(target =>
-      evaluatePredicate(target, predicate, options.rootResource, fhirVersion),
+      evaluatePredicate(
+        target,
+        predicate,
+        options.rootResource,
+        fhirVersion,
+        options.expressionCache,
+      ),
     );
     if (matchingTargets.length > 0) return true;
     return unresolvedNeedsExternalResolution ? null : false;
@@ -93,10 +110,10 @@ function stripResourcePrefix(path: string, resourceType: string | undefined): st
       : path;
 }
 
-function getValuesAtPath(resource: any, path: string): any[] {
+function getValuesAtPath(resource: unknown, path: string): unknown[] {
   if (!path) return [resource];
 
-  let values: any[] = [resource];
+  let values: unknown[] = [resource];
   for (const segment of path.split('.')) {
     values = values.flatMap(value => getChildValues(value, segment));
     if (values.length === 0) break;
@@ -104,32 +121,52 @@ function getValuesAtPath(resource: any, path: string): any[] {
   return values;
 }
 
-function getChildValues(value: any, segment: string): any[] {
-  if (Array.isArray(value)) {
-    return value.flatMap(item => getChildValues(item, segment));
+function getChildValues(value: unknown, segment: string): unknown[] {
+  const containers: unknown[] = [];
+  const stack: unknown[] = [value];
+  const visitedArrays = new WeakSet<object>();
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (Array.isArray(current)) {
+      if (visitedArrays.has(current)) continue;
+      visitedArrays.add(current);
+      for (let index = current.length - 1; index >= 0; index--) {
+        stack.push(current[index]);
+      }
+      continue;
+    }
+    containers.push(current);
   }
-  if (!value || typeof value !== 'object') return [];
 
   const indexMatch = segment.match(/^(.+)\[(\d+)\]$/);
-  if (indexMatch) {
-    const child = value[indexMatch[1]];
-    const index = Number(indexMatch[2]);
-    return Array.isArray(child) && child[index] !== undefined ? [child[index]] : [];
-  }
+  const out: unknown[] = [];
+  for (const container of containers) {
+    if (!isObjectRecord(container)) continue;
+    if (indexMatch) {
+      const child = container[indexMatch[1]];
+      const index = Number(indexMatch[2]);
+      if (Array.isArray(child) && child[index] !== undefined) out.push(child[index]);
+      continue;
+    }
 
-  const child = value[segment];
-  if (child === undefined || child === null) return [];
-  return Array.isArray(child) ? child : [child];
+    const child = container[segment];
+    if (child === undefined || child === null) continue;
+    if (Array.isArray(child)) out.push(...child);
+    else out.push(child);
+  }
+  return out;
 }
 
 function evaluatePredicate(
-  target: any,
+  target: unknown,
   predicate: string,
-  rootResource: any,
+  rootResource: unknown,
   fhirVersion: FhirVersion,
+  expressionCache: SynchronousFHIRPathExpressionCache = new ConstraintExpressionCache(),
 ): boolean {
   try {
-    const compiled = getOrCompileFHIRPathExpression(predicate, fhirVersion);
+    const compiled = expressionCache.getOrCompile(predicate, fhirVersion);
+    if (!compiled) return false;
     const result = compiled(
       target,
       { resource: rootResource, rootResource },
@@ -141,7 +178,7 @@ function evaluatePredicate(
   }
 }
 
-function fhirPathTruthy(result: any): boolean {
+function fhirPathTruthy(result: unknown): boolean {
   if (result === true) return true;
   if (result === false || result === null || result === undefined) return false;
   if (Array.isArray(result)) {
@@ -156,16 +193,16 @@ function fhirPathTruthy(result: any): boolean {
   return true;
 }
 
-function isDeterministicallyUnresolvable(value: any, bundle: BundleResourceInput): boolean {
+function isDeterministicallyUnresolvable(value: unknown, bundle: BundleResourceInput): boolean {
   const reference = extractReferenceString(value);
   if (!reference) return true;
   if (reference.startsWith('#')) return true;
   return hasBundleResolutionContext(bundle);
 }
 
-function extractReferenceString(value: any): string | null {
+function extractReferenceString(value: unknown): string | null {
   if (typeof value === 'string') return value;
-  if (!value || typeof value !== 'object') return null;
+  if (!isObjectRecord(value)) return null;
   return typeof value.reference === 'string' ? value.reference : null;
 }
 
@@ -173,5 +210,9 @@ function hasBundleResolutionContext(bundle: BundleResourceInput): boolean {
   if (!bundle) return false;
   if (bundle instanceof Map) return bundle.size > 0;
   if (Array.isArray(bundle)) return bundle.length > 0;
-  return Array.isArray(bundle.entry) && bundle.entry.length > 0;
+  return isObjectRecord(bundle) && Array.isArray(bundle.entry) && bundle.entry.length > 0;
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

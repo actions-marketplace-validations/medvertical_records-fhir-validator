@@ -50,26 +50,34 @@ export class StringSecurityValidator {
      * Walk a resource and flag any non-narrative string field that
      * contains HTML-tag-like content.
      */
-    validate(resource: any): ValidationIssue[] {
+    validate(resource: unknown): ValidationIssue[] {
         if (!resource || typeof resource !== 'object') return [];
         const issues: ValidationIssue[] = [];
-        const rt = resource.resourceType || 'Resource';
-        this.walk(resource, rt, issues);
+        const record = Array.isArray(resource) ? null : resource as Record<string, unknown>;
+        const rt = typeof record?.resourceType === 'string' ? record.resourceType : 'Resource';
+        this.walk(resource, rt, issues, new WeakSet<object>());
         return issues;
     }
 
-    private walk(obj: any, path: string, issues: ValidationIssue[]): void {
+    private walk(
+        obj: unknown,
+        path: string,
+        issues: ValidationIssue[],
+        visited: WeakSet<object>,
+    ): void {
         if (!obj || typeof obj !== 'object') return;
+        if (visited.has(obj)) return;
+        visited.add(obj);
 
         if (Array.isArray(obj)) {
             for (let i = 0; i < obj.length; i++) {
-                this.walk(obj[i], `${path}[${i}]`, issues);
+                this.walk(obj[i], `${path}[${i}]`, issues, visited);
             }
             return;
         }
+        const record = obj as Record<string, unknown>;
 
-        for (const key of Object.keys(obj)) {
-            const value = obj[key];
+        for (const [key, value] of Object.entries(record)) {
             const childPath = `${path}.${key}`;
 
             if (typeof value === 'string') {
@@ -77,7 +85,7 @@ export class StringSecurityValidator {
                 // narrative-validator handles its own XHTML whitelist.
                 if (this.isInsideNarrative(childPath)) continue;
                 if (this.isConformanceDefinitionDocumentation(childPath)) continue;
-                if (this.isRenderingXhtmlExtensionValue(obj, key)) continue;
+                if (this.isRenderingXhtmlExtensionValue(record, key)) continue;
 
                 if (containsHtmlTag(value)) {
                     issues.push(createValidationIssue({
@@ -97,14 +105,17 @@ export class StringSecurityValidator {
                     }));
                 }
             } else if (value && typeof value === 'object') {
-                this.walk(value, childPath, issues);
+                this.walk(value, childPath, issues, visited);
             }
         }
     }
 
-    private isRenderingXhtmlExtensionValue(parent: any, key: string): boolean {
+    private isRenderingXhtmlExtensionValue(
+        parent: Record<string, unknown>,
+        key: string,
+    ): boolean {
         return key === 'valueString' &&
-            parent?.url === 'http://hl7.org/fhir/StructureDefinition/rendering-xhtml';
+            parent.url === 'http://hl7.org/fhir/StructureDefinition/rendering-xhtml';
     }
 
     /**
@@ -136,5 +147,3 @@ export class StringSecurityValidator {
         );
     }
 }
-
-export const stringSecurityValidator = new StringSecurityValidator();

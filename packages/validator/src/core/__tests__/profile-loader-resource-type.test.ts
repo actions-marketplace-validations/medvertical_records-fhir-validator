@@ -59,6 +59,11 @@ describe('profile resource type compatibility', () => {
       },
     });
     expect(issue.message).toContain('validated against base Practitioner instead');
+    expect(issue.id).toBe(createProfileResourceTypeMismatchIssue(
+      'http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient',
+      'Practitioner',
+      'Patient',
+    ).id);
   });
 
   it('suggests near-matching local profiles for unresolved canonicals', () => {
@@ -86,5 +91,8 @@ describe('profile resource type compatibility', () => {
         'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-bilanz-ausfuhr-haemofiltration-einzelmesswerte',
       ],
     });
+    expect(issue.id).toBe(createProfileFallbackIssue(unresolved, 'Observation', {
+      getAvailableProfiles: () => available,
+    }).id);
   });
 });

@@ -6,26 +6,10 @@
  * match wins, so preserve more-specific prefixes before generic families.
  */
 
-type Hl7IssueType =
-  | 'invalid' | 'structure' | 'required' | 'value' | 'invariant'
-  | 'security' | 'login' | 'unknown' | 'expired' | 'forbidden' | 'suppressed'
-  | 'processing' | 'not-supported' | 'duplicate' | 'multiple-matches'
-  | 'not-found' | 'deleted' | 'too-long' | 'code-invalid' | 'extension'
-  | 'too-costly' | 'business-rule' | 'conflict'
-  | 'transient' | 'lock-error' | 'no-store' | 'exception' | 'timeout'
-  | 'incomplete' | 'throttled'
-  | 'informational';
+import { QUESTIONNAIRE_PREFIX_TO_HL7_ISSUE_TYPE } from './operation-outcome-issue-mapping-questionnaire';
+import { HL7_ISSUE_TYPES, type Hl7IssueType } from './operation-outcome-issue-types';
 
-const HL7_ISSUE_TYPES = new Set<string>([
-  'invalid', 'structure', 'required', 'value', 'invariant',
-  'security', 'login', 'unknown', 'expired', 'forbidden', 'suppressed',
-  'processing', 'not-supported', 'duplicate', 'multiple-matches',
-  'not-found', 'deleted', 'too-long', 'code-invalid', 'extension',
-  'too-costly', 'business-rule', 'conflict',
-  'transient', 'lock-error', 'no-store', 'exception', 'timeout',
-  'incomplete', 'throttled',
-  'informational',
-]);
+export { normalizeToHl7Severity } from './operation-outcome-severity';
 
 /**
  * Prefix-based mapping: Records code prefix → HL7 issue-type.
@@ -72,6 +56,11 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   // as `business-rule` (see mni-patientOverview-bundle-example1b
   // baseline: "Duplicate id value '1a'", "Duplicate id value '2'").
   ['structural-duplicate-element-id', 'business-rule'],
+  // Unreferenced contained resource (dom-3) — Java emits `invalid`.
+  ['structural-contained-not-referenced', 'invalid'],
+  // Contained resource without an id — Java emits `invalid` ("Resource
+  // requires an id, but none is present").
+  ['structural-contained-id-missing', 'invalid'],
   ['structural-', 'structure'],
 
   // Profile
@@ -95,6 +84,9 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   // Java emits `structure` for "definition allows for the types […] but
   // found type X" (see ips-htmlrefs-backwards baseline).
   ['profile-extension-wrong-value-type', 'structure'],
+  // Extension used outside its declared contexts — Java emits `structure`
+  // (see R4.ext-ctxt-bad-active-base baseline).
+  ['profile-extension-context-wrong', 'structure'],
   ['profile-extension-', 'extension'],
   ['profile-slicing-', 'structure'],
   ['profile-mustsupport-', 'structure'],
@@ -105,7 +97,9 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['profile-', 'invalid'],
 
   // Terminology
+  ['terminology-codesystem-url-not-absolute', 'invalid'],
   ['terminology-codesystem-unresolvable', 'not-found'],
+  ['terminology-display-mismatch', 'invalid'],
   ['terminology-binding-', 'code-invalid'],
   ['terminology-valueset-', 'code-invalid'],
   ['terminology-', 'code-invalid'],
@@ -180,9 +174,14 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   // — see bundle-ea-testcase baseline).
   ['bundle-entry-missing-fullurl', 'required'],
   ['bundle-duplicate-entry', 'invalid'],
+  // Repeated Bundle.link relation — Java emits `invalid` ("The link
+  // relationship type … can only occur once").
+  ['bundle-link-relation-duplicate', 'invalid'],
   // Reachability orphan diagnostic — Java emits these as `informational`
   // even though the severity is error.
   ['bundle-entry-not-reachable', 'informational'],
+  ['bundle-narrative-link-target-not-found', 'not-found'],
+  ['bundle-narrative-link-target-ambiguous', 'invalid'],
   ['bundle-', 'business-rule'],
 
   // Invariant (FHIRPath constraints)
@@ -190,7 +189,8 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
 
   // Terminology resource business rules (CodeSystem/ValueSet canonical URLs,
   // caseSensitive, concept definitions, compose.include validation)
-  ['terminology-display-mismatch', 'invalid'],
+  ['narrative-hyperlink-target-not-found', 'invalid'],
+  ['ele-1-violation', 'invariant'],
   ['tx-codesystem-url-not-absolute', 'invalid'],
   ['tx-codesystem-url-invalid-uuid', 'invalid'],
   ['tx-codesystem-missing-casesensitive', 'business-rule'],
@@ -241,7 +241,31 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   // disallowed-element/attribute diagnostics — Java emits this as
   // `invariant` (see ips-htmlrefs-* baselines).
   ['narrative-txt1-violation', 'invariant'],
+  // `txt-2` (non-whitespace narrative content) is likewise an invariant
+  // failure in the Java reference validator.
+  ['narrative-txt2-violation', 'invariant'],
   ['narrative-', 'invalid'],
+
+  // Year-plausibility lint on date/dateTime/instant primitives — Java
+  // emits Type_Specific_Checks_DT_DateTime_Reasonable as `invalid`.
+  ['date-year-implausible', 'invalid'],
+
+  // Decimal magnitude lint — Java emits
+  // Type_Specific_Checks_DT_Decimal_Range as `value` (see obs-decimal
+  // baseline).
+  ['decimal-value-out-of-range', 'value'],
+
+  // Resource.language BCP-47/IANA-registry lint — Java surfaces an invalid
+  // tag through the displayLanguage plumbing as a `processing` error, but the
+  // substance is an invalid coded value.
+  ['language-code-invalid', 'code-invalid'],
+
+  // String lexical lints — Java emits its whitespace-padding, all-whitespace
+  // and illegal-XML-character diagnostics as `invalid` (see params-ws and
+  // unicode-control-chars-json baselines).
+  ['string-whitespace-padding', 'invalid'],
+  ['string-whitespace-only', 'invalid'],
+  ['string-illegal-xml-chars', 'invalid'],
 
   // Canonical resource name-as-identifier invariants (mea-0, cnl-0, …)
   ['canonical-resource-invariant-', 'invariant'],
@@ -266,40 +290,7 @@ const PREFIX_TO_HL7_ISSUE_TYPE: Array<[string, Hl7IssueType]> = [
   ['harness-exception', 'exception'],
 
   // Questionnaire / QuestionnaireResponse
-  ['questionnaire-invariant-', 'invariant'],
-  ['questionnaire-reference-wrong-type', 'invalid'],
-  ['questionnaire-missing-', 'structure'],
-  ['questionnaire-duplicate-', 'invariant'],
-  // SDC minOccurs/maxOccurs → invalid (Java uses code=invalid for count violations)
-  ['questionnaire-sdc-maxoccurs', 'invalid'],
-  ['questionnaire-sdc-minoccurs', 'invalid'],
-  // SDC extensions (minValue / maxValue / minLength / maxLength / regex)
-  // use the `invariant` HL7 category because Java flags them as
-  // constraint violations (see R4.date-min-max-qr-base.json).
-  ['questionnaire-sdc-', 'invariant'],
-  ['questionnaire-', 'structure'],
-  ['qr-missing-', 'structure'],
-  // Coding answer display disagrees with the canonical display for the
-  // code (Java: code=invalid, e.g. "Wrong Display Name 'Australia' for
-  // http://hl7.org/fhir/item-type#string. Valid display is 'String'").
-  ['qr-display-mismatch', 'invalid'],
-  // Coding answer's code is not in the ValueSet bound via answerValueSet
-  // (Java: code=code-invalid, paired with display-mismatch when both apply).
-  ['qr-code-not-in-valueset', 'code-invalid'],
-  // Java treats QR answer option mismatches as invariant failures
-  // (e.g. "The code http://example.org::c3 is not in the set of
-  // permitted values", see choice-answer-option-qr baseline).
-  ['qr-invalid-option', 'invariant'],
-  ['qr-exclusive-option', 'invariant'],
-  // Java treats QR answer type mismatches as invariant failures against
-  // the item's declared type (see date-invalid-type-qr baseline).
-  ['qr-type-mismatch', 'invariant'],
-  // Non-repeating items with multiple answers (Java: code=invalid)
-  ['qr-repeats-violation', 'invalid'],
-  // Required group with no sub-items (Java: code=invariant)
-  ['qr-required-group', 'invariant'],
-  ['qr-unknown-linkid', 'structure'],
-  ['qr-', 'structure'],
+  ...QUESTIONNAIRE_PREFIX_TO_HL7_ISSUE_TYPE,
 ];
 
 /** HL7 issue-type CodeSystem URI */
@@ -335,23 +326,4 @@ export function mapToHl7IssueType(code: string | undefined): Hl7IssueType {
   if (code.includes('timeout')) return 'timeout';
 
   return 'processing';
-}
-
-/**
- * Normalize Records severity to HL7 OperationOutcome severity.
- * Records uses 'info' internally; HL7 requires 'information'.
- * Records uses 'inherit'; map to 'warning' as safe default.
- */
-export function normalizeToHl7Severity(
-  severity: string | undefined
-): 'fatal' | 'error' | 'warning' | 'information' {
-  switch (severity) {
-    case 'fatal': return 'fatal';
-    case 'error': return 'error';
-    case 'warning': return 'warning';
-    case 'information': return 'information';
-    case 'info': return 'information';
-    case 'inherit': return 'warning';
-    default: return 'information';
-  }
 }

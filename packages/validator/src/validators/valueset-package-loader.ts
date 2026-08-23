@@ -4,13 +4,11 @@
  * Loads ValueSet and CodeSystem resources from local FHIR packages.
  * Extracted from valueset-validator.ts for modularity.
  */
-import * as path from 'path';
-import * as os from 'os';
 import type {
     ValueSet,
     CodeSystem,
 } from './valueset-types';
-import { ValueSetCache, valueSetCache } from './valueset-cache';
+import { ValueSetCache } from './valueset-cache';
 import { logger } from '../logger';
 import { extractCodesFromCodeSystem } from './valueset-concept-utils';
 import {
@@ -18,15 +16,14 @@ import {
     preferredMajorFor,
     versionedCacheKey,
 } from './valueset-package-utils';
-import {
-    findResourceByCanonicalScan,
-    findResourceInPackages,
-} from './valueset-package-search';
+import { ValueSetPackageResourceAccess } from './valueset-package-resource-access';
 import {
     collectCodesFromValueSet,
     collectIncludeConceptFilters,
+    collectUnenumerableSystemIncludes,
     type ValueSetConceptFilter,
 } from './valueset-package-expansion';
+import { normalizeKnownCodeSystemCanonical } from './code-system-canonical-aliases';
 
 export type { ValueSetConceptFilter };
 
@@ -35,93 +32,26 @@ export type { ValueSetConceptFilter };
 // ============================================================================
 
 export class ValueSetPackageLoader {
-    private packageDirectories: string[];
     private missingCodeSystemKeys = new Set<string>();
     private pendingCodeSystemLoads = new Map<string, Promise<CodeSystem | null>>();
 
-    constructor(private cache: ValueSetCache = valueSetCache) {
-        this.packageDirectories = this.computePackageDirectories();
-    }
-
-    /**
-     * Determine package directories to search for ValueSet resources
-     */
-    private computePackageDirectories(): string[] {
-        const directories: string[] = [];
-
-        // Primary cache (allows override via env)
-        const envPath = process.env.FHIR_PACKAGE_CACHE_PATH;
-        if (envPath) {
-            directories.push(path.resolve(expandHomePath(envPath)));
-        } else {
-            directories.push(path.join(os.homedir(), '.fhir', 'packages'));
-        }
-
-        // Bundled packages shipped with the application
-        directories.push(path.join(process.cwd(), 'server', 'data', 'fhir-packages'));
-
-        // Current workspace package bundle used by the local validator and
-        // conformance tooling.
-        directories.push(path.join(process.cwd(), 'packages', 'bundled-profiles', 'storage', 'profiles', 'bundled'));
-
-        // Legacy bundled IG location kept for server-side deployments.
-        directories.push(path.join(process.cwd(), 'server', 'data', 'bundled-igs'));
-
-        // Bundled profiles (FHIR R4 Core, IGs, etc.)
-        directories.push(path.join(process.cwd(), 'server', 'storage', 'profiles', 'bundled'));
-
-        // Deduplicate while preserving order
-        return Array.from(new Set(directories));
-    }
+    constructor(
+        private cache: ValueSetCache = new ValueSetCache(),
+        private readonly packageResources = new ValueSetPackageResourceAccess(),
+    ) {}
 
     /**
      * Get package directories (for testing)
      */
     getPackageDirectories(): string[] {
-        return [...this.packageDirectories];
+        return this.packageResources.getPackageDirectories();
     }
 
     /** Clear loader-local negative/single-flight state after packages change. */
     clearLookupState(): void {
+        this.packageResources.clear();
         this.missingCodeSystemKeys.clear();
         this.pendingCodeSystemLoads.clear();
-    }
-
-    /**
-     * Scan all package directories for a FHIR resource matching the given
-     * canonical URL. When `preferredFhirMajor` is set, prefer packages whose
-     * directory name contains the FHIR version (e.g. "r5"). When
-     * `requestedVersion` is set, an exact match on `resource.version` wins
-     * immediately.
-     */
-    private async findInPackages<T extends { url?: string; version?: string }>(
-        canonical: string,
-        candidateFiles: string[],
-        preferredFhirMajor?: string,
-        requestedVersion?: string,
-    ): Promise<T | null> {
-        return findResourceInPackages(
-            this.packageDirectories,
-            canonical,
-            candidateFiles,
-            preferredFhirMajor,
-            requestedVersion,
-        );
-    }
-
-    private async findByCanonicalScan<T extends { url?: string; version?: string }>(
-        canonical: string,
-        filePrefix: string,
-        preferredFhirMajor?: string,
-        requestedVersion?: string,
-    ): Promise<T | null> {
-        return findResourceByCanonicalScan(
-            this.packageDirectories,
-            canonical,
-            filePrefix,
-            preferredFhirMajor,
-            requestedVersion,
-        );
     }
 
     /**
@@ -139,13 +69,9 @@ export class ValueSetPackageLoader {
         const lastSegment = canonical.split('/').pop();
         if (!lastSegment) { this.cache.setValueSetFile(cacheKey, null); return null; }
         const preferredMajor = requestedVersion ? requestedVersion.split('.')[0] : preferredMajorFor(fhirVersion);
-        const bestMatch = await this.findInPackages<ValueSet>(
+        const bestMatch = await this.packageResources.findResource<ValueSet>(
             canonical,
             [`ValueSet-${lastSegment}.json`, `${lastSegment}.json`],
-            preferredMajor,
-            requestedVersion,
-        ) ?? await this.findByCanonicalScan<ValueSet>(
-            canonical,
             'ValueSet',
             preferredMajor,
             requestedVersion,
@@ -168,6 +94,19 @@ export class ValueSetPackageLoader {
         if (!valueSet) return [];
 
         return collectIncludeConceptFilters(valueSet, this, new Set(), 0, preferredMajorFor(fhirVersion));
+    }
+
+    /**
+     * Return systems the ValueSet includes whole-system whose CodeSystem the
+     * local package stores cannot enumerate (absent, wrong pinned version, or
+     * non-complete content). The local expansion is provably incomplete for
+     * those systems, so a membership miss against them is not authoritative.
+     */
+    async getUnenumerableSystemIncludes(valueSetUrl: string, fhirVersion?: FhirVersion): Promise<string[]> {
+        const valueSet = await this.loadValueSetResource(valueSetUrl, fhirVersion);
+        if (!valueSet) return [];
+
+        return collectUnenumerableSystemIncludes(valueSet, this, new Set(), 0, preferredMajorFor(fhirVersion));
     }
 
     /**
@@ -214,20 +153,17 @@ export class ValueSetPackageLoader {
         preferredFhirMajor?: string,
         requestedVersion?: string,
     ): Promise<CodeSystem | null> {
-        const canonical = systemUrl.split('|')[0];
+        const requestedCanonical = systemUrl.split('|')[0];
+        const canonical = normalizeKnownCodeSystemCanonical(requestedCanonical);
         const lastSegment = canonical.split('/').pop();
         if (!lastSegment) {
             this.cache.setCodeSystemFile(cacheKey, null);
             this.missingCodeSystemKeys.add(cacheKey);
             return null;
         }
-        const bestMatch = await this.findInPackages<CodeSystem>(
+        const bestMatch = await this.packageResources.findResource<CodeSystem>(
             canonical,
             [`CodeSystem-${lastSegment}.json`, `${lastSegment}.json`],
-            preferredFhirMajor,
-            requestedVersion,
-        ) ?? await this.findByCanonicalScan<CodeSystem>(
-            canonical,
             'CodeSystem',
             preferredFhirMajor,
             requestedVersion,
@@ -236,6 +172,8 @@ export class ValueSetPackageLoader {
             this.missingCodeSystemKeys.delete(cacheKey);
             this.cache.setCodeSystemFile(cacheKey, bestMatch);
             this.cache.setCodeSystem(cacheKey, bestMatch);
+            this.cache.setCodeSystemFile(requestedCanonical, bestMatch);
+            this.cache.setCodeSystem(requestedCanonical, bestMatch);
             this.cache.setCodeSystemFile(canonical, bestMatch);
             this.cache.setCodeSystem(canonical, bestMatch);
             return bestMatch;
@@ -292,13 +230,9 @@ export class ValueSetPackageLoader {
             return null;
         }
         const preferredMajor = requestedVersion ? requestedVersion.split('.')[0] : preferredMajorFor(fhirVersion);
-        const result = await this.findInPackages<ValueSet>(
+        const result = await this.packageResources.findResource<ValueSet>(
             canonical,
             [`ValueSet-${lastSegment}.json`, `${lastSegment}.json`],
-            preferredMajor,
-            requestedVersion,
-        ) ?? await this.findByCanonicalScan<ValueSet>(
-            canonical,
             'ValueSet',
             preferredMajor,
             requestedVersion,
@@ -317,17 +251,4 @@ export class ValueSetPackageLoader {
     extractCodesFromCodeSystem(codeSystem: CodeSystem): string[] {
         return extractCodesFromCodeSystem(codeSystem);
     }
-}
-
-function expandHomePath(pathStr: string): string {
-    if (pathStr.startsWith('$HOME/') || pathStr.startsWith('$HOME\\')) {
-        return pathStr.replace('$HOME', process.env.HOME || os.homedir() || '/tmp');
-    }
-    if (pathStr.startsWith('${HOME}/') || pathStr.startsWith('${HOME}\\')) {
-        return pathStr.replace('${HOME}', process.env.HOME || os.homedir() || '/tmp');
-    }
-    if (pathStr.startsWith('~/')) {
-        return pathStr.replace('~', process.env.HOME || os.homedir() || '/tmp');
-    }
-    return pathStr;
 }

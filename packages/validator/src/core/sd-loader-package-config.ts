@@ -20,6 +20,7 @@ export function parseAllowedPackages(): string[] {
       'hl7.fhir.r5.core',
       'hl7.fhir.uv.sdc',
       'de.basisprofil.r4',
+      'de.einwilligungsmanagement',
       'de.gematik.isik-basismodul',
       'kbv.basis',
       'kbv.ita.eau',

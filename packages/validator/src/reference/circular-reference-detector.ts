@@ -43,17 +43,16 @@ export class CircularReferenceDetector {
   private visitedNodes: Set<string> = new Set();
   private currentPath: string[] = [];
   private maxDepthLimit: number;
-  private visitedObjects: WeakSet<object> = new WeakSet(); // Track visited objects to prevent infinite recursion
 
   constructor(maxDepthLimit: number = 10) {
-    this.maxDepthLimit = maxDepthLimit;
+    this.maxDepthLimit = normalizeDepthLimit(maxDepthLimit);
   }
 
   /**
    * Detect circular references in a resource or Bundle
    */
   detectCircularReferences(
-    resource: any,
+    resource: unknown,
     _startingReferences?: string[]
   ): CircularReferenceDetectionResult {
     // Handle null/undefined gracefully
@@ -68,7 +67,7 @@ export class CircularReferenceDetector {
     this.reset();
 
     // Build reference graph
-    const graph = buildReferenceGraph(resource, this.visitedObjects);
+    const graph = buildReferenceGraph(resource);
 
     // Find circular references using DFS
     const circularChains: string[][] = [];
@@ -96,7 +95,8 @@ export class CircularReferenceDetector {
     return {
       hasCircularReference: circularChains.length > 0,
       circularChain: circularChains[0] || undefined,
-      totalReferences: graph.nodes.size,
+      totalReferences: Array.from(graph.adjacencyList.values())
+        .reduce((total, references) => total + references.size, 0),
       maxDepth,
       referenceChains: circularChains.length > 0 ? circularChains : undefined,
     };
@@ -148,7 +148,9 @@ export class CircularReferenceDetector {
 
     // Check depth limit
     if (this.currentPath.length >= this.maxDepthLimit) {
-      logger.warn(`[CircularReferenceDetector] Max depth ${this.maxDepthLimit} reached at node ${nodeId}`);
+      logger.warn('[CircularReferenceDetector] Maximum traversal depth reached', {
+        maxDepth: this.maxDepthLimit,
+      });
       return;
     }
 
@@ -184,7 +186,6 @@ export class CircularReferenceDetector {
   private reset(): void {
     this.visitedNodes.clear();
     this.currentPath = [];
-    this.visitedObjects = new WeakSet(); // Reset object tracking
   }
 
   /**
@@ -205,7 +206,7 @@ export class CircularReferenceDetector {
    * Set maximum depth limit
    */
   setMaxDepthLimit(limit: number): void {
-    this.maxDepthLimit = limit;
+    this.maxDepthLimit = normalizeDepthLimit(limit);
   }
 
   /**
@@ -278,20 +279,15 @@ export class CircularReferenceDetector {
   }
 }
 
-// ============================================================================
-// Singleton Instance
-// ============================================================================
-
-let detectorInstance: CircularReferenceDetector | null = null;
+function normalizeDepthLimit(limit: number): number {
+  if (!Number.isFinite(limit)) return 10;
+  return Math.min(Math.max(Math.trunc(limit), 1), 100);
+}
 
 export function getCircularReferenceDetector(maxDepth?: number): CircularReferenceDetector {
-  if (!detectorInstance) {
-    detectorInstance = new CircularReferenceDetector(maxDepth);
-  }
-  return detectorInstance;
+  return new CircularReferenceDetector(maxDepth);
 }
 
 export function resetCircularReferenceDetector(): void {
-  detectorInstance = null;
+  // Compatibility no-op: detector instances are caller-owned.
 }
-

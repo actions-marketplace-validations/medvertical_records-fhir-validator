@@ -1,28 +1,27 @@
 import { extractBundleEntries } from './bundle-reference-finder';
-import type { BundleEntry } from './bundle-reference-types';
+import type { BundleEntry, FhirResourceRecord } from './bundle-reference-types';
 
-export function getAllBundleResources(bundle: any): any[] {
+export function getAllBundleResources(bundle: unknown): FhirResourceRecord[] {
   return extractBundleEntries(bundle)
-    .filter(entry => entry.resource)
-    .map(entry => entry.resource);
+    .flatMap(entry => entry.resource ? [entry.resource] : []);
 }
 
-export function findEntryByFullUrl(bundle: any, fullUrl: string): BundleEntry | null {
+export function findEntryByFullUrl(bundle: unknown, fullUrl: string): BundleEntry | null {
   return extractBundleEntries(bundle).find(entry => entry.fullUrl === fullUrl) || null;
 }
 
 export function findEntryByResourceTypeAndId(
-  bundle: any,
+  bundle: unknown,
   resourceType: string,
   resourceId: string
 ): BundleEntry | null {
   return extractBundleEntries(bundle).find(entry =>
-    entry.resource?.resourceType === resourceType &&
-    entry.resource?.id === resourceId
+    getString(entry.resource, 'resourceType') === resourceType &&
+    getString(entry.resource, 'id') === resourceId
   ) || null;
 }
 
-export function buildFullUrlIndex(bundle: any): Map<string, BundleEntry> {
+export function buildFullUrlIndex(bundle: unknown): Map<string, BundleEntry> {
   const index = new Map<string, BundleEntry>();
 
   extractBundleEntries(bundle).forEach(entry => {
@@ -30,11 +29,18 @@ export function buildFullUrlIndex(bundle: any): Map<string, BundleEntry> {
       index.set(entry.fullUrl, entry);
     }
 
-    if (entry.resource?.resourceType && entry.resource?.id) {
-      const relativeUrl = `${entry.resource.resourceType}/${entry.resource.id}`;
+    const resourceType = getString(entry.resource, 'resourceType');
+    const resourceId = getString(entry.resource, 'id');
+    if (resourceType && resourceId) {
+      const relativeUrl = `${resourceType}/${resourceId}`;
       index.set(relativeUrl, entry);
     }
   });
 
   return index;
+}
+
+function getString(resource: FhirResourceRecord | undefined, key: string): string | undefined {
+  const value = resource?.[key];
+  return typeof value === 'string' ? value : undefined;
 }

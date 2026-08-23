@@ -112,7 +112,7 @@ export class EarlyTerminationValidator {
      * Check if validation should continue
      * Returns immediately on critical failures
      */
-    check(resource: any): EarlyTerminationResult {
+    check(resource: unknown): EarlyTerminationResult {
         const issues: ValidationIssue[] = [];
 
         logger.debug('[EarlyTermination] Running pre-flight checks');
@@ -123,9 +123,12 @@ export class EarlyTerminationValidator {
         }
 
         // 2. Check if resource is an object
-        if (typeof resource !== 'object' || Array.isArray(resource)) {
+        if (!isRecord(resource)) {
             return this.fatalResult('early-termination-not-object', '', 'Unknown', 'Resource must be a JSON object, not an array or primitive', 'not-object');
         }
+        const resourceType = typeof resource.resourceType === 'string'
+            ? resource.resourceType
+            : undefined;
 
         // 3. Check for empty object
         if (this.config.rejectEmpty && Object.keys(resource).length === 0) {
@@ -133,17 +136,17 @@ export class EarlyTerminationValidator {
         }
 
         // 4. Check resourceType presence
-        if (this.config.requireResourceType && !resource.resourceType) {
+        if (this.config.requireResourceType && !resourceType) {
             return this.fatalResult('early-termination-missing-resourcetype', 'resourceType', 'Unknown', 'Missing required field: resourceType', 'missing-resourceType');
         }
 
         // 5. Check resourceType validity
-        if (resource.resourceType && !FHIR_R4_RESOURCE_TYPES.has(resource.resourceType)) {
+        if (resourceType && !FHIR_R4_RESOURCE_TYPES.has(resourceType)) {
             issues.push(createValidationIssue({
                 code: 'early-termination-unknown-resourcetype',
                 path: 'resourceType',
-                resourceType: resource.resourceType,
-                customMessage: `Unknown resource type: '${resource.resourceType}'`,
+                resourceType,
+                customMessage: `Unknown resource type: '${resourceType}'`,
                 severityOverride: 'error',
             }));
             // Don't terminate on unknown type - might be R5/R6 or custom
@@ -154,7 +157,7 @@ export class EarlyTerminationValidator {
             issues.push(createValidationIssue({
                 code: 'early-termination-missing-id',
                 path: 'id',
-                resourceType: resource.resourceType || 'Unknown',
+                resourceType: resourceType || 'Unknown',
                 customMessage: 'Missing required field: id',
                 severityOverride: 'error',
             }));
@@ -169,7 +172,7 @@ export class EarlyTerminationValidator {
                 return this.fatalResult(
                     'early-termination-resource-too-large',
                     '',
-                    resource.resourceType || 'Unknown',
+                    resourceType || 'Unknown',
                     `Resource exceeds maximum size (${actualSize}MB > ${maxSize}MB)`,
                     'size-exceeded'
                 );
@@ -206,13 +209,15 @@ export class EarlyTerminationValidator {
         };
     }
 
-    private checkRequiredFields(resource: any): ValidationIssue[] {
+    private checkRequiredFields(resource: Record<string, unknown>): ValidationIssue[] {
         return (this.config.requiredFields ?? []).flatMap(field => {
             if (resource[field] !== undefined && resource[field] !== null) return [];
             return [createValidationIssue({
                 code: 'early-termination-missing-required',
                 path: field,
-                resourceType: resource.resourceType || 'Unknown',
+                resourceType: typeof resource.resourceType === 'string'
+                    ? resource.resourceType
+                    : 'Unknown',
                 customMessage: `Missing required field: ${field}`,
                 severityOverride: 'error',
             })];
@@ -222,15 +227,9 @@ export class EarlyTerminationValidator {
     /**
      * Quick check for minimal validity (fastest possible)
      */
-    isMinimallyValid(resource: any): boolean {
-        return (
-            resource !== null &&
-            resource !== undefined &&
-            typeof resource === 'object' &&
-            !Array.isArray(resource) &&
-            typeof resource.resourceType === 'string' &&
-            resource.resourceType.length > 0
-        );
+    isMinimallyValid(resource: unknown): boolean {
+        if (!isRecord(resource)) return false;
+        return typeof resource.resourceType === 'string' && resource.resourceType.length > 0;
     }
 
     /**
@@ -241,5 +240,6 @@ export class EarlyTerminationValidator {
     }
 }
 
-// Singleton
-export const earlyTerminationValidator = new EarlyTerminationValidator();
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}

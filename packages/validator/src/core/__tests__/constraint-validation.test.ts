@@ -106,6 +106,26 @@ describe('Constraint Validation', () => {
       expect(issues.find(issue => issue.code === 'profile-constraint-evaluation-error')).toBeUndefined();
     }, 120000);
 
+    it('should pass dom-3 when a contained resource refers to its container', async () => {
+      const resourceWithContainerReference = {
+        resourceType: 'Patient',
+        id: 'test-patient',
+        contained: [{
+          resourceType: 'Provenance',
+          id: 'provenance',
+          target: [{ reference: '#' }],
+        }],
+      };
+
+      const issues = await constraintValidator.validate(
+        resourceWithContainerReference,
+        PATIENT_ELEMENTS_WITH_CONSTRAINTS,
+        'http://hl7.org/fhir/StructureDefinition/Patient',
+      );
+
+      expect(findConstraintIssue(issues, 'dom-3')).toBeUndefined();
+    }, 120000);
+
     it('should evaluate dom-4: contained resources should not have meta.versionId', async () => {
       const resourceWithContainedVersionId = {
         resourceType: 'Patient',

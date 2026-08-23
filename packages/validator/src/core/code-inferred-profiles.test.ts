@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { inferCodeBasedProfiles } from './code-inferred-profiles';
+import { inferCodeBasedProfiles, matchCodeInferredProfile } from './code-inferred-profiles';
 
 describe('inferCodeBasedProfiles', () => {
   it.each([
@@ -39,5 +39,33 @@ describe('inferCodeBasedProfiles', () => {
         ],
       },
     })).toEqual(['http://hl7.org/fhir/StructureDefinition/bodytemp']);
+  });
+});
+
+describe('matchCodeInferredProfile', () => {
+  it('reports the triggering coding alongside the implied profile', () => {
+    expect(matchCodeInferredProfile({
+      resourceType: 'Observation',
+      code: { coding: [{ system: 'http://loinc.org', code: '8480-6' }] },
+    })).toEqual({
+      profileUrl: 'http://hl7.org/fhir/StructureDefinition/bp',
+      system: 'http://loinc.org',
+      code: '8480-6',
+    });
+  });
+
+  it('does not infer bp from the diastolic-only code 8462-4, matching the reference table', () => {
+    // Deliberate upstream parity: the HL7 implied-profiles table lists the
+    // systolic code 8480-6 but not the diastolic 8462-4.
+    expect(matchCodeInferredProfile({
+      resourceType: 'Observation',
+      code: { coding: [{ system: 'http://loinc.org', code: '8462-4' }] },
+    })).toBeNull();
+  });
+
+  it('stays aligned with inferCodeBasedProfiles for non-Observation resources', () => {
+    const patient = { resourceType: 'Patient' };
+    expect(matchCodeInferredProfile(patient)).toBeNull();
+    expect(inferCodeBasedProfiles(patient)).toEqual([]);
   });
 });

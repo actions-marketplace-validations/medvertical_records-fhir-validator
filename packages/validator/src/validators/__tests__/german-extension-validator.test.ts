@@ -140,4 +140,14 @@ describe('GermanExtensionValidator', () => {
             expect(validator.isGermanProfile('https://fhir.hl7.org.uk/StructureDefinition/UKCore-Patient')).toBe(false);
         });
     });
+
+    it('handles malformed Patient extension arrays without throwing', () => {
+        expect(validator.validateExtensions(null, 'http://fhir.de/profile/Patient')).toEqual([]);
+        expect(validator.validateExtensions({
+            resourceType: 'Patient',
+            gender: 'other',
+            extension: [null, 42],
+            _gender: { extension: 'malformed' },
+        }, 'http://fhir.de/profile/Patient')).toHaveLength(1);
+    });
 });

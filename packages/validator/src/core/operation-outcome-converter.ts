@@ -10,6 +10,8 @@
  */
 
 import type { ValidationIssue } from '../types';
+import { computeValidationIssueId } from '@records-fhir/validation-types';
+import { getCodeMetadata } from '../issues/message-catalog';
 import {
   HL7_ISSUE_TYPE_SYSTEM,
   RECORDS_CODE_SYSTEM,
@@ -131,32 +133,15 @@ export function toOperationOutcome(
  * Inverse of toOperationOutcome() — used for parsing external validator output.
  */
 export function fromOperationOutcome(
-  outcome: FhirOperationOutcome
+  outcome: unknown,
 ): ValidationIssue[] {
-  if (!outcome?.issue) return [];
+  const outcomeRecord = asRecord(outcome);
+  if (!outcomeRecord || !Array.isArray(outcomeRecord.issue)) return [];
 
-  return outcome.issue.map((ooIssue, index) => {
-    // Try to extract Records-specific code from details.coding
-    const recordsCode = ooIssue.details?.coding?.find(
-      c => c.system === RECORDS_CODE_SYSTEM
-    )?.code;
-
-    // Determine aspect from code prefix or HL7 code
-    const aspect = recordsCode
-      ? (recordsCode.split('-')[0] as ValidationIssue['aspect']) || 'structural'
-      : mapHl7CodeToAspect(ooIssue.code);
-
-    return {
-      id: `oo-${index}-${Date.now()}`,
-      aspect,
-      severity: ooIssue.severity === 'information' ? 'info' : ooIssue.severity,
-      code: recordsCode || ooIssue.code,
-      message: ooIssue.diagnostics || ooIssue.details?.text || '',
-      path: ooIssue.expression?.[0] || ooIssue.location?.[0] || '',
-      expression: ooIssue.expression?.[0],
-      humanReadable: ooIssue.details?.text,
-      timestamp: new Date(),
-    } as ValidationIssue;
+  return outcomeRecord.issue.flatMap(candidate => {
+    const ooIssue = asRecord(candidate);
+    if (!ooIssue) return [];
+    return [operationOutcomeIssueToValidationIssue(ooIssue)];
   });
 }
 
@@ -168,23 +153,119 @@ export function fromOperationOutcome(
  * the schema and service layer DetailedValidationResult variants.
  */
 export function detailedResultToOperationOutcome(
-  result: { issues?: Array<Partial<ValidationIssue>> }
+  result: unknown,
 ): FhirOperationOutcome {
-  if (!result.issues?.length) {
+  const resultRecord = asRecord(result);
+  if (!resultRecord || !Array.isArray(resultRecord.issues)) {
     return { resourceType: 'OperationOutcome', issue: [] };
   }
 
-  const mapped: ValidationIssue[] = result.issues.map(i => ({
-    aspect: i.aspect || 'structural',
-    severity: i.severity || 'info',
-    message: i.message || '',
-    path: i.path,
-    code: i.code,
-    expression: i.expression,
-    humanReadable: i.humanReadable,
-  }));
+  const mapped: ValidationIssue[] = resultRecord.issues.flatMap(candidate => {
+    const issue = asRecord(candidate);
+    if (!issue) return [];
+    return [{
+      aspect: stringValue(issue.aspect) ?? 'structural',
+      severity: normalizeImportedSeverity(issue.severity),
+      message: stringValue(issue.message) ?? '',
+      path: stringValue(issue.path),
+      code: stringValue(issue.code),
+      expression: stringValue(issue.expression),
+      humanReadable: stringValue(issue.humanReadable),
+    }];
+  });
 
   return toOperationOutcome(mapped);
+}
+
+function operationOutcomeIssueToValidationIssue(
+  ooIssue: Record<string, unknown>,
+): ValidationIssue {
+  const details = asRecord(ooIssue.details);
+  const recordsCode = getRecordsCode(details?.coding);
+  const hl7Code = stringValue(ooIssue.code) ?? 'processing';
+  const aspect = recordsCode
+    ? mapRecordsCodeToAspect(recordsCode, hl7Code)
+    : mapHl7CodeToAspect(hl7Code);
+  const severity = normalizeImportedSeverity(ooIssue.severity);
+  const message = stringValue(ooIssue.diagnostics) ?? stringValue(details?.text) ?? '';
+  const expression = firstString(ooIssue.expression);
+  const path = expression ?? firstString(ooIssue.location) ?? '';
+  const code = recordsCode ?? hl7Code;
+  const humanReadable = stringValue(details?.text);
+
+  return {
+    id: computeValidationIssueId({
+      aspect,
+      severity,
+      code,
+      message,
+      path,
+    }),
+    aspect,
+    severity,
+    code,
+    message,
+    path,
+    expression,
+    humanReadable,
+    timestamp: new Date(),
+  };
+}
+
+function getRecordsCode(codingValue: unknown): string | undefined {
+  if (!Array.isArray(codingValue)) return undefined;
+  for (const candidate of codingValue) {
+    const coding = asRecord(candidate);
+    if (
+      coding?.system === RECORDS_CODE_SYSTEM &&
+      typeof coding.code === 'string' &&
+      coding.code.length > 0
+    ) {
+      return coding.code;
+    }
+  }
+  return undefined;
+}
+
+function mapRecordsCodeToAspect(code: string, hl7Code: string): string {
+  const catalogAspect = getCodeMetadata(code)?.aspect;
+  if (catalogAspect) return catalogAspect;
+  if (/^(profile|constraint|slice|extension)-/.test(code)) return 'profile';
+  if (/^(terminology|binding|valueset|codesystem)-/.test(code)) return 'terminology';
+  if (code.startsWith('reference-')) return 'reference';
+  if (code.startsWith('metadata-')) return 'metadata';
+  if (/^(business|custom-rule)-/.test(code)) return 'custom_rule';
+  if (code.startsWith('invariant-')) return 'invariant';
+  if (/^(structural|bundle)-/.test(code)) return 'structural';
+  return mapHl7CodeToAspect(hl7Code);
+}
+
+function normalizeImportedSeverity(value: unknown): ValidationIssue['severity'] {
+  switch (value) {
+    case 'fatal':
+    case 'error':
+    case 'warning':
+    case 'info':
+      return value;
+    case 'information':
+    default:
+      return 'info';
+  }
+}
+
+function firstString(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.find(candidate => typeof candidate === 'string') as string | undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 /**

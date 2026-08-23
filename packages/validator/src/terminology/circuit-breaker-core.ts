@@ -5,6 +5,7 @@ import type {
   CircuitBreakerStats,
   CircuitState,
 } from './circuit-breaker-types';
+import { sensitiveValueMetadata } from '../utils/sensitive-logging-metadata';
 
 export class CircuitBreaker {
   private readonly serverId: string;
@@ -40,16 +41,16 @@ export class CircuitBreaker {
         return true;
 
       case 'OPEN':
-        logger.warn(
-          `[CircuitBreaker:${this.serverId}] Circuit OPEN, ` +
-          `rejecting request (${this.state.failureCount} failures)`
-        );
+        logger.warn('[CircuitBreaker] Circuit open; rejecting request', {
+          ...sensitiveValueMetadata(this.serverId),
+          failureCount: this.state.failureCount,
+        });
         return false;
 
       case 'HALF_OPEN':
         logger.info(
-          `[CircuitBreaker:${this.serverId}] Circuit HALF_OPEN, ` +
-          `allowing test request`
+          '[CircuitBreaker] Circuit half-open; allowing test request',
+          sensitiveValueMetadata(this.serverId),
         );
         return true;
     }
@@ -61,20 +62,21 @@ export class CircuitBreaker {
     switch (this.state.state) {
       case 'CLOSED':
         if (this.state.failureCount > 0) {
-          logger.info(
-            `[CircuitBreaker:${this.serverId}] Success, ` +
-            `resetting failure count from ${this.state.failureCount}`
-          );
+          logger.info('[CircuitBreaker] Success; resetting failure count', {
+            ...sensitiveValueMetadata(this.serverId),
+            failureCount: this.state.failureCount,
+          });
           this.state.failureCount = 0;
         }
         break;
 
       case 'HALF_OPEN':
         this.state.successCount++;
-        logger.info(
-          `[CircuitBreaker:${this.serverId}] HALF_OPEN success ` +
-          `(${this.state.successCount}/${this.config.successThreshold})`
-        );
+        logger.info('[CircuitBreaker] Half-open request succeeded', {
+          ...sensitiveValueMetadata(this.serverId),
+          successCount: this.state.successCount,
+          successThreshold: this.config.successThreshold,
+        });
 
         if (this.state.successCount >= this.config.successThreshold) {
           this.transitionToClosed();
@@ -83,8 +85,8 @@ export class CircuitBreaker {
 
       case 'OPEN':
         logger.warn(
-          `[CircuitBreaker:${this.serverId}] Success while OPEN ` +
-          `(unexpected state)`
+          '[CircuitBreaker] Success recorded while circuit open',
+          sensitiveValueMetadata(this.serverId),
         );
         break;
     }
@@ -97,10 +99,11 @@ export class CircuitBreaker {
     switch (this.state.state) {
       case 'CLOSED':
         this.state.failureCount++;
-        logger.warn(
-          `[CircuitBreaker:${this.serverId}] Failure ` +
-          `(${this.state.failureCount}/${this.config.failureThreshold})`
-        );
+        logger.warn('[CircuitBreaker] Failure recorded', {
+          ...sensitiveValueMetadata(this.serverId),
+          failureCount: this.state.failureCount,
+          failureThreshold: this.config.failureThreshold,
+        });
 
         if (this.state.failureCount >= this.config.failureThreshold) {
           this.transitionToOpen();
@@ -109,16 +112,16 @@ export class CircuitBreaker {
 
       case 'HALF_OPEN':
         logger.warn(
-          `[CircuitBreaker:${this.serverId}] HALF_OPEN test failed, ` +
-          `re-opening circuit`
+          '[CircuitBreaker] Half-open test failed; reopening circuit',
+          sensitiveValueMetadata(this.serverId),
         );
         this.transitionToOpen();
         break;
 
       case 'OPEN':
         logger.warn(
-          `[CircuitBreaker:${this.serverId}] Failure while OPEN ` +
-          `(circuit remains open)`
+          '[CircuitBreaker] Failure recorded while circuit remains open',
+          sensitiveValueMetadata(this.serverId),
         );
         break;
     }
@@ -138,7 +141,7 @@ export class CircuitBreaker {
   }
 
   reset(): void {
-    logger.info(`[CircuitBreaker:${this.serverId}] Manual reset`);
+    logger.info('[CircuitBreaker] Manual reset', sensitiveValueMetadata(this.serverId));
     this.transitionToClosed();
   }
 
@@ -163,10 +166,10 @@ export class CircuitBreaker {
   }
 
   private transitionToClosed(): void {
-    logger.info(
-      `[CircuitBreaker:${this.serverId}] Transitioning to CLOSED ` +
-      `(${this.totalSuccesses} total successes)`
-    );
+    logger.info('[CircuitBreaker] Transitioning to closed', {
+      ...sensitiveValueMetadata(this.serverId),
+      totalSuccesses: this.totalSuccesses,
+    });
 
     this.state = {
       state: 'CLOSED',
@@ -179,10 +182,10 @@ export class CircuitBreaker {
   }
 
   private transitionToOpen(): void {
-    logger.warn(
-      `[CircuitBreaker:${this.serverId}] Transitioning to OPEN ` +
-      `(${this.state.failureCount} consecutive failures)`
-    );
+    logger.warn('[CircuitBreaker] Transitioning to open', {
+      ...sensitiveValueMetadata(this.serverId),
+      failureCount: this.state.failureCount,
+    });
 
     this.state = {
       state: 'OPEN',
@@ -196,8 +199,8 @@ export class CircuitBreaker {
 
   private transitionToHalfOpen(): void {
     logger.info(
-      `[CircuitBreaker:${this.serverId}] Transitioning to HALF_OPEN ` +
-      `(testing recovery)`
+      '[CircuitBreaker] Transitioning to half-open',
+      sensitiveValueMetadata(this.serverId),
     );
 
     this.state = {

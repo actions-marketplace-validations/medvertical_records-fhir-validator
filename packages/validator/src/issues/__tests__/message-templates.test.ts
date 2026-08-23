@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatMessage } from '../message-templates.js';
+import { interpolateMessageTemplate } from '../message-template-interpolation.js';
 
 describe('profile message templates', () => {
   it('describes fixed-value mismatches with their path and values', () => {
@@ -10,5 +11,10 @@ describe('profile message templates', () => {
     })).toBe(
       'Element Location.status must match the fixed profile value "active"; found "inactive"',
     );
+  });
+
+  it('treats placeholder names as literals rather than regular expressions', () => {
+    expect(interpolateMessageTemplate('Value {[} / {[}', { '[': 'safe' }))
+      .toBe('Value safe / safe');
   });
 });

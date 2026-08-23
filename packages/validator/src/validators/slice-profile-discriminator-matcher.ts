@@ -4,22 +4,27 @@ import {
   getTypeSpecsForDiscriminator,
   stripCanonicalVersion,
 } from './slice-type-discriminator';
+import { matchWholeElementChildConstraints } from './slice-discriminator-constraints';
+import { declaredProfileAncestryContains } from './slice-profile-ancestry';
 import { logger } from '../logger';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
-export type ReferenceResolverFn = ((ref: string) => any | null) | null;
+export type ReferenceResolverFn = ((ref: string) => unknown | null) | null;
+type PatternMatcherFn = ((value: unknown, pattern: unknown) => boolean) | null;
 
 export function matchProfileDiscriminator(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   path: string,
   referenceResolver: ReferenceResolverFn,
   allSlices?: SliceDefinition[],
+  matchesPattern?: PatternMatcherFn,
 ): boolean {
   const typeSpecs = getTypeSpecsForDiscriminator(slice, path);
   if (typeSpecs.length === 0) return false;
 
   const value = getValueAtPath(element, path);
-  if (!value || typeof value !== 'object') return false;
+  const values = Array.isArray(value) ? value : [value];
 
   const requiredProfiles: string[] = [];
   const allowedTypeCodes: string[] = [];
@@ -29,21 +34,54 @@ export function matchProfileDiscriminator(
     if (typeSpec.targetProfile && typeSpec.targetProfile.length > 0) requiredProfiles.push(...typeSpec.targetProfile);
   }
 
-  if (value.meta && value.meta.profile && requiredProfiles.length > 0) {
-    const profiles = toProfileArray(value.meta.profile);
+  return values.some(candidate => matchProfileValue(
+    candidate,
+    requiredProfiles,
+    allowedTypeCodes,
+    slice,
+    path,
+    referenceResolver,
+    allSlices,
+    matchesPattern ?? null,
+  ));
+}
+
+function matchProfileValue(
+  value: unknown,
+  requiredProfiles: string[],
+  allowedTypeCodes: string[],
+  slice: SliceDefinition,
+  path: string,
+  referenceResolver: ReferenceResolverFn,
+  allSlices?: SliceDefinition[],
+  matchesPattern: PatternMatcherFn = null,
+): boolean {
+  if (!isObjectRecord(value)) return false;
+
+  const meta = isObjectRecord(value.meta) ? value.meta : null;
+  if (meta && requiredProfiles.length > 0) {
+    const profiles = toProfileArray(meta.profile);
     if (profiles.some(profile => profileListContains(requiredProfiles, profile))) return true;
+    // A declared profile DERIVED from the required one still conforms to it
+    // (e.g. MHD Comprehensive.Folder vs the slice's Minimal.Folder).
+    if (declaredProfileAncestryContains(value, requiredProfiles)) return true;
   }
 
   if (typeof value.reference === 'string' && referenceResolver && requiredProfiles.length > 0) {
     try {
       const referenced = referenceResolver(value.reference);
-      if (referenced?.meta?.profile) {
-        const profiles = toProfileArray(referenced.meta.profile);
+      const referencedMeta = isObjectRecord(referenced) && isObjectRecord(referenced.meta)
+        ? referenced.meta
+        : null;
+      if (referencedMeta) {
+        const profiles = toProfileArray(referencedMeta.profile);
         if (profiles.some(profile => profileListContains(requiredProfiles, profile))) return true;
       }
     } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.debug(`[SlicingValidator] Reference resolver threw: ${err.message}`);
+      logger.debug(
+        '[SlicingValidator] Reference resolver threw',
+        validationFailureMetadata(error),
+      );
     }
   }
 
@@ -52,6 +90,14 @@ export function matchProfileDiscriminator(
         typeCodesAreDistinguishing(slice, path, allSlices)) {
       return true;
     }
+  }
+
+  // Datatype values (e.g. UsageContext) carry no meta.profile, so membership
+  // in a datatype profile is decided by the profile's own pattern/fixed
+  // constraints, merged into the slice's child maps at extraction time.
+  if (matchesPattern && typeof value.resourceType !== 'string') {
+    const childMatch = matchWholeElementChildConstraints(value, slice, matchesPattern);
+    if (childMatch !== null) return childMatch;
   }
 
   return false;
@@ -100,4 +146,8 @@ export function profileListContains(profiles: string[], requestedProfile: string
 
 function profilesMatch(left: string, right: string): boolean {
   return left === right || stripCanonicalVersion(left) === stripCanonicalVersion(right);
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

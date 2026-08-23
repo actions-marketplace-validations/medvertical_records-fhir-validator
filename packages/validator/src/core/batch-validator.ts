@@ -15,10 +15,14 @@ import { logger } from '../logger';
 import {
   deduplicateResources,
   groupResourcesByProfile,
-  preloadProfiles
-} from './batch-utils';
+} from './batch-resource-planning';
+import { preloadProfiles } from './profile-batch-preloader';
 import { createValidationErrorIssue as _createValidationErrorIssue } from './validation-utils';
 import type { ProfileSourceContext } from '../persistence';
+import { operationalResourceReference } from '../utils/sensitive-logging-metadata';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+import type { ProfileWarmupCoordinator } from './profile-warmup-coordinator';
+import { isRecord, resourceIdOf, resourceTypeOf } from './fhir-resource';
 
 export interface BatchValidationOptions {
   fhirVersion?: 'R4' | 'R5' | 'R6';
@@ -31,16 +35,18 @@ export interface BatchValidationOptions {
   organizationId?: number;
   serverId?: number;
   runtimeScopeKey?: string;
-  onResourceValidated?: (resource: any, result: unknown) => void | Promise<void>;
-  onEmbeddedResourceValidated?: (resource: any, result: unknown) => void | Promise<void>;
+  onResourceValidated?: (resource: Record<string, unknown>, result: unknown) => void | Promise<void>;
+  onEmbeddedResourceValidated?: (resource: Record<string, unknown>, result: unknown) => void | Promise<void>;
   shouldStop?: () => boolean;
+  scheduleValidation?: <T>(task: () => Promise<T>) => Promise<T>;
 }
 
 export interface BatchValidatorContext<T = ValidationIssue[]> {
   sdLoader: StructureDefinitionLoader;
   profileCache: ProfileCache;
   snapshotGenerator: SnapshotGenerator;
-  validateResource: (resource: any, profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6') => Promise<T>;
+  profileWarmupCoordinator?: ProfileWarmupCoordinator;
+  validateResource: (resource: unknown, profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6') => Promise<T>;
 }
 
 type AspectTimingResult = {
@@ -73,10 +79,10 @@ function throwIfBatchStopped(options: BatchValidationOptions): void {
  * Execute batch validation
  */
 export async function executeBatchValidation<T = ValidationIssue[]>(
-  resources: any[],
+  resources: unknown[],
   options: BatchValidationOptions,
   context: BatchValidatorContext<T>
-): Promise<Map<any, T>> {
+): Promise<Map<unknown, T>> {
   const fhirVersion = options.fhirVersion || 'R4';
   const maxConcurrency = options.maxConcurrency || 10;
   const profileSourceContext: ProfileSourceContext = {
@@ -117,6 +123,7 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
       options.fhirClient,
       options.settings,
       profileSourceContext,
+      context.profileWarmupCoordinator,
     );
     const preloadTime = Date.now() - preloadStart;
     logger.info(`[RecordsValidator] ✓ Pre-loaded ${profileUrls.length} profile(s) in ${preloadTime}ms`);
@@ -124,51 +131,13 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
     // Step 4: Validate all resources with one bounded worker pool. Profiles
     // are already preloaded, so serial profile groups and lock-step chunks only
     // create head-of-line blocking when one resource is slower than its peers.
-    const validationStart = Date.now();
-    const resultsMap = new Map<any, T>();
-    const workItems = Array.from(groupedByProfile.entries()).flatMap(
-      ([profileUrl, resourceGroup]) => resourceGroup.map(resource => ({ profileUrl, resource })),
+    const { resultsMap, validationTime } = await validateBatchWorkItems(
+      groupedByProfile,
+      fhirVersion,
+      maxConcurrency,
+      options,
+      context,
     );
-    let nextWorkIndex = 0;
-    let workerFailed = false;
-    const workerCount = Math.min(Math.max(1, maxConcurrency), workItems.length);
-
-    const runWorker = async () => {
-      while (!workerFailed) {
-        throwIfBatchStopped(options);
-        const workIndex = nextWorkIndex++;
-        if (workIndex >= workItems.length) return;
-        const { resource, profileUrl } = workItems[workIndex];
-        const resourceStart = Date.now();
-
-        try {
-          const result = await context.validateResource(resource, profileUrl, fhirVersion);
-          throwIfBatchStopped(options);
-          const resourceTime = Date.now() - resourceStart;
-
-          if (resourceTime > 500) {
-            const aspectBreakdown = formatAspectTimingBreakdown(result);
-            logger.warn(
-              `[RecordsValidator] ⚠️  Slow validation: ${resource.resourceType}/${resource.id} took ${resourceTime}ms` +
-              (aspectBreakdown ? ` (${aspectBreakdown})` : '')
-            );
-          }
-
-          resultsMap.set(resource, result);
-          if (options.onResourceValidated) {
-            await options.onResourceValidated(resource, result);
-          }
-        } catch (error) {
-          workerFailed = true;
-          throw error;
-        }
-      }
-    };
-
-    await Promise.all(Array.from({ length: workerCount }, runWorker));
-    throwIfBatchStopped(options);
-
-    const validationTime = Date.now() - validationStart;
     logger.info(`[RecordsValidator] ✓ All validations complete in ${validationTime}ms`);
 
     // Step 5: Fan out results to duplicate resources
@@ -211,10 +180,10 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
       throw error;
     }
 
-    logger.error('[RecordsValidator] Batch validation error:', error);
+    logger.error('[RecordsValidator] Batch validation error', validationFailureMetadata(error));
 
     // Return error results for all resources
-    const resultsMap = new Map<any, T>();
+    const resultsMap = new Map<unknown, T>();
     // Note: We can't generate a generic error T here easily.
     // So we'll iterate and try to assume ValidationIssue[] if T is not specified, 
     // or just rethrow if we can't be sure?
@@ -232,6 +201,63 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
 
     return resultsMap;
   }
+}
+
+async function validateBatchWorkItems<T>(
+  groupedByProfile: Map<string, unknown[]>,
+  fhirVersion: 'R4' | 'R5' | 'R6',
+  maxConcurrency: number,
+  options: BatchValidationOptions,
+  context: BatchValidatorContext<T>,
+): Promise<{ resultsMap: Map<unknown, T>; validationTime: number }> {
+  const validationStart = Date.now();
+  const resultsMap = new Map<unknown, T>();
+  const workItems = Array.from(groupedByProfile.entries()).flatMap(
+    ([profileUrl, resourceGroup]) => resourceGroup.map(resource => ({ profileUrl, resource })),
+  );
+  let nextWorkIndex = 0;
+  let workerFailed = false;
+  const workerCount = Math.min(Math.max(1, maxConcurrency), workItems.length);
+
+  const runWorker = async () => {
+    while (!workerFailed) {
+      throwIfBatchStopped(options);
+      const workIndex = nextWorkIndex++;
+      if (workIndex >= workItems.length) return;
+      const { resource, profileUrl } = workItems[workIndex];
+      const resourceStart = Date.now();
+
+      try {
+        const validate = () => context.validateResource(resource, profileUrl, fhirVersion);
+        const result = options.scheduleValidation
+          ? await options.scheduleValidation(validate)
+          : await validate();
+        throwIfBatchStopped(options);
+        const resourceTime = Date.now() - resourceStart;
+
+        if (resourceTime > 500) {
+          const aspectBreakdown = formatAspectTimingBreakdown(result);
+          logger.warn('[RecordsValidator] Slow validation', {
+            ...operationalResourceReference(resourceTypeOf(resource), resourceIdOf(resource)),
+            durationMs: resourceTime,
+            ...(aspectBreakdown ? { aspectBreakdown } : {}),
+          });
+        }
+
+        resultsMap.set(resource, result);
+        if (options.onResourceValidated && isRecord(resource)) {
+          await options.onResourceValidated(resource, result);
+        }
+      } catch (error) {
+        workerFailed = true;
+        throw error;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, runWorker));
+  throwIfBatchStopped(options);
+  return { resultsMap, validationTime: Date.now() - validationStart };
 }
 
 function formatAspectTimingBreakdown(result: unknown): string | null {

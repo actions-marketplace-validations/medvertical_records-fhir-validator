@@ -29,7 +29,9 @@ export type {
 export { createFilesystemProfileSource } from '../persistence/filesystem-profile-source';
 export type { FilesystemProfileSourceOptions } from '../persistence/filesystem-profile-source';
 
-export { resetWarmupState } from '../core/batch-utils';
+export { resetWarmupState } from '../core/profile-cache-warmup';
+export { ProfileWarmupCoordinator } from '../core/profile-warmup-coordinator';
+export type { ProfileWarmupResult } from '../core/profile-warmup-coordinator';
 export {
   dedupeIssues,
   dedupeIssuesWithTrace,
@@ -43,11 +45,12 @@ export { detailedResultToOperationOutcome } from '../core/operation-outcome-conv
 export { isPrimitiveType } from '../core/executors/structural-executor-helpers';
 export { CustomRuleExecutor } from '../core/executors/custom-rule-executor';
 export { RuleRegistry } from '../business-rules/rule-registry';
-export { getCombinedFHIRPathCacheStats } from '../validators/constraint-validator';
+export { getCombinedFHIRPathCacheStats } from '../validator-singleton';
 export {
   normalizeKnownStructureDefinitionCanonicalUrl,
   StructureDefinitionLoader,
 } from '../core/structure-definition-loader';
+export { isKnownSecurityLabelCode } from '../metadata/security-validators';
 export { scanCacheDirectory } from '../core/sd-loader-package-scanner';
 export type { ScanCacheDirectoryOptions } from '../core/sd-loader-package-scanner';
 export { loadFromPersistentIndex } from '../core/sd-loader-persistent-index';
@@ -65,12 +68,12 @@ export type {
 } from '../core/structure-definition-loader';
 export {
   PackageDownloader,
-  packageDownloader,
 } from '../package/package-downloader';
 export {
   MAX_ARCHIVE_ENTRIES,
   MAX_ARCHIVE_TOTAL_BYTES,
   isSafePackageArchiveEntry,
+  isIgnorablePackageArchiveMetadata,
   isSafePackageId,
   isSafePackageVersion,
   packageErrorMetadata,
@@ -81,10 +84,12 @@ export type {
   DownloadResult,
   PackageDownloadOptions,
 } from '../package/package-downloader';
+export { compareVersions } from '../package-resolver/version-comparator';
 
 export {
   createBindingUnverified,
   createBindingViolation,
+  createValueSetUnavailable,
   createConstraintViolation,
   createReferenceTypeMismatch,
   createRequiredElementMissing,

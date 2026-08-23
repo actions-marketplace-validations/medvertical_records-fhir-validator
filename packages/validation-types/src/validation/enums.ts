@@ -27,6 +27,18 @@ export type ValidationAspect = 'structural' | 'profile' | 'terminology' | 'refer
  */
 export type ValidationSeverity = 'fatal' | 'error' | 'warning' | 'information' | 'info' | 'inherit';
 
+export function isErrorValidationSeverity(
+  severity: string | null | undefined,
+): severity is 'fatal' | 'error' {
+  return severity === 'fatal' || severity === 'error';
+}
+
+export function isInformationValidationSeverity(
+  severity: string | null | undefined,
+): severity is 'information' | 'info' {
+  return severity === 'information' || severity === 'info';
+}
+
 /**
  * Validation strictness levels
  */
@@ -158,4 +170,3 @@ export const VALIDATION_ASPECT_DESCRIPTIONS: Record<ValidationAspect, string> = 
   metadata: 'Checks metadata requirements like lastUpdated, versionId, and tags',
   anomaly: 'Cross-resource batch analysis: duplicates, orphan references, value-range outliers, temporal gaps'
 };
-

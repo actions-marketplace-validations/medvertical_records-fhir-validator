@@ -29,6 +29,7 @@
 
 import { getValueAtPath } from '../core/validation-utils';
 import { logger } from '../logger';
+import { getValidationTargets } from './element-validation-targets';
 
 export interface PathComponents {
   /** Full path (e.g., "Patient.communication.language") */
@@ -76,7 +77,7 @@ export interface PathComponents {
 export function parseElementPath(path: string, resourceType?: string): PathComponents {
   const parts = path.split('.');
 
-  if (parts.length === 0) {
+  if (!path || parts.some(part => part.length === 0)) {
     throw new Error(`Invalid element path: ${path}`);
   }
 
@@ -201,8 +202,8 @@ export function getAncestorPaths(path: string): string[] {
  * // Root element always returns true
  * hasParentElement(patient, 'Patient.name') // true
  */
-export function hasParentElement(resource: any, elementPath: string): boolean {
-  if (!resource || typeof resource !== 'object') {
+export function hasParentElement(resource: unknown, elementPath: string): boolean {
+  if (!isRecord(resource)) {
     return false;
   }
 
@@ -217,17 +218,7 @@ export function hasParentElement(resource: any, elementPath: string): boolean {
     return true;
   }
 
-  const parentValue = getValueAtPath(resource, parentPath);
-
-  if (parentValue === undefined || parentValue === null) {
-    return false;
-  }
-
-  if (Array.isArray(parentValue)) {
-    return parentValue.length > 0;
-  }
-
-  return true;
+  return pathHasPresentTarget(resource, parentPath);
 }
 
 /**
@@ -245,7 +236,8 @@ export function hasParentElement(resource: any, elementPath: string): boolean {
  * // Checks: Patient.contact exists, Patient.contact.name exists
  * hasAllAncestors(patient, 'Patient.contact.name.given')
  */
-export function hasAllAncestors(resource: any, elementPath: string): boolean {
+export function hasAllAncestors(resource: unknown, elementPath: string): boolean {
+  if (!isRecord(resource)) return false;
   const ancestors = getAncestorPaths(elementPath);
 
   // Check each ancestor
@@ -255,17 +247,7 @@ export function hasAllAncestors(resource: any, elementPath: string): boolean {
       continue;
     }
 
-    const ancestorValue = getValueAtPath(resource, ancestorPath);
-
-    // If any ancestor is missing, return false
-    if (ancestorValue === undefined || ancestorValue === null) {
-      return false;
-    }
-
-    // For arrays, must have at least one element
-    if (Array.isArray(ancestorValue) && ancestorValue.length === 0) {
-      return false;
-    }
+    if (!pathHasPresentTarget(resource, ancestorPath)) return false;
   }
 
   return true;
@@ -286,9 +268,13 @@ export function hasAllAncestors(resource: any, elementPath: string): boolean {
  * shouldValidateRequired(patient, 'Patient.communication.language') 
  *   // true only if patient.communication exists
  */
-export function shouldValidateRequired(resource: any, elementPath: string): boolean {
+export function shouldValidateRequired(resource: unknown, elementPath: string): boolean {
+  if (!isRecord(resource)) return false;
+  const resourceType = typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : '';
   // Root-level elements are always validated
-  if (isRootElement(elementPath, resource.resourceType)) {
+  if (isRootElement(elementPath, resourceType)) {
     return true;
   }
 
@@ -307,16 +293,19 @@ export function shouldValidateRequired(resource: any, elementPath: string): bool
  * @param elementPath - Element path
  * @returns Debug information about the path
  */
-export function getPathDebugInfo(resource: any, elementPath: string): {
+export function getPathDebugInfo(resource: unknown, elementPath: string): {
   path: string;
   components: PathComponents;
   valueExists: boolean;
   parentExists: boolean;
   shouldValidate: boolean;
-  value: any;
-  parentValue: any;
+  value: unknown;
+  parentValue: unknown;
 } {
-  const components = parseElementPath(elementPath, resource.resourceType);
+  const resourceType = isRecord(resource) && typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : undefined;
+  const components = parseElementPath(elementPath, resourceType);
   const value = getValueAtPath(resource, elementPath);
   const parentPath = getParentPath(elementPath);
   const parentValue = parentPath ? getValueAtPath(resource, parentPath) : resource;
@@ -330,4 +319,15 @@ export function getPathDebugInfo(resource: any, elementPath: string): {
     value,
     parentValue
   };
+}
+
+function pathHasPresentTarget(resource: Record<string, unknown>, path: string): boolean {
+  return getValidationTargets(resource, path).some(target => {
+    if (target.value === undefined || target.value === null) return false;
+    return !Array.isArray(target.value) || target.value.length > 0;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -1,17 +1,3 @@
-/**
- * Validation Types - Barrel Export
- * 
- * Centralized exports for all validation-related types.
- * This is the single entry point for validation types to prevent circular dependencies.
- * 
- * Usage:
- *   import { ValidationIssue, ValidationResult, ValidationSettings } from '@records-fhir/validation-types';
- */
-
-// ============================================================================
-// Enums and Type Unions
-// ============================================================================
-
 export type {
   ValidationAspect,
   ValidationSeverity,
@@ -29,15 +15,22 @@ export type {
   FHIRVersion
 } from './enums';
 
-export type {
-  ValidationAspectType
-} from './aspect-enums';
+export type { ValidationAspectType } from './aspect-enums';
+export {
+  FindingSource,
+  type FindingAspectType,
+  type FindingSourceSeverityCounts,
+  type FindingSourceSummary,
+  type FindingSourceType,
+} from './finding-source';
 
 export {
   DEFAULT_VALIDATION_STRICTNESS,
   VALIDATION_ASPECTS,
   VALIDATION_ASPECT_LABELS,
-  VALIDATION_ASPECT_DESCRIPTIONS
+  VALIDATION_ASPECT_DESCRIPTIONS,
+  isErrorValidationSeverity,
+  isInformationValidationSeverity,
 } from './enums';
 
 export {
@@ -47,23 +40,18 @@ export {
   normalizeValidationSettings
 } from './aspect-aliases';
 
-// ============================================================================
-// Messages and Issues
-// ============================================================================
-
 export type {
   ValidationIssue,
+  ValidationIssueTarget,
   ValidationError,
   ValidationRetryInfo,
   ValidationRetryAttempt
 } from './messages';
 
-// ============================================================================
-// Results and Progress
-// ============================================================================
-
+export { calculateValidationIssueScore } from './scoring';
 export type {
   ValidationResult,
+  ValidationAspectResult,
   EnhancedValidationSummary,
   ValidationProgress,
   ValidationRunSummary,
@@ -72,13 +60,19 @@ export type {
 
 export type {
   ValidationRunActivityEventSnapshot,
+  ValidationRunInFlightResourceTypeSnapshot,
   ValidationRunLifecycleStatus,
   ValidationRunOutcome,
   ValidationRunResourceTypeSnapshot,
   ValidationRunSnapshotV1,
+  ValidationRunTerminationCause,
 } from './run-snapshot';
 
+export type { EvaluationPlanSnapshot, EvaluationScopeRequirement } from './evaluation-plan';
+export type { EvaluationAssessmentSnapshot, EvaluationLaneStatus } from './evaluation-assessment';
+
 export type {
+  ValidationIssueResourceTypeMetricsV1,
   ValidationIssueSeverityMetricsV1,
   ValidationIssueSummaryMetrics,
   ValidationIssueSummaryScopeV1,
@@ -112,10 +106,6 @@ export type {
   ValidationCompletenessAction,
 } from './validation-advanced-metrics';
 
-// ============================================================================
-// Settings and Configuration
-// ============================================================================
-
 export type {
   ProfileSourcesConfig,
   ValidationAspectConfig,
@@ -127,10 +117,13 @@ export type {
   ValidationSettingsValidationResult,
   FHIRResourceTypeConfig,
   AdvancedTerminologyConfig,
+  MiiPreset,
+  MiiValidationSettings,
   ProfileApplicationSource,
   ImposedProfilePolicy,
   ImposedProfilesConfig,
   AdvisorRule,
+  AdvisorRuleApplication,
   AdvisorRuleMatch,
   AdvisorRuleTransform
 } from './settings';
@@ -164,6 +157,8 @@ export {
   DEFAULT_CACHE_CONFIG,
   createEhds2026ValidationSettings,
   createMii2026ValidationSettings,
+  FHIR_CORE_PACKAGE_SET,
+  FHIR_CORE_PACKAGE_VERSIONS,
   FHIR_CORE_EXTENSION_PACKAGE_SET,
   FHIR_CORE_EXTENSION_PACKAGE_VERSIONS,
   FHIR_CORE_TERMINOLOGY_PACKAGE_SET,
@@ -171,12 +166,22 @@ export {
   HL7_EU_EHDS_2026_PACKAGE_SET,
   HL7_EU_EHDS_2026_PACKAGE_VERSIONS,
   HL7_EU_EPS_XTEHR_REFERENCE_PACKAGE,
+  IPS_PACKAGE_VERSION,
   MII_2026_PACKAGE_SET,
   MII_2026_PACKAGE_VERSIONS,
   type FhirPackagePin,
   type Mii2026ValidationSettingsOverrides,
   type MiiTerminologyMode
 } from './settings-defaults';
+
+export {
+  BUNDLED_PROFILE_PRESETS,
+  getBundledProfilePlan,
+  isBundledProfilePreset,
+  parseBundledProfilePreset,
+  type BundledProfilePlan,
+  type BundledProfilePreset,
+} from './defaults/bundled-profile-plan';
 
 export {
   validatePerformanceSettings,
@@ -208,6 +213,18 @@ export {
 } from './settings-transformers';
 
 export {
+  decideResourceValidationEligibility,
+  planResourceValidation,
+  type PlannedResourceValidation,
+  type PlannedResourceValidationSkip,
+  type ResourceTypeValidationPolicy,
+  type ResourceValidationEligibilityDecision,
+  type ResourceValidationEligibilityReason,
+  type ResourceValidationOperation,
+  type ResourceValidationPolicyAnnotation,
+} from './resource-validation-eligibility';
+
+export {
   getDefaultPerformanceSettings,
   getDefaultResourceTypeSettings,
   getDefaultValidationSettingsForVersion,
@@ -219,6 +236,61 @@ export {
   isAspectEnabled,
   getAspectSeverity,
 } from './settings-utils';
+
+// ============================================================================
+// Versioned quality rule packs
+// ============================================================================
+
+export {
+  QUALITY_NORMATIVE_STATUSES,
+  QUALITY_ADVISORY_ACTIONS,
+  QUALITY_FINDING_DISPOSITIONS,
+  QUALITY_RULE_OUTCOMES,
+  QUALITY_RULE_SCOPES,
+  QUALITY_RULE_SEVERITIES,
+  parseQualityRulePackManifest,
+  qualityPolicyLayerSchema,
+  qualityAdvisoryRuleDefinitionSchema,
+  qualityRuleDefinitionSchema,
+  qualityRuleImplementationSchema,
+  qualityRulePackManifestSchema,
+  qualityReferenceSetDefinitionSchema,
+  qualityRuleOverrideSchema,
+  type QualityComparisonClass,
+  type QualityAdvisoryAction,
+  type QualityAdvisoryRuleDefinition,
+  type QualityFindingDisposition,
+  type QualityNormativeStatus,
+  type QualityPolicyLayer,
+  type QualityRuleDefinition,
+  type QualityRuleImplementation,
+  type QualityRuleOutcome,
+  type QualityRuleOverride,
+  type QualityRulePackManifest,
+  type QualityReferenceSetDefinition,
+  type QualityRuleScope,
+  type QualityRuleSeverity,
+} from './quality-rule-pack';
+export type {
+  EffectiveQualityAdvisoryRule,
+  EffectiveQualityPolicyLayerReference,
+  EffectiveQualityPolicySnapshot,
+  EffectiveQualityRule,
+} from './effective-quality-policy';
+export type {
+  QualityAdvisoryApplication,
+  QualityAdvisoryConflict,
+  QualityAdvisorySummary,
+  QualityAssessmentSnapshot,
+  QualityMetric,
+  QualityRuleFinding,
+} from './quality-assessment';
+export {
+  parseQualityRulePackDraftManifest,
+  qualityRulePackDraftManifestSchema,
+  type QualityRulePackDraftManifest,
+  type QualityRulePackDraftTestSummary,
+} from './quality-rule-pack-draft';
 
 // ============================================================================
 // DTOs and Utility Functions
@@ -244,9 +316,9 @@ export {
   normalizeMessageText
 } from './dtos';
 
-export type {
-  ValidationIssueIdentityInput
-} from './issue-identity';
+export { removeAsciiControlCharacters } from './text-normalization';
+
+export type { ValidationIssueIdentityInput } from './issue-identity';
 
 export {
   computeValidationIssueId,

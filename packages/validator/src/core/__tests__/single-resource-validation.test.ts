@@ -29,6 +29,7 @@ function deps(validateBundleEntriesIfNeeded = vi.fn().mockResolvedValue([issue()
     metadataExecutor: { validate: vi.fn().mockResolvedValue([]) },
     referenceExecutor: { validate: vi.fn().mockResolvedValue([]) },
     bestPracticeValidator: { validate: vi.fn().mockReturnValue([]) },
+    terminologyResourceValidator: { validate: vi.fn().mockReturnValue([]) },
     validateBundleEntriesIfNeeded,
   } as any;
 }

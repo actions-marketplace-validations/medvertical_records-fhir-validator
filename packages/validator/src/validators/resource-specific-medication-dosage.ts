@@ -1,16 +1,20 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 
-export function validateGermanMedicationDosage(resource: any, profileUrl?: string): ValidationIssue[] {
+export function validateGermanMedicationDosage(resource: unknown, profileUrl?: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-    if (!shouldValidateGermanMedicationDosage(resource, profileUrl)) return issues;
+    const medication = asRecord(resource);
+    if (!medication || !shouldValidateGermanMedicationDosage(medication, profileUrl)) return issues;
+    const resourceType = typeof medication.resourceType === 'string'
+        ? medication.resourceType
+        : 'MedicationRequest';
 
-    const dosagePath = resource.resourceType === 'MedicationStatement'
+    const dosagePath = resourceType === 'MedicationStatement'
         ? 'MedicationStatement.dosage'
-        : `${resource.resourceType}.dosageInstruction`;
-    const dosages = resource.resourceType === 'MedicationStatement'
-        ? resource.dosage
-        : resource.dosageInstruction;
+        : `${resourceType}.dosageInstruction`;
+    const dosages = resourceType === 'MedicationStatement'
+        ? medication.dosage
+        : medication.dosageInstruction;
 
     if (!Array.isArray(dosages) || dosages.length === 0) return issues;
 
@@ -29,7 +33,7 @@ export function validateGermanMedicationDosage(resource: any, profileUrl?: strin
 
         if (!isPureFreeText && !isStructuredOrPartial) {
             issues.push(createDosageConstraintIssue(
-                resource.resourceType,
+                resourceType,
                 path,
                 'DosageStructuredOrFreeTextWarning',
                 'Die Dosierungsangabe darf entweder nur als Freitext oder nur als vollständige strukturierte Information erfolgen — eine Mischung ist nicht erlaubt.',
@@ -39,7 +43,7 @@ export function validateGermanMedicationDosage(resource: any, profileUrl?: strin
 
         if ((hasDosageTiming && !hasDosageDoseAndRate) || (!hasDosageTiming && hasDosageDoseAndRate)) {
             issues.push(createDosageConstraintIssue(
-                resource.resourceType,
+                resourceType,
                 path,
                 'DosageStructuredRequiresBoth',
                 'Wenn eine strukturierte Dosierungsangabe erfolgt, müssen sowohl timing als auch doseAndRate angegeben werden.',
@@ -47,9 +51,10 @@ export function validateGermanMedicationDosage(resource: any, profileUrl?: strin
             ));
         }
 
-        if (hasDosageText && /.*\d+\s*[-–]\s*\d+\s*[-–]\s*\d+\s*[-–]\s*\d+.*/.test(String(dosage.text))) {
+        const dosageText = asRecord(dosage)?.text;
+        if (hasDosageText && typeof dosageText === 'string' && /.*\d+\s*[-–]\s*\d+\s*[-–]\s*\d+\s*[-–]\s*\d+.*/.test(dosageText)) {
             issues.push(createDosageConstraintIssue(
-                resource.resourceType,
+                resourceType,
                 path,
                 'DosageWarnungViererschemaInText',
                 'Hinweis: In Dosage.text wurde ein Viererschema (z. B. 1-1-1-1) erkannt. Bitte prüfen, ob dies strukturiert abgebildet werden kann.',
@@ -60,7 +65,7 @@ export function validateGermanMedicationDosage(resource: any, profileUrl?: strin
 
     if (hasPureFreeTextDosage && dosages.length !== 1) {
         issues.push(createDosageConstraintIssue(
-            resource.resourceType,
+            resourceType,
             dosagePath,
             'FreeTextSingleDosageOnlyWarning',
             'Wenn eine Dosierung als reiner Freitext angegeben ist, soll nur genau ein Dosage-Element existieren.',
@@ -71,10 +76,14 @@ export function validateGermanMedicationDosage(resource: any, profileUrl?: strin
     return issues;
 }
 
-function shouldValidateGermanMedicationDosage(resource: any, profileUrl?: string): boolean {
+function shouldValidateGermanMedicationDosage(
+    resource: Record<string, unknown>,
+    profileUrl?: string,
+): boolean {
+    const declaredProfiles = asRecord(resource.meta)?.profile;
     const profiles = [
         profileUrl,
-        ...(Array.isArray(resource?.meta?.profile) ? resource.meta.profile : []),
+        ...(Array.isArray(declaredProfiles) ? declaredProfiles : []),
     ].filter((profile): profile is string => typeof profile === 'string');
 
     return profiles.some(profile =>
@@ -83,16 +92,25 @@ function shouldValidateGermanMedicationDosage(resource: any, profileUrl?: string
     );
 }
 
-function hasText(dosage: any): boolean {
-    return typeof dosage?.text === 'string' && dosage.text.trim().length > 0;
+function hasText(dosage: unknown): boolean {
+    const text = asRecord(dosage)?.text;
+    return typeof text === 'string' && text.trim().length > 0;
 }
 
-function hasTiming(dosage: any): boolean {
-    return dosage?.timing !== undefined && dosage.timing !== null;
+function hasTiming(dosage: unknown): boolean {
+    const timing = asRecord(dosage)?.timing;
+    return timing !== undefined && timing !== null;
 }
 
-function hasDoseAndRate(dosage: any): boolean {
-    return Array.isArray(dosage?.doseAndRate) && dosage.doseAndRate.length > 0;
+function hasDoseAndRate(dosage: unknown): boolean {
+    const doseAndRate = asRecord(dosage)?.doseAndRate;
+    return Array.isArray(doseAndRate) && doseAndRate.length > 0;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
 }
 
 function createDosageConstraintIssue(

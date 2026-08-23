@@ -1,13 +1,19 @@
-import type { ValidationIssue } from '../types';
-import type { StructureDefinition } from './structure-definition-types';
+import type { ValidationIssue } from "../types";
+import type { StructureDefinition } from "./structure-definition-types";
 import {
   buildBundleDocumentContextIssues,
   type BundleDocumentContextChildResult,
-} from './bundle-document-context';
-import type { AspectResult, MultiAspectValidateResult, ValidateOneFn } from './multi-aspect-types';
-import { BatchValidationAbortedError } from './batch-validator';
-import { logger } from '../logger';
-import { shouldSuppressBundleEntryIssue } from './bundle-entry-issue-filter';
+} from "./bundle-document-context";
+import type {
+  AspectResult,
+  MultiAspectValidateResult,
+  ValidateOneFn,
+} from "./multi-aspect-types";
+import { BatchValidationAbortedError } from "./batch-validator";
+import { logger } from "../logger";
+import { getBundleEntryRequiredProfile } from "./bundle-entry-slice-definitions";
+import { getDeclaredProfiles } from "./declared-profile-utils";
+import { mapBundleEntryIssues } from './bundle-entry-validation-output';
 
 const DEFAULT_BUNDLE_ENTRY_VALIDATION_CONCURRENCY = 16;
 const MAX_BUNDLE_ENTRY_VALIDATION_CONCURRENCY = 64;
@@ -22,14 +28,19 @@ interface BundleChildValidationResult {
 
 export async function appendBundleEntryValidationResults(
   bundle: Record<string, unknown>,
-  fhirVersion: 'R4' | 'R5' | 'R6',
+  fhirVersion: "R4" | "R5" | "R6",
   recursionDepth: number,
   validateOne: ValidateOneFn,
   parentAspects: AspectResult[],
   parentStructureDef: StructureDefinition | undefined,
-  transformDocumentContextIssues: (issues: ValidationIssue[]) => ValidationIssue[],
+  transformDocumentContextIssues: (
+    issues: ValidationIssue[],
+  ) => ValidationIssue[],
   shouldStop?: () => boolean,
-  onEntryValidated?: (resource: Record<string, unknown>, result: MultiAspectValidateResult) => void | Promise<void>,
+  onEntryValidated?: (
+    resource: Record<string, unknown>,
+    result: MultiAspectValidateResult,
+  ) => void | Promise<void>,
 ): Promise<void> {
   throwIfStopped(shouldStop);
   const entries = Array.isArray(bundle.entry) ? bundle.entry : [];
@@ -38,52 +49,72 @@ export async function appendBundleEntryValidationResults(
   const validationTargets = entries
     .map((entry, index) => {
       const entryRecord = entry as Record<string, unknown> | undefined;
-      const entryResource = entryRecord?.resource as Record<string, unknown> | undefined;
-      if (!entryResource || typeof entryResource !== 'object') return null;
-      const resourceType = typeof entryResource.resourceType === 'string'
-        ? entryResource.resourceType
-        : null;
+      const entryResource = entryRecord?.resource as
+        Record<string, unknown> | undefined;
+      if (!entryResource || typeof entryResource !== "object") return null;
+      const resourceType =
+        typeof entryResource.resourceType === "string"
+          ? entryResource.resourceType
+          : null;
       if (!resourceType) return null;
 
-      const declared = Array.isArray((entryResource.meta as any)?.profile)
-        ? (entryResource.meta as any).profile.filter((profile: unknown): profile is string => typeof profile === 'string')
-        : [];
-      const profileUrl = declared[0] || `http://hl7.org/fhir/StructureDefinition/${resourceType}`;
+      const declared = getDeclaredProfiles(entryResource);
+      const profileUrl =
+        declared[0] ||
+        getBundleEntryRequiredProfile(
+          { entryResource, resourceType },
+          parentStructureDef,
+        ) ||
+        `http://hl7.org/fhir/StructureDefinition/${resourceType}`;
       return { index, entryResource, resourceType, profileUrl };
     })
-    .filter((target): target is {
-      index: number;
-      entryResource: Record<string, unknown>;
-      resourceType: string;
-      profileUrl: string;
-    } => target !== null);
+    .filter(
+      (
+        target,
+      ): target is {
+        index: number;
+        entryResource: Record<string, unknown>;
+        resourceType: string;
+        profileUrl: string;
+      } => target !== null,
+    );
 
   const childResults: BundleChildValidationResult[] = [];
   const concurrency = resolveBundleEntryValidationConcurrency();
-  const shouldLogLargeBundle = validationTargets.length >= LARGE_BUNDLE_ENTRY_LOG_THRESHOLD;
+  const shouldLogLargeBundle =
+    validationTargets.length >= LARGE_BUNDLE_ENTRY_LOG_THRESHOLD;
   const startTime = Date.now();
 
   if (shouldLogLargeBundle) {
     logger.info(
       `[RecordsValidator] Large Bundle entry validation: ${validationTargets.length} embedded resources ` +
-      `(concurrency=${concurrency}, depth=${recursionDepth})`,
+        `(concurrency=${concurrency}, depth=${recursionDepth})`,
     );
   }
 
   for (let i = 0; i < validationTargets.length; i += concurrency) {
     throwIfStopped(shouldStop);
     const chunk = validationTargets.slice(i, i + concurrency);
-    const chunkResults = await Promise.all(chunk.map(async target => {
-      const result = await validateBundleEntryTarget(target, validateOne, fhirVersion, recursionDepth, bundle, shouldStop);
-      await onEntryValidated?.(target.entryResource, result);
-      throwIfStopped(shouldStop);
-      return {
-        index: target.index,
-        entryResource: target.entryResource,
-        resourceType: target.resourceType,
-        result,
-      };
-    }));
+    const chunkResults = await Promise.all(
+      chunk.map(async (target) => {
+        const result = await validateBundleEntryTarget(
+          target,
+          validateOne,
+          fhirVersion,
+          recursionDepth,
+          bundle,
+          shouldStop,
+        );
+        await onEntryValidated?.(target.entryResource, result);
+        throwIfStopped(shouldStop);
+        return {
+          index: target.index,
+          entryResource: target.entryResource,
+          resourceType: target.resourceType,
+          result,
+        };
+      }),
+    );
     childResults.push(...chunkResults);
     throwIfStopped(shouldStop);
   }
@@ -91,13 +122,19 @@ export async function appendBundleEntryValidationResults(
   if (shouldLogLargeBundle) {
     logger.info(
       `[RecordsValidator] Large Bundle entry validation completed in ${Date.now() - startTime}ms ` +
-      `(${validationTargets.length} embedded resources)`,
+        `(${validationTargets.length} embedded resources)`,
     );
   }
 
   childResults.sort((a, b) => a.index - b.index);
   for (const child of childResults) {
-    mergeEntryAspects(parentAspects, child.result.aspects, child.index, child.entryResource, child.resourceType);
+    mergeEntryAspects(
+      parentAspects,
+      child.result.aspects,
+      child.index,
+      child.entryResource,
+      child.resourceType,
+    );
   }
 
   throwIfStopped(shouldStop);
@@ -109,7 +146,7 @@ export async function appendBundleEntryValidationResults(
     ),
   );
   if (documentContextIssues.length > 0) {
-    appendIssuesToAspect(parentAspects, 'profile', documentContextIssues);
+    appendIssuesToAspect(parentAspects, "profile", documentContextIssues);
   }
 }
 
@@ -119,13 +156,19 @@ async function validateBundleEntryTarget(
     profileUrl: string;
   },
   validateOne: ValidateOneFn,
-  fhirVersion: 'R4' | 'R5' | 'R6',
+  fhirVersion: "R4" | "R5" | "R6",
   recursionDepth: number,
   bundle: Record<string, unknown>,
   shouldStop?: () => boolean,
 ): Promise<MultiAspectValidateResult> {
   throwIfStopped(shouldStop);
-  const result = await validateOne(target.entryResource, target.profileUrl, fhirVersion, recursionDepth + 1, bundle);
+  const result = await validateOne(
+    target.entryResource,
+    target.profileUrl,
+    fhirVersion,
+    recursionDepth + 1,
+    bundle,
+  );
   throwIfStopped(shouldStop);
   return result;
 }
@@ -155,7 +198,7 @@ function toDocumentContextChildResult(
     index: child.index,
     entryResource: child.entryResource,
     resourceType: child.resourceType,
-    issues: child.result.aspects.flatMap(aspect => aspect.issues),
+    issues: child.result.aspects.flatMap((aspect) => aspect.issues),
     structureDef: child.result.structureDef,
   };
 }
@@ -167,21 +210,33 @@ function mergeEntryAspects(
   entryResource: Record<string, unknown>,
   resourceType: string,
 ): void {
-  const prefix = bundleEntryResourcePrefix(entryIndex, entryResource, resourceType);
-
   for (const childAspect of childAspects) {
-    const rewrittenIssues = dedupeEntryIssues(childAspect.issues)
-      .filter(issue => !shouldSuppressBundleEntryIssue(issue))
-      .map(issue =>
-        rewriteEntryIssue(issue, prefix, entryIndex, entryResource, resourceType),
-      );
-    if (rewrittenIssues.length === 0) continue;
+    const context = {
+      entryIndex,
+      resourceType,
+      resourceId:
+        typeof entryResource.id === "string" ? entryResource.id : undefined,
+      includeBundleUnitDetails: true,
+    };
+    const { parentIssues: rewrittenIssues } = mapBundleEntryIssues(
+      childAspect.issues,
+      context,
+    );
+    const { parentIssues: rewrittenEvidence } = mapBundleEntryIssues(
+      childAspect.evidenceIssues ?? childAspect.issues,
+      { ...context, includeSuppressed: true },
+    );
+    if (rewrittenIssues.length === 0 && rewrittenEvidence.length === 0)
+      continue;
 
-    let parentAspect = parentAspects.find(aspect => aspect.aspect === childAspect.aspect);
+    let parentAspect = parentAspects.find(
+      (aspect) => aspect.aspect === childAspect.aspect,
+    );
     if (!parentAspect) {
       parentAspect = {
         aspect: childAspect.aspect,
         issues: [],
+        evidenceIssues: [],
         validationTime: 0,
         isValid: true,
       };
@@ -189,90 +244,12 @@ function mergeEntryAspects(
     }
 
     parentAspect.issues.push(...rewrittenIssues);
+    parentAspect.evidenceIssues?.push(...rewrittenEvidence);
     parentAspect.validationTime += childAspect.validationTime;
-    parentAspect.isValid = parentAspect.issues.every(issue =>
-      issue.severity !== 'error' && issue.severity !== 'fatal',
+    parentAspect.isValid = parentAspect.issues.every(
+      (issue) => issue.severity !== "error" && issue.severity !== "fatal",
     );
   }
-}
-
-function dedupeEntryIssues(issues: ValidationIssue[]): ValidationIssue[] {
-  const seen = new Set<string>();
-  const out: ValidationIssue[] = [];
-
-  for (const issue of issues) {
-    const key = `${issue.code}|${issue.path}|${issue.message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(issue);
-  }
-
-  return out;
-}
-
-function rewriteEntryIssue(
-  issue: ValidationIssue,
-  prefix: string,
-  entryIndex: number,
-  entryResource: Record<string, unknown>,
-  resourceType: string,
-): ValidationIssue {
-  const rewritten: ValidationIssue = {
-    ...issue,
-    path: rewriteEntryPath(issue.path, prefix, resourceType),
-    details: attachBundleUnitDetails(issue.details, entryIndex, entryResource, resourceType),
-  };
-  if (issue.expression) {
-    rewritten.expression = rewriteEntryPath(issue.expression, prefix, resourceType);
-  }
-  return rewritten;
-}
-
-function attachBundleUnitDetails(
-  details: ValidationIssue['details'],
-  entryIndex: number,
-  entryResource: Record<string, unknown>,
-  resourceType: string,
-): ValidationIssue['details'] {
-  const resourceId = typeof entryResource.id === 'string' ? entryResource.id : undefined;
-  const bundleUnit = {
-    entryIndex,
-    resourceType,
-    ...(resourceId ? {
-      resourceId,
-      reference: `${resourceType}/${resourceId}`,
-    } : {}),
-  };
-
-  if (details && typeof details === 'object' && !Array.isArray(details)) {
-    return { ...details, bundleUnit };
-  }
-  if (details !== undefined && details !== null) {
-    return { originalDetails: details, bundleUnit };
-  }
-  return { bundleUnit };
-}
-
-function rewriteEntryPath(
-  path: string | undefined,
-  prefix: string,
-  resourceType: string,
-): string | undefined {
-  if (!path) return path;
-  if (path === resourceType) return prefix;
-  if (path.startsWith(`${resourceType}.`)) return `${prefix}.${path.slice(resourceType.length + 1)}`;
-  return `${prefix}.${path}`;
-}
-
-function bundleEntryResourcePrefix(
-  entryIndex: number,
-  entryResource: Record<string, unknown>,
-  resourceType: string,
-): string {
-  const rtId = typeof entryResource.id === 'string'
-    ? `${resourceType}/${entryResource.id}`
-    : resourceType;
-  return `Bundle.entry[${entryIndex}].resource/*${rtId}*/`;
 }
 
 function appendIssuesToAspect(
@@ -281,7 +258,9 @@ function appendIssuesToAspect(
   issues: ValidationIssue[],
 ): void {
   if (issues.length === 0) return;
-  let parentAspect = parentAspects.find(aspect => aspect.aspect === aspectName);
+  let parentAspect = parentAspects.find(
+    (aspect) => aspect.aspect === aspectName,
+  );
   if (!parentAspect) {
     parentAspect = {
       aspect: aspectName,
@@ -292,14 +271,18 @@ function appendIssuesToAspect(
     parentAspects.push(parentAspect);
   }
 
-  const existing = new Set(parentAspect.issues.map(issue => `${issue.code}|${issue.path}|${issue.message}`));
+  const existing = new Set(
+    parentAspect.issues.map(
+      (issue) => `${issue.code}|${issue.path}|${issue.message}`,
+    ),
+  );
   for (const issue of issues) {
     const key = `${issue.code}|${issue.path}|${issue.message}`;
     if (existing.has(key)) continue;
     existing.add(key);
     parentAspect.issues.push(issue);
   }
-  parentAspect.isValid = parentAspect.issues.every(issue =>
-    issue.severity !== 'error' && issue.severity !== 'fatal',
+  parentAspect.isValid = parentAspect.issues.every(
+    (issue) => issue.severity !== "error" && issue.severity !== "fatal",
   );
 }

@@ -56,6 +56,10 @@ describe('MetadataValidator', () => {
       const metaIssues = issues.filter(i => i.code === 'missing-meta');
       expect(metaIssues.length).toBeGreaterThan(0);
       expect(metaIssues[0].severity).toBe('warning');
+      expect(metaIssues[0].id).toBe(
+        (await validator.validate(resource, 'Patient', 'R4'))
+          .find(issue => issue.code === 'missing-meta')?.id,
+      );
     });
 
     it('should validate lastUpdated format', async () => {
@@ -192,6 +196,57 @@ describe('MetadataValidator', () => {
       const typeIssues = issues.filter(i => i.code === 'invalid-meta-type');
       expect(typeIssues.length).toBeGreaterThan(0);
       expect(typeIssues[0].severity).toBe('error');
+    });
+
+    it('should report invalid primitive metadata field types instead of skipping them', async () => {
+      const issues = await validator.validate({
+        resourceType: 'Patient',
+        id: '123',
+        meta: {
+          lastUpdated: 123,
+          versionId: { value: '1' },
+          source: false,
+        },
+      }, 'Patient', 'R4');
+
+      expect(issues.some(issue => issue.code === 'metadata-last-updated-invalid-type')).toBe(true);
+      expect(issues.some(issue => issue.code === 'metadata-version-id-invalid-type')).toBe(true);
+      expect(issues.some(issue => issue.code === 'metadata-source-invalid-type')).toBe(true);
+    });
+
+    it('should classify a present but empty-string meta field as invalid', async () => {
+      const issues = await validator.validate({
+        resourceType: 'Patient',
+        id: '123',
+        meta: '',
+      }, 'Patient', 'R4');
+
+      expect(issues.some(issue => issue.code === 'invalid-meta-type')).toBe(true);
+      expect(issues.some(issue => issue.code === 'missing-meta')).toBe(false);
+    });
+
+    it('should return a structured result for a non-object resource at the context boundary', async () => {
+      const result = await validator.validate(42, {
+        resource: 42,
+        resourceType: 'Patient',
+        fhirVersion: 'R4',
+      });
+
+      expect(Array.isArray(result)).toBe(false);
+      if (!Array.isArray(result)) {
+        expect(result.isValid).toBe(false);
+        expect(result.issues.some(issue => issue.code === 'metadata-invalid-resource')).toBe(true);
+      }
+    });
+
+    it('should not crash when a JavaScript caller supplies a null context', async () => {
+      const issues = await validator.validate({
+        resourceType: 'Patient',
+        id: '123',
+      }, null as never);
+
+      expect(Array.isArray(issues)).toBe(true);
+      expect(Array.isArray(issues) && issues.some(issue => issue.code === 'missing-meta')).toBe(true);
     });
 
     it('should check required metadata for Patient resources', async () => {

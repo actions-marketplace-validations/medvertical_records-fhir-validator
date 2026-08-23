@@ -2,12 +2,17 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { stripVersion } from './terminology-resource-utils';
 
+type ObjectRecord = Record<string, unknown>;
+
 /**
  * Apply the best-practice rules Java raises against `ValueSet.expansion`.
  */
-export function validateValueSetExpansion(expansion: any, compose?: any): ValidationIssue[] {
+export function validateValueSetExpansion(expansion: unknown, compose?: unknown): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const params: any[] = Array.isArray(expansion?.parameter) ? expansion.parameter : [];
+  const expansionRecord = isObjectRecord(expansion) ? expansion : {};
+  const params: unknown[] = Array.isArray(expansionRecord.parameter)
+    ? expansionRecord.parameter
+    : [];
 
   if (params.length === 0) {
     issues.push(createValidationIssue({
@@ -22,7 +27,10 @@ export function validateValueSetExpansion(expansion: any, compose?: any): Valida
     }));
   }
 
-  if (typeof expansion?.identifier !== 'string' || expansion.identifier.length === 0) {
+  if (
+    typeof expansionRecord.identifier !== 'string' ||
+    expansionRecord.identifier.length === 0
+  ) {
     issues.push(createValidationIssue({
       code: 'tx-valueset-expansion-no-identifier',
       path: 'ValueSet.expansion',
@@ -35,8 +43,9 @@ export function validateValueSetExpansion(expansion: any, compose?: any): Valida
   }
 
   const declaredUsedCodesystems = collectDeclaredUsedCodesystems(params);
-  issues.push(...validateUnversionedExpansionSystems(expansion, declaredUsedCodesystems));
-  issues.push(...validateHierarchicalFilterExpansionConsistency(expansion, compose));
+  const contains = flattenContains(expansionRecord.contains);
+  issues.push(...validateUnversionedExpansionSystems(contains, declaredUsedCodesystems));
+  issues.push(...validateHierarchicalFilterExpansionConsistency(contains, compose));
 
   return issues;
 }
@@ -47,19 +56,25 @@ export function validateValueSetExpansion(expansion: any, compose?: any): Valida
  * the filter anchor as an extra code without requiring a terminology server.
  */
 function validateHierarchicalFilterExpansionConsistency(
-  expansion: any,
-  compose: any,
+  contains: ObjectRecord[],
+  compose: unknown,
 ): ValidationIssue[] {
-  const contains = flattenContains(expansion?.contains);
   const issues: ValidationIssue[] = [];
   const seen = new Set<string>();
+  const composeRecord = isObjectRecord(compose) ? compose : {};
+  const includes = Array.isArray(composeRecord.include) ? composeRecord.include : [];
 
-  for (const include of compose?.include ?? []) {
-    if (typeof include?.system !== 'string' || !Array.isArray(include?.filter)) continue;
+  for (const include of includes) {
+    if (!isObjectRecord(include) || typeof include.system !== 'string' || !Array.isArray(include.filter)) continue;
     for (const filter of include.filter) {
-      if (filter?.property !== 'parent' || filter?.op !== '=' || typeof filter?.value !== 'string') continue;
+      if (
+        !isObjectRecord(filter) ||
+        filter.property !== 'parent' ||
+        filter.op !== '=' ||
+        typeof filter.value !== 'string'
+      ) continue;
       const extra = contains.find(item =>
-        item?.system === include.system && item?.code === filter.value
+        item.system === include.system && item.code === filter.value
       );
       if (!extra) continue;
 
@@ -87,21 +102,33 @@ function validateHierarchicalFilterExpansionConsistency(
   return issues;
 }
 
-function flattenContains(value: unknown): any[] {
+function flattenContains(value: unknown): ObjectRecord[] {
   if (!Array.isArray(value)) return [];
-  const out: any[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== 'object') continue;
+  const out: ObjectRecord[] = [];
+  const stack: unknown[] = [...value].reverse();
+  const visited = new WeakSet<object>();
+  while (stack.length > 0) {
+    const item = stack.pop();
+    if (!isObjectRecord(item) || visited.has(item)) continue;
+    visited.add(item);
     out.push(item);
-    out.push(...flattenContains((item as any).contains));
+    if (Array.isArray(item.contains)) {
+      for (let index = item.contains.length - 1; index >= 0; index--) {
+        stack.push(item.contains[index]);
+      }
+    }
   }
   return out;
 }
 
-function collectDeclaredUsedCodesystems(params: any[]): Set<string> {
+function collectDeclaredUsedCodesystems(params: unknown[]): Set<string> {
   const declaredUsedCodesystems = new Set<string>();
   for (const p of params) {
-    if (p?.name === 'used-codesystem' && typeof p.valueUri === 'string') {
+    if (
+      isObjectRecord(p) &&
+      p.name === 'used-codesystem' &&
+      typeof p.valueUri === 'string'
+    ) {
       declaredUsedCodesystems.add(stripVersion(p.valueUri));
     }
   }
@@ -109,16 +136,14 @@ function collectDeclaredUsedCodesystems(params: any[]): Set<string> {
 }
 
 function validateUnversionedExpansionSystems(
-  expansion: any,
+  containsEntries: ObjectRecord[],
   declaredUsedCodesystems: Set<string>,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  if (!Array.isArray(expansion.contains)) return issues;
 
   const seen = new Set<string>();
-  for (let i = 0; i < expansion.contains.length; i++) {
-    const contains = expansion.contains[i];
-    const system: string | undefined = typeof contains?.system === 'string' ? contains.system : undefined;
+  for (const contains of containsEntries) {
+    const system = typeof contains.system === 'string' ? contains.system : undefined;
     if (!system) continue;
     if (system.includes('|') || (typeof contains.version === 'string' && contains.version.length > 0)) continue;
     if (declaredUsedCodesystems.has(system)) continue;
@@ -136,4 +161,8 @@ function validateUnversionedExpansionSystems(
   }
 
   return issues;
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

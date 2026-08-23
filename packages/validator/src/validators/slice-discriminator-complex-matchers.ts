@@ -8,23 +8,24 @@ import {
 } from './slice-profile-discriminator-matcher';
 
 export function resolvedResourceMatchesSliceTargetProfile(
-  resolvedElement: any,
+  resolvedElement: unknown,
   slice: SliceDefinition,
 ): boolean {
-  if (!resolvedElement || typeof resolvedElement !== 'object') return false;
+  if (!isRecord(resolvedElement)) return false;
   const targetProfiles = getTypeSpecsForDiscriminator(slice, '$this')
     .flatMap(spec => spec.targetProfile ?? []);
   if (targetProfiles.length === 0) return false;
-  return toProfileArray(resolvedElement.meta?.profile)
+  const meta = isRecord(resolvedElement.meta) ? resolvedElement.meta : null;
+  return toProfileArray(meta?.profile)
     .some(profile => profileListContains(targetProfiles, profile));
 }
 
 export function canPatternCoreIdentifyCodingSlice(
-  elementValue: any,
+  elementValue: unknown,
   slice: SliceDefinition,
-  patternValue: any,
+  patternValue: unknown,
   allSlices: SliceDefinition[] | undefined,
-  matchesPatternFn: (value: any, pattern: any) => boolean,
+  matchesPatternFn: (value: unknown, pattern: unknown) => boolean,
 ): boolean {
   if (slice.patternKind !== 'patternCoding') return false;
   if (!codingIdentityMatchesPattern(elementValue, patternValue)) return false;
@@ -43,44 +44,30 @@ export function canPatternCoreIdentifyCodingSlice(
   );
 }
 
-function codingIdentityMatchesPattern(elementValue: any, patternValue: any): boolean {
+function codingIdentityMatchesPattern(elementValue: unknown, patternValue: unknown): boolean {
   if (!isRecord(elementValue) || !isRecord(patternValue)) return false;
   if (typeof patternValue.system !== 'string' || typeof patternValue.code !== 'string') return false;
   return elementValue.system === patternValue.system && elementValue.code === patternValue.code;
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function matchWholeElementChildConstraints(
-  elementValue: any,
-  slice: SliceDefinition,
-  matchesPatternFn: (value: any, pattern: any) => boolean,
-): boolean | null {
-  let hasConstraint = false;
-  for (const [childPath, childPattern] of slice.childPatterns ?? []) {
-    hasConstraint = true;
-    if (!matchesPatternFn(getValueAtPath(elementValue, childPath), childPattern)) return false;
-  }
-  for (const [childPath, childFixed] of slice.childFixed ?? []) {
-    hasConstraint = true;
-    if (!matchesPatternFn(getValueAtPath(elementValue, childPath), childFixed)) return false;
-  }
-  return hasConstraint ? true : null;
-}
+export { matchWholeElementChildConstraints } from './slice-discriminator-constraints';
 
-export function matchExistsDiscriminator(element: any, path: string): boolean {
+export function matchExistsDiscriminator(element: unknown, path: string): boolean {
   const value = getValueAtPath(element, path);
-  return value !== null && value !== undefined;
+  return value !== null && value !== undefined &&
+    (!Array.isArray(value) || value.length > 0);
 }
 
 export function resolveDiscriminatorPath(
-  element: any,
+  element: unknown,
   _path: string,
   resolver: ReferenceResolverFn,
-): any | null {
-  const refString = typeof element === 'object' && element?.reference
+): unknown | null {
+  const refString = isRecord(element) && typeof element.reference === 'string'
     ? element.reference
     : typeof element === 'string' ? element : null;
   if (!refString || !resolver) return null;

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fhirpath from 'fhirpath';
 import { ConstraintValidator } from './constraint-validator';
-import { valueSetCache } from './valueset-cache';
+import { ValueSetCache } from './valueset-cache';
+
+const valueSetCache = new ValueSetCache();
 
 describe('ConstraintValidator', () => {
   beforeEach(() => {
@@ -37,6 +39,40 @@ describe('ConstraintValidator', () => {
 
     expect(issues).toEqual([]);
     expect(evaluateSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not evaluate an optional child that is absent on one repeated parent', async () => {
+    const validator = new ConstraintValidator();
+
+    const issues = await validator.validate(
+      {
+        resourceType: 'Medication',
+        ingredient: [
+          {
+            itemCodeableConcept: { text: 'Ingredient with strength' },
+            strength: {
+              numerator: { value: 5, unit: 'mg' },
+              denominator: { value: 1, unit: 'tablet' },
+            },
+          },
+          { itemCodeableConcept: { text: 'Ingredient without optional strength' } },
+        ],
+      },
+      [{
+        path: 'Medication.ingredient.strength',
+        min: 0,
+        max: '1',
+        constraint: [{
+          key: 'rat-1',
+          severity: 'error' as const,
+          human: 'Numerator and denominator SHALL both be present, or both are absent with an extension',
+          expression: '(numerator.empty() xor denominator.exists()) and (numerator.exists() or extension.exists())',
+        }],
+      }] as any,
+      'http://hl7.org/fhir/StructureDefinition/Medication',
+    );
+
+    expect(issues.find(issue => issue.ruleId === 'rat-1')).toBeUndefined();
   });
 
   it('skips con-3 because CodeableConcept semantics are handled by the resource-specific validator', async () => {
@@ -230,7 +266,7 @@ describe('ConstraintValidator', () => {
   });
 
   it('treats simple ValueSet in-exists constraints as CodeableConcept membership checks', async () => {
-    const validator = new ConstraintValidator();
+    const validator = new ConstraintValidator(undefined, undefined, valueSetCache);
     const valueSetUrl = 'http://hl7.org/fhir/us/core/ValueSet/us-core-condition-category';
     valueSetCache.setValueSetFile(`${valueSetUrl}|R4`, {
       resourceType: 'ValueSet',
@@ -414,6 +450,80 @@ describe('ConstraintValidator', () => {
       ruleId: 'obs-subject-active',
       code: 'profile-constraint-violation',
     }));
+  });
+
+  it.each([
+    ['object collection', 'name', ['object']],
+    ['numeric collection', 'name.count()', ['number']],
+    ['string collection', "'truthy'", ['string']],
+  ])('reports a non-Boolean %s result as not evaluable', async (_label, expression, resultTypes) => {
+    const validator = new ConstraintValidator();
+    const issues = await validator.validate(
+      {
+        resourceType: 'Patient',
+        name: [{ family: 'Example' }],
+      },
+      [{
+        path: 'Patient',
+        constraint: [{
+          key: 'must-be-boolean',
+          severity: 'error' as const,
+          human: 'Constraint must return a Boolean',
+          expression,
+        }],
+      }] as any,
+      'http://example.org/StructureDefinition/non-boolean-constraint',
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'profile-constraint-evaluation-error',
+      severity: 'information',
+      details: expect.objectContaining({ resultTypes }),
+    }));
+    expect(issues.find(issue => issue.code === 'profile-constraint-violation')).toBeUndefined();
+  });
+
+  it('isolates hostile evaluation failures to their constraint', async () => {
+    const validator = new ConstraintValidator();
+    const hostile = {
+      toString() {
+        throw new Error('must not escape');
+      },
+    };
+    vi.spyOn(
+      validator as unknown as { evaluateFHIRPath: () => unknown },
+      'evaluateFHIRPath',
+    ).mockImplementation(() => {
+      throw hostile;
+    });
+
+    const issues = await validator.validate(
+      {
+        resourceType: 'Patient',
+        name: [{ family: 'Example' }],
+      },
+      [{
+        path: 'Patient',
+        constraint: [{
+          key: 'hostile-evaluation',
+          severity: 'error' as const,
+          human: 'Must evaluate',
+          expression: 'name.exists()',
+        }],
+      }] as any,
+      'http://example.org/StructureDefinition/hostile-evaluation',
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'profile-constraint-evaluation-error',
+        severity: 'information',
+        ruleId: 'hostile-evaluation',
+        details: expect.objectContaining({
+          evaluationError: 'Unknown error',
+        }),
+      }),
+    ]);
   });
 
   it('does not apply choice-type dateTime casts to Period values', async () => {

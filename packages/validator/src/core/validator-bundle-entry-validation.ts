@@ -2,10 +2,14 @@ import type { ValidationIssue } from '../types';
 import type { ProfileCache } from '../cache/profile-cache';
 import type { StructureDefinitionLoader } from './structure-definition-loader';
 import type { SnapshotGenerator } from './snapshot-generator';
-import { logger } from '../logger';
 import { buildBundleDocumentContextIssues, type BundleDocumentContextChildResult } from './bundle-document-context';
 import { loadProfileWithSnapshot } from './profile-loader-utils';
-import { shouldSuppressBundleEntryIssue } from './bundle-entry-issue-filter';
+import { getBundleEntryRequiredProfile } from './bundle-entry-slice-definitions';
+import { isFhirResource, type FhirResource } from './fhir-resource';
+import {
+  createBundleEntryValidationFailureIssue,
+  mapBundleEntryIssues,
+} from './bundle-entry-validation-output';
 
 export interface BundleEntryValidationDeps {
   sdLoader: StructureDefinitionLoader;
@@ -13,33 +17,33 @@ export interface BundleEntryValidationDeps {
   snapshotGenerator: SnapshotGenerator;
   maxDepth: number;
   structuralExecutor: {
-    validateResourceIdAndArrays(resource: any, contextQuestionnaire?: any): ValidationIssue[];
+    validateResourceIdAndArrays(resource: FhirResource, contextQuestionnaire?: unknown): ValidationIssue[];
   };
   validateResource(
-    resource: any,
+    resource: FhirResource,
     profileUrl: string,
     fhirVersion: 'R4' | 'R5' | 'R6',
   ): Promise<ValidationIssue[]>;
   validateNestedBundleEntries(
-    bundle: any,
+    bundle: FhirResource,
     fhirVersion: 'R4' | 'R5' | 'R6',
     recursionDepth: number,
   ): Promise<ValidationIssue[]>;
 }
 
 export async function validateBundleEntryResources(
-  bundle: any,
+  bundle: FhirResource,
   fhirVersion: 'R4' | 'R5' | 'R6',
   recursionDepth: number,
   deps: BundleEntryValidationDeps,
 ): Promise<ValidationIssue[]> {
   const out: ValidationIssue[] = [];
   const childResults: BundleDocumentContextChildResult[] = [];
-  const entries: any[] = Array.isArray(bundle?.entry) ? bundle.entry : [];
+  const entries = Array.isArray(bundle.entry) ? bundle.entry : [];
   if (entries.length === 0) return out;
 
-  const bundleDeclaredProfiles: string[] = Array.isArray(bundle?.meta?.profile) ? bundle.meta.profile : [];
-  const bundleProfileUrl = bundleDeclaredProfiles[0] || 'http://hl7.org/fhir/StructureDefinition/Bundle';
+  const bundleProfileUrl = getDeclaredProfile(bundle)
+    ?? 'http://hl7.org/fhir/StructureDefinition/Bundle';
   const bundleStructureDef = await loadProfileWithSnapshot(
     deps.sdLoader,
     deps.profileCache,
@@ -49,12 +53,14 @@ export async function validateBundleEntryResources(
   ) ?? undefined;
 
   for (let i = 0; i < entries.length; i++) {
-    const entryResource = entries[i]?.resource;
-    if (!entryResource || typeof entryResource !== 'object') continue;
-    if (!entryResource.resourceType) continue;
+    const entry = asRecord(entries[i]);
+    const entryResource = entry?.resource;
+    if (!isFhirResource(entryResource)) continue;
 
-    const declared: string[] = Array.isArray(entryResource.meta?.profile) ? entryResource.meta.profile : [];
-    const profileUrl = declared[0] || `http://hl7.org/fhir/StructureDefinition/${entryResource.resourceType}`;
+    const profileUrl = getDeclaredProfile(entryResource) || getBundleEntryRequiredProfile(
+      { entryResource, resourceType: entryResource.resourceType },
+      bundleStructureDef,
+    ) || `http://hl7.org/fhir/StructureDefinition/${entryResource.resourceType}`;
 
     let entryIssues: ValidationIssue[];
     try {
@@ -63,40 +69,32 @@ export async function validateBundleEntryResources(
       if (entryResource.resourceType === 'Bundle' && recursionDepth < deps.maxDepth) {
         entryIssues.push(...(await deps.validateNestedBundleEntries(entryResource, fhirVersion, recursionDepth + 1)));
       }
-    } catch (error) {
-      logger.warn(
-        `[RecordsValidator] Bundle entry[${i}] validation threw: ${error instanceof Error ? error.message : String(error)}`
-      );
+    } catch {
+      const failureIssue = createBundleEntryValidationFailureIssue(i, entryResource.resourceType);
+      out.push(failureIssue);
+      childResults.push({
+        index: i,
+        entryResource,
+        resourceType: entryResource.resourceType,
+        issues: [failureIssue],
+      });
       continue;
     }
 
-    const rtId = entryResource.id ? `${entryResource.resourceType}/${entryResource.id}` : entryResource.resourceType;
-    const prefix = `Bundle.entry[${i}].resource/*${rtId}*/`;
-    const rtLen = entryResource.resourceType.length;
-    const seen = new Set<string>();
-    const dedupedEntryIssues: ValidationIssue[] = [];
-
-    for (const issue of entryIssues) {
-      if (shouldSuppressBundleEntryIssue(issue)) continue;
-      const key = `${issue.code}|${issue.path}|${issue.message}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      dedupedEntryIssues.push(issue);
-      const rewritten: ValidationIssue = {
-        ...issue,
-        path: rewriteEntryPath(issue.path, prefix, entryResource.resourceType, rtLen),
-      };
-      if (issue.expression) {
-        rewritten.expression = rewriteEntryPath(issue.expression, prefix, entryResource.resourceType, rtLen);
-      }
-      out.push(rewritten);
-    }
+    const mappedIssues = mapBundleEntryIssues(entryIssues, {
+      entryIndex: i,
+      resourceType: entryResource.resourceType,
+      resourceId: typeof entryResource.id === 'string' && entryResource.id
+        ? entryResource.id
+        : undefined,
+    });
+    out.push(...mappedIssues.parentIssues);
 
     childResults.push({
       index: i,
       entryResource,
       resourceType: entryResource.resourceType,
-      issues: dedupedEntryIssues,
+      issues: mappedIssues.childIssues,
       structureDef: entryResource.resourceType === 'Composition'
         ? await loadProfileWithSnapshot(
           deps.sdLoader,
@@ -113,14 +111,17 @@ export async function validateBundleEntryResources(
   return out;
 }
 
-function rewriteEntryPath(
-  path: string | undefined,
-  prefix: string,
-  resourceType: string,
-  resourceTypeLength: number,
-): string | undefined {
-  if (!path) return path;
-  if (path === resourceType) return prefix;
-  if (path.startsWith(`${resourceType}.`)) return `${prefix}.${path.slice(resourceTypeLength + 1)}`;
-  return `${prefix}.${path}`;
+function getDeclaredProfile(resource: Record<string, unknown>): string | undefined {
+  const meta = asRecord(resource.meta);
+  return Array.isArray(meta?.profile)
+    ? meta.profile.find((profile): profile is string => typeof profile === 'string')
+    : typeof meta?.profile === 'string'
+      ? meta.profile
+      : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

@@ -235,9 +235,6 @@ export class ParityModeFilter {
     }
 }
 
-// Singleton
-export const parityModeFilter = new ParityModeFilter();
-
 /**
  * Convenience function to filter issues in parity mode
  */
@@ -246,6 +243,5 @@ export function filterForParity(
     enable = true
 ): ValidationIssue[] {
     if (!enable) return issues;
-    parityModeFilter.enable();
-    return parityModeFilter.filter(issues);
+    return new ParityModeFilter({ enabled: true }).filter(issues);
 }

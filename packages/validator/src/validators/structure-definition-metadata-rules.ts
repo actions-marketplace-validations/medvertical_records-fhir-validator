@@ -2,19 +2,26 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { STATUS_CONSISTENCY, WG_CONTACT_URL, WG_PUBLISHER } from './sd-wg-mappings';
 
-export function validateStructureDefinitionWgConsistency(resource: any): ValidationIssue[] {
+export function validateStructureDefinitionWgConsistency(resource: unknown): ValidationIssue[] {
+  if (!isRecord(resource)) return [];
   const issues: ValidationIssue[] = [];
-  const resourceType = resource.resourceType;
+  const resourceType = typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : 'StructureDefinition';
 
-  const wgExt = (resource.extension || []).find(
-    (extension: any) => extension?.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-wg'
+  const wgExt = getRecordArray(resource.extension).find(
+    extension => extension.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-wg'
   );
-  if (!wgExt?.valueCode) return issues;
+  if (typeof wgExt?.valueCode !== 'string') return issues;
 
   const wg = wgExt.valueCode;
   const expectedPublisher = WG_PUBLISHER[wg];
 
-  if (expectedPublisher && resource.publisher && !publisherMatchesWg(resource.publisher, expectedPublisher)) {
+  if (
+    expectedPublisher &&
+    typeof resource.publisher === 'string' &&
+    !publisherMatchesWg(resource.publisher, expectedPublisher)
+  ) {
     issues.push(createValidationIssue({
       code: 'business-rule-wg-publisher',
       path: resourceType,
@@ -45,11 +52,12 @@ export function validateStructureDefinitionWgConsistency(resource: any): Validat
   return issues;
 }
 
-export function validateStructureDefinitionStatusConsistency(sd: any): ValidationIssue[] {
-  const stdStatusExt = (sd.extension || []).find(
-    (extension: any) => extension?.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'
+export function validateStructureDefinitionStatusConsistency(sd: unknown): ValidationIssue[] {
+  if (!isRecord(sd)) return [];
+  const stdStatusExt = getRecordArray(sd.extension).find(
+    extension => extension.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'
   );
-  if (!stdStatusExt?.valueCode || !sd.status) return [];
+  if (typeof stdStatusExt?.valueCode !== 'string' || typeof sd.status !== 'string') return [];
 
   const allowed = STATUS_CONSISTENCY[stdStatusExt.valueCode];
   if (allowed && !allowed.includes(sd.status)) {
@@ -65,12 +73,19 @@ export function validateStructureDefinitionStatusConsistency(sd: any): Validatio
   return [];
 }
 
-function extractContactUrls(contacts: any[] | undefined): string[] {
+function extractContactUrls(contacts: unknown): string[] {
   if (!Array.isArray(contacts)) return [];
   const urls: string[] = [];
   for (const contact of contacts) {
-    for (const telecom of contact?.telecom || []) {
-      if (telecom?.system === 'url' && telecom.value) urls.push(telecom.value);
+    if (!isRecord(contact) || !Array.isArray(contact.telecom)) continue;
+    for (const telecom of contact.telecom) {
+      if (
+        isRecord(telecom) &&
+        telecom.system === 'url' &&
+        typeof telecom.value === 'string'
+      ) {
+        urls.push(telecom.value);
+      }
     }
   }
   return urls;
@@ -103,4 +118,12 @@ function normalizeWgContactUrl(value: string): string {
     .replace(/^www\./, '')
     .replace(/\/index\.(cfm|html?)$/, '')
     .replace(/\/$/, '');
+}
+
+function getRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

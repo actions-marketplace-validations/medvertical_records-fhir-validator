@@ -139,6 +139,82 @@ describe('collectCanonicalCandidates', () => {
     expect(result.totalCandidates).toBe(2);
   });
 
+  it('does not resolve package traversal outside a configured search root', () => {
+    const outsideName = `${path.basename(root)}-outside`;
+    const outside = path.join(path.dirname(root), outsideName, 'package');
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(outside, 'package.json'), '{}');
+    fs.writeFileSync(path.join(outside, 'ValueSet-secret.json'), JSON.stringify({
+      resourceType: 'ValueSet',
+      url: 'https://outside.example/ValueSet/secret',
+      version: '1.0.0',
+    }));
+
+    try {
+      const result = collectCanonicalCandidates(
+        [`../${outsideName}`],
+        { searchPaths: [root] },
+      );
+
+      expect(result.totalCandidates).toBe(0);
+      expect(result.missingPackages).toEqual([`../${outsideName}`]);
+    } finally {
+      fs.rmSync(path.join(path.dirname(root), outsideName), { recursive: true, force: true });
+    }
+  });
+
+  it('does not follow package-directory symlinks outside a search root', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'records-pkg-outside-'));
+    const outsidePackage = path.join(outside, 'package');
+    fs.mkdirSync(outsidePackage, { recursive: true });
+    fs.writeFileSync(path.join(outsidePackage, 'package.json'), '{}');
+    fs.writeFileSync(path.join(outsidePackage, 'CodeSystem-secret.json'), JSON.stringify({
+      resourceType: 'CodeSystem',
+      url: 'https://outside.example/CodeSystem/secret',
+      version: '1.0.0',
+    }));
+    const link = path.join(root, 'org.example.link#1.0.0');
+    fs.symlinkSync(outside, link, 'dir');
+
+    try {
+      const result = collectCanonicalCandidates(
+        ['org.example.link#1.0.0'],
+        { searchPaths: [root] },
+      );
+
+      expect(result.totalCandidates).toBe(0);
+      expect(result.missingPackages).toEqual(['org.example.link#1.0.0']);
+    } finally {
+      fs.rmSync(link, { force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('does not follow canonical JSON file symlinks outside a package', () => {
+    const packageDir = path.join(root, 'org.example.file-link#1.0.0', 'package');
+    fs.mkdirSync(packageDir, { recursive: true });
+    fs.writeFileSync(path.join(packageDir, 'package.json'), '{}');
+    const outsideFile = path.join(os.tmpdir(), `records-secret-${path.basename(root)}.json`);
+    fs.writeFileSync(outsideFile, JSON.stringify({
+      resourceType: 'ValueSet',
+      url: 'https://outside.example/ValueSet/file-secret',
+      version: '1.0.0',
+    }));
+    fs.symlinkSync(outsideFile, path.join(packageDir, 'ValueSet-secret.json'));
+
+    try {
+      const result = collectCanonicalCandidates(
+        ['org.example.file-link#1.0.0'],
+        { searchPaths: [root] },
+      );
+
+      expect(result.totalCandidates).toBe(0);
+      expect(result.emptyPackages).toEqual(['org.example.file-link#1.0.0']);
+    } finally {
+      fs.rmSync(outsideFile, { force: true });
+    }
+  });
+
   it('feeds the result directly into pinCanonicals — duplicate URL collapses to one pin', () => {
     const collector = collectCanonicalCandidates(
       ['org.example.a#1.0.0', 'org.example.b#2.1.0'],

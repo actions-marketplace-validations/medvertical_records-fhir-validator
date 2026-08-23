@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { globToRegExp, shouldIncludeFile, splitPatterns, walkJson } from '../cli-file-matching';
+import { globToRegExp, shouldIncludeFile, splitPatterns, walkFhirInput } from '../cli-file-matching';
 
 const tempDirs: string[] = [];
 
@@ -39,15 +39,19 @@ describe('CLI file matching helpers', () => {
     expect(pattern.test('fixtures/nested/patient.xml')).toBe(false);
   });
 
-  it('walks only JSON files from nested folders', async () => {
+  it('walks JSON, XML, and NDJSON FHIR inputs from nested folders', async () => {
     const root = await createTempDir();
     const patient = await writeFixture(root, 'fixtures/patient.json');
     const observation = await writeFixture(root, 'fixtures/nested/observation.json');
+    const patientXml = await writeFixture(root, 'fixtures/patient.xml');
+    const bulk = await writeFixture(root, 'fixtures/bulk.ndjson');
     await writeFixture(root, 'fixtures/notes.txt');
 
-    expect(Array.from(walkJson(join(root, 'fixtures'))).sort()).toEqual([
+    expect(Array.from(walkFhirInput(join(root, 'fixtures'))).sort()).toEqual([
+      bulk,
       observation,
       patient,
+      patientXml,
     ].sort());
   });
 

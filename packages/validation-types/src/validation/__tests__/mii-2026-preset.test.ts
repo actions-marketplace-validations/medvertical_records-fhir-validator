@@ -4,6 +4,8 @@ import {
   createMii2026ValidationSettings,
   FHIR_CORE_EXTENSION_PACKAGE_SET,
   FHIR_CORE_EXTENSION_PACKAGE_VERSIONS,
+  FHIR_CORE_PACKAGE_SET,
+  FHIR_CORE_PACKAGE_VERSIONS,
   FHIR_CORE_TERMINOLOGY_PACKAGE_SET,
   FHIR_CORE_TERMINOLOGY_PACKAGE_VERSIONS,
   HL7_EU_EHDS_2026_PACKAGE_SET,
@@ -14,6 +16,14 @@ import {
 } from '../index';
 
 describe('MII 2026 validation preset', () => {
+  it('pins R4B core as a distinct maintenance-release package', () => {
+    expect(FHIR_CORE_PACKAGE_SET)
+      .toHaveLength(Object.keys(FHIR_CORE_PACKAGE_VERSIONS).length);
+    expect(FHIR_CORE_PACKAGE_SET).toContainEqual({
+      id: 'hl7.fhir.r4b.core',
+      version: '4.3.0',
+    });
+  });
   it('pins core terminology packages for deterministic local binding checks', () => {
     expect(FHIR_CORE_TERMINOLOGY_PACKAGE_SET)
       .toHaveLength(Object.keys(FHIR_CORE_TERMINOLOGY_PACKAGE_VERSIONS).length);
@@ -41,6 +51,14 @@ describe('MII 2026 validation preset', () => {
     expect(MII_2026_PACKAGE_SET).toContainEqual({
       id: 'de.medizininformatikinitiative.kerndatensatz.consent',
       version: '2026.0.1-rc-2'
+    });
+    expect(MII_2026_PACKAGE_SET).toContainEqual({
+      id: 'de.einwilligungsmanagement',
+      version: '2.0.3'
+    });
+    expect(MII_2026_PACKAGE_SET).toContainEqual({
+      id: 'de.medizininformatikinitiative.kerndatensatz.pros',
+      version: '2026.3.0'
     });
   });
 
@@ -105,8 +123,12 @@ describe('HL7 Europe EHDS 2026 package lane', () => {
       version: '2.0.0'
     });
     expect(HL7_EU_EHDS_2026_PACKAGE_SET).toContainEqual({
-      id: 'hl7.fhir.eu.eps.r4',
-      version: '1.0.0-alpha'
+      id: 'hl7.fhir.eu.eps',
+      version: '1.0.0-ballot'
+    });
+    expect(HL7_EU_EHDS_2026_PACKAGE_SET).toContainEqual({
+      id: 'hl7.fhir.uv.xver-r5.r4',
+      version: '0.1.0'
     });
   });
 

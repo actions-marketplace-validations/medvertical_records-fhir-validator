@@ -1,13 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { TwoPhaseTerminologyExpansion } from '../terminology-two-phase-expansion';
 import type { CodeSystem, ValueSet } from '../valueset-types';
 
-function createExpansion(valueSets: Record<string, ValueSet>, codeSystems: Record<string, CodeSystem> = {}) {
+function createExpansion(
+  valueSets: Record<string, ValueSet>,
+  codeSystems: Record<string, CodeSystem> = {},
+  maxCacheEntries?: number,
+) {
   return new TwoPhaseTerminologyExpansion({
     loadValueSetResource: async (url: string) => valueSets[url] ?? null,
     loadCodeSystem: async (url: string) => codeSystems[url] ?? null,
     extractCodesFromCodeSystem: (codeSystem: CodeSystem) => codeSystem.concept?.map(concept => concept.code) ?? [],
-  } as any);
+  } as any, maxCacheEntries);
 }
 
 describe('TwoPhaseTerminologyExpansion', () => {
@@ -84,5 +88,60 @@ describe('TwoPhaseTerminologyExpansion', () => {
       coverage: 'complete',
       source: 'compose',
     });
+  });
+
+  it('bounds cached expansions and evicts the least recently used entry', async () => {
+    const loadValueSetResource = vi.fn(async (url: string) => ({
+      resourceType: 'ValueSet',
+      url,
+      status: 'active',
+      expansion: { contains: [{ code: url.slice(-1) }] },
+    }));
+    const expansion = new TwoPhaseTerminologyExpansion({
+      loadValueSetResource,
+      loadCodeSystem: vi.fn(),
+      extractCodesFromCodeSystem: vi.fn(),
+    } as any, 2);
+
+    await expansion.lookup('a', undefined, 'a');
+    await expansion.lookup('b', undefined, 'b');
+    await expansion.lookup('a', undefined, 'a');
+    await expansion.lookup('c', undefined, 'c');
+    await expansion.lookup('b', undefined, 'b');
+
+    expect(loadValueSetResource).toHaveBeenCalledTimes(4);
+  });
+
+  it('coalesces concurrent expansion builds and does not repopulate after clear', async () => {
+    let resolveLoad: ((value: ValueSet) => void) | undefined;
+    const loadValueSetResource = vi.fn(() => new Promise<ValueSet>(resolve => {
+      resolveLoad = resolve;
+    }));
+    const expansion = new TwoPhaseTerminologyExpansion({
+      loadValueSetResource,
+      loadCodeSystem: vi.fn(),
+      extractCodesFromCodeSystem: vi.fn(),
+    } as any, 2);
+
+    const first = expansion.lookup('A', undefined, 'http://example.test/vs');
+    const second = expansion.lookup('A', undefined, 'http://example.test/vs');
+    expansion.clear();
+    resolveLoad?.({
+      resourceType: 'ValueSet',
+      url: 'http://example.test/vs',
+      status: 'active',
+      expansion: { contains: [{ code: 'A' }] },
+    });
+    await Promise.all([first, second]);
+
+    const third = expansion.lookup('A', undefined, 'http://example.test/vs');
+    expect(loadValueSetResource).toHaveBeenCalledTimes(2);
+    resolveLoad?.({
+      resourceType: 'ValueSet',
+      url: 'http://example.test/vs',
+      status: 'active',
+      expansion: { contains: [{ code: 'A' }] },
+    });
+    await third;
   });
 });

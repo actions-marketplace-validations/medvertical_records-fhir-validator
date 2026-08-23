@@ -13,12 +13,15 @@
  * Both operators have collection-safe equivalents that are identical for the
  * singleton case the operators were designed for:
  *
- * - `X as T`  →  `X.ofType(T)`        — filter to items of the type. For a
+ * - `X as T`  →  `X.ofType(T)`          — filter to items of the type. For a
  *   singleton this returns the item if it matches (else empty), exactly like
  *   `as`.
- * - `X is T`  →  `X.all($this is T)`  — true iff every item is of the type.
- *   For a singleton (and for empty) this is exactly `X is T`; for a collection
- *   it is a sensible total semantics instead of a throw.
+ * - `X is T`  →  `X.select($this is T)` — type-test each item. For a singleton
+ *   this is exactly `X is T`; for a collection every item is tested instead of
+ *   a throw. Crucially, empty input stays EMPTY: `is` on empty is empty per
+ *   spec, and an `.all()` rewrite would turn it vacuously true — flipping
+ *   `who.exists(resolve() is Practitioner) implies ...` constraints into false
+ *   positives whenever `resolve()` cannot dereference an external reference.
  *
  * `.type()` is left alone — it already works on collections.
  */
@@ -48,7 +51,7 @@ export function rewriteCollectionTypeOperators(expression: string): string {
     }
     if (/\bis\b/.test(rewritten)) {
         rewritten = rewritten.replace(IS_OPERATOR, (_m, operand: string, type: string) =>
-            `${operand}.all($this is ${type})`,
+            `${operand}.select($this is ${type})`,
         );
     }
     return rewritten;

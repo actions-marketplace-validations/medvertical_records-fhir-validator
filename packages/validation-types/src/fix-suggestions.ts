@@ -13,7 +13,7 @@
  * imports of `fix-suggestions` keep working unchanged.
  */
 
-import type { FixSuggestion } from './fix-suggestions/types';
+import type { FixPatch, FixSuggestion } from './fix-suggestions/types';
 import { CATALOG_CORE } from './fix-suggestions/catalog-core';
 import { CATALOG_REFERENCE_PROFILE } from './fix-suggestions/catalog-reference-profile';
 import { CATALOG_INVARIANTS } from './fix-suggestions/catalog-invariants';
@@ -22,8 +22,6 @@ import { ASPECT_FALLBACKS, FIX_SUGGESTION_ALIASES } from './fix-suggestions/fall
 
 export type { FixPatch, FixSuggestion } from './fix-suggestions/types';
 export { ASPECT_FALLBACKS, FIX_SUGGESTION_ALIASES } from './fix-suggestions/fallbacks';
-
-import type { FixPatch } from './fix-suggestions/types';
 
 // ============================================================================
 // Full Fix Suggestions Catalog

@@ -1,5 +1,12 @@
 import axios from 'axios';
 import { logger } from '../logger';
+import {
+    parseHierarchyResponse,
+    parseSubsumptionResponse,
+} from './terminology-hierarchy-response';
+import { BoundedLruCache } from '../cache/bounded-lru-cache';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 
 export interface SubsumptionResult {
     /**
@@ -55,20 +62,25 @@ const ICD10_CM_URL = 'http://hl7.org/fhir/sid/icd-10-cm';
 const _ICD10_WHO_URL = 'http://hl7.org/fhir/sid/icd-10';
 const _LOINC_URL = 'http://loinc.org';
 const DEFAULT_TX_SERVER = 'https://tx.fhir.org/r4';
-
+const DEFAULT_CACHE_ENTRIES = 2_000;
 export class TerminologyHierarchyValidator {
     private serverUrl: string;
     private timeout: number;
-    private subsumptionCache: Map<string, SubsumptionResult> = new Map();
-    private hierarchyCache: Map<string, HierarchyInfo> = new Map();
+    private subsumptionCache: BoundedLruCache<string, SubsumptionResult>;
+    private hierarchyCache: BoundedLruCache<string, HierarchyInfo>;
 
-    constructor(options?: { serverUrl?: string; timeout?: number }) {
-        this.serverUrl = options?.serverUrl || DEFAULT_TX_SERVER;
-        this.timeout = options?.timeout || 5000;
+    constructor(options?: { serverUrl?: string; timeout?: number; maxCacheEntries?: number }) {
+        this.serverUrl = normalizeServerUrl(options?.serverUrl);
+        this.timeout = isPositiveFiniteNumber(options?.timeout) ? options.timeout : 5000;
+        const maxCacheEntries = isPositiveFiniteNumber(options?.maxCacheEntries)
+            ? options.maxCacheEntries
+            : DEFAULT_CACHE_ENTRIES;
+        this.subsumptionCache = new BoundedLruCache(maxCacheEntries);
+        this.hierarchyCache = new BoundedLruCache(maxCacheEntries);
     }
 
     setServerUrl(url: string): void {
-        this.serverUrl = url;
+        this.serverUrl = normalizeServerUrl(url);
         this.subsumptionCache.clear();
         this.hierarchyCache.clear();
     }
@@ -79,9 +91,8 @@ export class TerminologyHierarchyValidator {
     ): Promise<SubsumptionResult> {
         const cacheKey = `${SNOMED_CT_URL}|${codeA}|${codeB}`;
 
-        if (this.subsumptionCache.has(cacheKey)) {
-            return this.subsumptionCache.get(cacheKey)!;
-        }
+        const cached = this.subsumptionCache.get(cacheKey);
+        if (cached) return { ...cached };
 
         try {
             const params = {
@@ -91,7 +102,10 @@ export class TerminologyHierarchyValidator {
                 _format: 'json'
             };
 
-            logger.debug(`[HierarchyValidator] Checking SNOMED subsumption: ${codeA} → ${codeB}`);
+            logger.debug(
+                '[HierarchyValidator] Checking SNOMED subsumption',
+                terminologyTargetMetadata(SNOMED_CT_URL, codeA, codeB),
+            );
 
             const response = await axios.get(`${this.serverUrl}/CodeSystem/$subsumes`, {
                 params,
@@ -99,10 +113,8 @@ export class TerminologyHierarchyValidator {
                 headers: { 'Accept': 'application/fhir+json' }
             });
 
-            const parameters = response.data;
-            if (parameters.resourceType === 'Parameters') {
-                const outcomeParam = parameters.parameter?.find((p: any) => p.name === 'outcome');
-                const outcome = outcomeParam?.valueCode as SubsumptionResult['outcome'] || 'not-subsumed';
+            const outcome = parseSubsumptionResponse(response.data);
+            if (outcome) {
 
                 const result: SubsumptionResult = {
                     outcome,
@@ -110,22 +122,28 @@ export class TerminologyHierarchyValidator {
                     checkable: true,
                 };
 
-                this.subsumptionCache.set(cacheKey, result);
+                this.subsumptionCache.set(cacheKey, { ...result });
                 logger.debug(`[HierarchyValidator] SNOMED subsumption result: ${outcome}`);
-                return result;
+                return { ...result };
             }
 
-            return { outcome: 'unknown', related: false, checkable: false };
-
-        } catch (error: unknown) {
-            const err = error instanceof Error ? error : new Error(String(error));
-            const errorMsg = err.message || 'Unknown error';
-            logger.warn(`[HierarchyValidator] SNOMED subsumption check failed: ${errorMsg}`);
             return {
                 outcome: 'unknown',
                 related: false,
                 checkable: false,
-                error: errorMsg,
+                error: 'Terminology server returned an unexpected response',
+            };
+
+        } catch (error: unknown) {
+            logger.warn(
+                '[HierarchyValidator] SNOMED subsumption check failed',
+                validationFailureMetadata(error),
+            );
+            return {
+                outcome: 'unknown',
+                related: false,
+                checkable: false,
+                error: 'Terminology server unavailable',
             };
         }
     }
@@ -243,9 +261,8 @@ export class TerminologyHierarchyValidator {
     ): Promise<HierarchyInfo | null> {
         const cacheKey = `${system}|${code}`;
 
-        if (this.hierarchyCache.has(cacheKey)) {
-            return this.hierarchyCache.get(cacheKey)!;
-        }
+        const cached = this.hierarchyCache.get(cacheKey);
+        if (cached) return cloneHierarchyInfo(cached);
 
         try {
             const params = {
@@ -261,42 +278,25 @@ export class TerminologyHierarchyValidator {
                 headers: { 'Accept': 'application/fhir+json' }
             });
 
-            const parameters = response.data;
-            if (parameters.resourceType === 'Parameters') {
+            const parsed = parseHierarchyResponse(response.data);
+            if (parsed) {
                 const info: HierarchyInfo = { code, system };
 
-                const displayParam = parameters.parameter?.find((p: any) => p.name === 'display');
-                if (displayParam?.valueString) {
-                    info.display = displayParam.valueString;
-                }
+                if (parsed.display) info.display = parsed.display;
+                if (parsed.parents.length > 0) info.parents = parsed.parents;
+                if (parsed.children.length > 0) info.children = parsed.children;
 
-                const parentParams = parameters.parameter?.filter(
-                    (p: any) => p.name === 'property' && p.part?.some((pp: any) => pp.name === 'code' && pp.valueCode === 'parent')
-                );
-                if (parentParams?.length > 0) {
-                    info.parents = parentParams.map((p: any) =>
-                        p.part?.find((pp: any) => pp.name === 'value')?.valueCode
-                    ).filter(Boolean);
-                }
-
-                const childParams = parameters.parameter?.filter(
-                    (p: any) => p.name === 'property' && p.part?.some((pp: any) => pp.name === 'code' && pp.valueCode === 'child')
-                );
-                if (childParams?.length > 0) {
-                    info.children = childParams.map((p: any) =>
-                        p.part?.find((pp: any) => pp.name === 'value')?.valueCode
-                    ).filter(Boolean);
-                }
-
-                this.hierarchyCache.set(cacheKey, info);
-                return info;
+                this.hierarchyCache.set(cacheKey, cloneHierarchyInfo(info));
+                return cloneHierarchyInfo(info);
             }
 
             return null;
 
         } catch (error: unknown) {
-            const err = error instanceof Error ? error : new Error(String(error));
-            logger.warn(`[HierarchyValidator] Hierarchy lookup failed: ${err.message}`);
+            logger.warn(
+                '[HierarchyValidator] Hierarchy lookup failed',
+                validationFailureMetadata(error),
+            );
             return null;
         }
     }
@@ -314,15 +314,30 @@ export class TerminologyHierarchyValidator {
     }
 }
 
-let hierarchyValidatorInstance: TerminologyHierarchyValidator | null = null;
+function cloneHierarchyInfo(info: HierarchyInfo): HierarchyInfo {
+    return {
+        ...info,
+        ...(info.parents ? { parents: [...info.parents] } : {}),
+        ...(info.children ? { children: [...info.children] } : {}),
+        ...(info.ancestors ? { ancestors: [...info.ancestors] } : {}),
+        ...(info.descendants ? { descendants: [...info.descendants] } : {}),
+    };
+}
+
+function normalizeServerUrl(value: unknown): string {
+    return typeof value === 'string' && value.trim().length > 0
+        ? value.trim().replace(/\/+$/, '')
+        : DEFAULT_TX_SERVER;
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
 
 export function getHierarchyValidator(): TerminologyHierarchyValidator {
-    if (!hierarchyValidatorInstance) {
-        hierarchyValidatorInstance = new TerminologyHierarchyValidator();
-    }
-    return hierarchyValidatorInstance;
+    return new TerminologyHierarchyValidator();
 }
 
 export function resetHierarchyValidator(): void {
-    hierarchyValidatorInstance = null;
+    // Compatibility no-op: validator instances are caller-owned.
 }

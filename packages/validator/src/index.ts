@@ -5,18 +5,27 @@
  *
  * Usage:
  *   import { recordsValidator } from '@records-fhir/validator';
- *   const issues = await recordsValidator.validate(resource, profileUrl);
+ *   const issues = await recordsValidator.validateRequest({ resource, profileUrl });
  */
 
 export {
+  acquireRecordsValidatorRuntime,
   ensureRecordsValidatorReady,
   getRecordsValidatorClass,
   recordsValidator,
 } from './validator-singleton';
-export type { RecordsValidatorSingleton } from './validator-singleton';
-
-export { toInternalFhirVersion } from './public-validation-api';
 export type {
+  RecordsValidationRequest,
+  RecordsValidatorAdministration,
+  RecordsValidatorInspection,
+  RecordsValidatorRuntimeLease,
+  RecordsValidatorSingleton,
+  RecordsValidatorValidation,
+} from './validator-singleton-types';
+
+export { resolveFhirReleaseContext, toInternalFhirVersion } from './public-validation-api';
+export type {
+  FhirReleaseContext,
   PublicBatchValidationOptions,
   PublicFhirVersion,
   PublicValidationInput,
@@ -25,19 +34,35 @@ export type {
 } from './public-validation-api';
 
 // Validator classes kept on the root surface for backward compatibility.
+export { BestPracticeValidator, validateBestPractices } from './validators/best-practice-validator';
+export type { BestPracticeSettings, BestPracticeValidationContext } from './validators/best-practice-validator';
 export { ExtensionValidator } from './validators/extension-validator';
 export { SlicingValidator } from './validators/slicing-validator';
 export { ValueSetValidator } from './validators/valueset-validator';
 export { ConstraintValidator } from './validators/constraint-validator';
 export type { FHIRPathConstraintDiagnostics } from './validators/constraint-validator';
 export { SnapshotGenerator } from './core/snapshot-generator';
-export { inferCodeBasedProfiles } from './core/code-inferred-profiles';
+export { inferCodeBasedProfiles, matchCodeInferredProfile } from './core/code-inferred-profiles';
+export type { CodeInferredProfileMatch } from './core/code-inferred-profiles';
+export {
+  CODE_INFERRED_SIGNPOST_CODE,
+  createCodeInferredProfileSignpostIssue,
+} from './core/code-inferred-profile-attribution';
 
 export type { RecordsValidatorConfig, ValidationContext } from './core/validator-engine';
 export type { StructureDefinition, ElementDefinition } from './core/structure-definition-types';
 
 export { setEngineLogger } from './logger';
 export type { EngineLogger } from './logger';
+export {
+  setTerminologyBrokerObserver,
+  TerminologyRequestBroker,
+} from './validators/terminology-request-broker';
+export type {
+  TerminologyBrokerObservation,
+  TerminologyBrokerObserver,
+  TerminologyRemoteOperation,
+} from './validators/terminology-request-broker';
 export {
   getCustomRulesSource,
   getProfileSource,
@@ -87,3 +112,11 @@ export {
   type DedupeIssuesResult,
   type DedupeSuppressionTrace,
 } from './dedupe';
+
+export {
+  parseFhirNdjson,
+  parseFhirXml,
+  type FhirInputLimits,
+  type FhirInputLocation,
+  type ParsedFhirInput,
+} from './input';

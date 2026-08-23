@@ -4,7 +4,6 @@
  * Shared utilities for validation operations.
  * Extracted from validator-engine.ts to comply with global.mdc guidelines.
  */
-/* eslint-disable max-lines */
 
 import type { ValidationIssue } from '../types';
 import { normalizeChoiceTypePath } from './choice-type-path';
@@ -14,19 +13,19 @@ import { getPrimitiveSidecar, resolveFhirSegmentValue } from './fhir-primitive-s
  * Helper: Get value at FHIRPath-like path
  * Simplified path resolution (e.g., "Patient.name" -> resource.name)
  */
-export function getValueAtPath(resource: any, path: string): any {
+export function getValueAtPath(resource: unknown, path: string): unknown {
   const parts = path.split('.');
 
-  if (parts[0] === resource.resourceType) {
+  if (isObjectRecord(resource) && parts[0] === resource.resourceType) {
     parts.shift();
   }
 
-  let currentValues: any[] = [resource];
+  let currentValues: unknown[] = [resource];
 
   for (let partIndex = 0; partIndex < parts.length; partIndex++) {
     const part = parts[partIndex];
     const hasRemainingPath = partIndex < parts.length - 1;
-    const nextValues: any[] = [];
+    const nextValues: unknown[] = [];
 
     for (const current of currentValues) {
       if (current === undefined || current === null) {
@@ -68,12 +67,10 @@ export function getValueAtPath(resource: any, path: string): any {
   return currentValues.length === 1 ? currentValues[0] : currentValues;
 }
 
-function resolveSegmentForPath(container: any, segment: string, hasRemainingPath: boolean): any {
+function resolveSegmentForPath(container: unknown, segment: string, hasRemainingPath: boolean): unknown {
   if (
     hasRemainingPath &&
-    container &&
-    typeof container === 'object' &&
-    !Array.isArray(container) &&
+    isObjectRecord(container) &&
     isPrimitiveValueOrPrimitiveArray(container[segment])
   ) {
     const sidecar = getPrimitiveSidecar(container, segment);
@@ -94,51 +91,15 @@ function isPrimitiveValueOrPrimitiveArray(value: unknown): boolean {
     : isPrimitiveValue(value);
 }
 
-/**
- * Create a validation error issue
- */
-export function createValidationErrorIssue(
-  aspect: ValidationIssue['aspect'],
-  code: string,
-  message: string,
-  details?: Record<string, any>,
-  path?: string
-): ValidationIssue {
-  return {
-    id: `records-${code}-${Date.now()}`,
-    aspect,
-    severity: 'error',
-    code,
-    message,
-    path: path || '',
-    timestamp: new Date(),
-    ...(details && { details })
-  };
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/**
- * Create a validation information issue (for system messages, not user errors)
- * Used for things like profile-not-found, which are system-level messages
- * rather than validation errors in the user's data
- */
-export function createValidationInfoIssue(
-  aspect: ValidationIssue['aspect'],
-  code: string,
-  message: string,
-  details?: Record<string, any>,
-  path?: string
-): ValidationIssue {
-  return {
-    id: `records-${code}-${Date.now()}`,
-    aspect,
-    severity: 'info',
-    code,
-    message,
-    path: path || '',
-    timestamp: new Date(),
-    ...(details && { details })
-  };
-}
+export {
+  createValidationErrorIssue,
+  createValidationInfoIssue,
+  createValidationWarningIssue,
+} from './core-validation-issue';
 
 export {
   dedupeExactIssues,

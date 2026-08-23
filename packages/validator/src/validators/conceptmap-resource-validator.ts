@@ -6,17 +6,22 @@ import {
   getCachedCodeSystem,
   isTxOnlySystem,
 } from './terminology-resource-utils';
+import { ValueSetCache } from './valueset-cache';
 
 /**
  * Validate ConceptMap target displays against the target CodeSystem,
  * matching the diagnostics Java emits in `R5.cs-val-cm-base`.
  */
-export function validateConceptMapResource(cm: any): ValidationIssue[] {
+export function validateConceptMapResource(
+  cm: unknown,
+  cache: ValueSetCache = new ValueSetCache(),
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const groups: any[] = Array.isArray(cm?.group) ? cm.group : [];
+  const conceptMap = asRecord(cm);
+  const groups = Array.isArray(conceptMap?.group) ? conceptMap.group : [];
 
   for (let gi = 0; gi < groups.length; gi++) {
-    const group = groups[gi];
+    const group = asRecord(groups[gi]);
     const sourceSystem = typeof group?.source === 'string' ? group.source : undefined;
     const targetSystem = typeof group?.target === 'string' ? group.target : undefined;
 
@@ -32,14 +37,15 @@ export function validateConceptMapResource(cm: any): ValidationIssue[] {
       }));
     }
 
-    const targetCs = getCachedCodeSystem(targetSystem);
+    const targetCs = getCachedCodeSystem(targetSystem, cache);
     if (!targetCs) continue;
 
-    const elements: any[] = Array.isArray(group?.element) ? group.element : [];
+    const elements = Array.isArray(group?.element) ? group.element : [];
     for (let ei = 0; ei < elements.length; ei++) {
-      const targets: any[] = Array.isArray(elements[ei]?.target) ? elements[ei].target : [];
+      const element = asRecord(elements[ei]);
+      const targets = Array.isArray(element?.target) ? element.target : [];
       for (let ti = 0; ti < targets.length; ti++) {
-        const target = targets[ti];
+        const target = asRecord(targets[ti]);
         if (typeof target?.code !== 'string' || typeof target.display !== 'string') continue;
         if (!codeSystemHasCode(targetCs, target.code)) continue;
         const expected = codeSystemDisplayFor(targetCs, target.code);
@@ -59,4 +65,10 @@ export function validateConceptMapResource(cm: any): ValidationIssue[] {
   }
 
   return issues;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

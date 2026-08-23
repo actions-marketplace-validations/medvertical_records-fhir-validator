@@ -1,10 +1,7 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  createIsolatedSlicingValueSetLoader,
-  withResolvedFhirPackageCachePath,
-} from '../slicing-valueset-loader';
+import { createIsolatedSlicingValueSetLoader } from '../slicing-valueset-loader';
 
 const originalCachePath = process.env.FHIR_PACKAGE_CACHE_PATH;
 
@@ -17,13 +14,15 @@ describe('slicing ValueSet loader boundary', () => {
     }
   });
 
+  // The user package cache ranks last: it supplements the repo-bundled
+  // stores but must never shadow them (see defaultPackageDirectories).
   it('uses the real home directory when dotenv left a literal $HOME path', () => {
     process.env.FHIR_PACKAGE_CACHE_PATH = '$HOME/.fhir/packages';
 
     const loader = createIsolatedSlicingValueSetLoader();
 
     expect(process.env.FHIR_PACKAGE_CACHE_PATH).toBe('$HOME/.fhir/packages');
-    expect(loader.getPackageDirectories()[0]).toBe(join(homedir(), '.fhir', 'packages'));
+    expect(loader.getPackageDirectories()).toContain(join(homedir(), '.fhir', 'packages'));
   });
 
   it('preserves explicit non-placeholder package cache paths', () => {
@@ -33,7 +32,8 @@ describe('slicing ValueSet loader boundary', () => {
     const loader = createIsolatedSlicingValueSetLoader();
 
     expect(process.env.FHIR_PACKAGE_CACHE_PATH).toBe(explicitPath);
-    expect(loader.getPackageDirectories()[0]).toBe(explicitPath);
+    const directories = loader.getPackageDirectories();
+    expect(directories[directories.length - 1]).toBe(explicitPath);
   });
 
   it('searches the current bundled profile package directory for slicing ValueSets', () => {
@@ -44,12 +44,13 @@ describe('slicing ValueSet loader boundary', () => {
     );
   });
 
-  it('restores literal $HOME paths when loader creation throws', () => {
+  it('does not mutate the process-wide path while creating multiple loaders', () => {
     process.env.FHIR_PACKAGE_CACHE_PATH = '$HOME/.fhir/packages';
 
-    expect(() => withResolvedFhirPackageCachePath(() => {
-      throw new Error('boom');
-    })).toThrow('boom');
+    const first = createIsolatedSlicingValueSetLoader();
+    const second = createIsolatedSlicingValueSetLoader();
+
     expect(process.env.FHIR_PACKAGE_CACHE_PATH).toBe('$HOME/.fhir/packages');
+    expect(first).not.toBe(second);
   });
 });

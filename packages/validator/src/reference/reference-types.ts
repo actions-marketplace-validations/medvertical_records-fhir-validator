@@ -36,7 +36,7 @@ export interface ReferenceFormatValidation {
 export interface ReferenceResolutionResult {
   exists: boolean;
   resourceType?: string;
-  resource?: any;
+  resource?: unknown;
   error?: string;
   resolvedFrom?: 'server' | 'bundle' | 'contained' | 'cache';
 }
@@ -60,8 +60,8 @@ export interface ReferenceValidationOptions {
   checkCanonical?: boolean;
   checkCircular?: boolean;
   maxDepth?: number;
-  bundle?: any;
-  containedResources?: any[];
+  bundle?: unknown;
+  containedResources?: unknown[];
 }
 
 // ============================================================================
@@ -79,4 +79,3 @@ export interface ExtractedReference {
   targetTypes?: string[];
   isRequired?: boolean;
 }
-

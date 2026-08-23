@@ -2,13 +2,14 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { validateQuestionnaireQuantityAnswer } from './questionnaire-quantity-answer';
 import type { AnswerOption, QuestionnaireItem, QuestionnaireResponseAnswer } from './questionnaire-types';
-import { valueSetCache } from './valueset-cache';
-import type { CodeSystem, CodeSystemConcept } from './valueset-types';
+import { ValueSetCache } from './valueset-cache';
+import { validateQuestionnaireCodingAnswer } from './questionnaire-coding-answer-validator';
 
 export function validateQuestionnaireAnswerTypes(
     answers: QuestionnaireResponseAnswer[],
     question: QuestionnaireItem,
     basePath: string,
+    cache: ValueSetCache = new ValueSetCache(),
 ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
     const expectedType = question.type;
@@ -46,10 +47,13 @@ export function validateQuestionnaireAnswerTypes(
         }
 
         if (answer.valueCoding) {
-            issues.push(...validateCodingDisplayMatch(answer, question, path));
-            if (!hasOptions && question.answerValueSet) {
-                issues.push(...validateCodingInAnswerValueSet(answer, question, path));
-            }
+            issues.push(...validateQuestionnaireCodingAnswer(
+                answer,
+                question,
+                path,
+                cache,
+                hasOptions,
+            ));
         }
 
         issues.push(...validateAnswerContentConstraints(answer, question, path));
@@ -68,21 +72,28 @@ function validateAnswerContentConstraints(
     answerPath: string,
 ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-    const exts = (question as unknown as { extension?: Array<Record<string, unknown>> }).extension;
+    const exts = question.extension;
     if (!Array.isArray(exts) || exts.length === 0) return issues;
 
     if (answer.valueAttachment !== undefined) {
-        issues.push(...validateAttachmentAnswer(answer.valueAttachment, exts, answerPath));
+        const attachment = asRecord(answer.valueAttachment);
+        if (attachment) issues.push(...validateAttachmentAnswer(attachment, exts, answerPath));
     }
     if (answer.valueQuantity !== undefined) {
         issues.push(...validateQuestionnaireQuantityAnswer(
-            answer.valueQuantity as Record<string, unknown>,
+            answer.valueQuantity,
             exts,
             `${answerPath}.value.ofType(Quantity)`,
         ));
     }
 
     return issues;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
 }
 
 function validateAttachmentAnswer(
@@ -148,117 +159,6 @@ function validateAnswerOption(
         customMessage: `The ${desc.typeName} ${desc.displayValue} is not in the set of permitted values`,
         severityOverride: 'error',
     })];
-}
-
-function validateCodingDisplayMatch(
-    answer: QuestionnaireResponseAnswer,
-    question: QuestionnaireItem,
-    answerPath: string,
-): ValidationIssue[] {
-    const coding = answer.valueCoding;
-    if (!coding || !coding.code || !coding.display) return [];
-
-    const expectedDisplay = resolveExpectedCodingDisplay(coding, question);
-    if (expectedDisplay === null || expectedDisplay === coding.display) return [];
-
-    const systemRef = coding.system ? `${coding.system}#${coding.code}` : coding.code;
-    return [createValidationIssue({
-        code: 'qr-display-mismatch',
-        path: `${answerPath}.value.ofType(Coding).display`,
-        resourceType: 'QuestionnaireResponse',
-        customMessage:
-            `Wrong Display Name '${coding.display}' for ${systemRef}. ` +
-            `Valid display is '${expectedDisplay}'`,
-        severityOverride: 'error',
-    })];
-}
-
-function resolveExpectedCodingDisplay(
-    coding: { system?: string; code: string; display?: string },
-    question: QuestionnaireItem,
-): string | null {
-    if (Array.isArray(question.answerOption)) {
-        for (const opt of question.answerOption) {
-            const optCoding = opt.valueCoding;
-            if (!optCoding) continue;
-            const systemsMatch = optCoding.system === coding.system || optCoding.system === undefined;
-            if (systemsMatch && optCoding.code === coding.code && typeof optCoding.display === 'string') {
-                return optCoding.display;
-            }
-        }
-    }
-
-    if (!coding.system) return null;
-    const codeSystem = resolveCachedCodeSystem(coding.system);
-    if (!codeSystem) return null;
-
-    const concept = findCodeSystemConcept(codeSystem.concept, coding.code);
-    return concept?.display ?? null;
-}
-
-function resolveCachedCodeSystem(systemUrl: string): CodeSystem | null {
-    const direct = valueSetCache.getCodeSystem(systemUrl)
-        ?? valueSetCache.getCodeSystemFile(systemUrl);
-    if (direct) return direct;
-    for (const major of ['4', '5', '6']) {
-        const suffixed = `${systemUrl}|fhir${major}`;
-        const hit = valueSetCache.getCodeSystem(suffixed)
-            ?? valueSetCache.getCodeSystemFile(suffixed);
-        if (hit) return hit;
-    }
-    return null;
-}
-
-function validateCodingInAnswerValueSet(
-    answer: QuestionnaireResponseAnswer,
-    question: QuestionnaireItem,
-    answerPath: string,
-): ValidationIssue[] {
-    const coding = answer.valueCoding;
-    if (!coding?.code || !question.answerValueSet) return [];
-
-    const valueSetUrl = question.answerValueSet;
-    const expanded = valueSetCache.getExpandedCodes(valueSetUrl)
-        ?? valueSetCache.getExpandedCodes(valueSetUrl.split('|')[0]);
-
-    let notInSet = false;
-    if (expanded && expanded.size > 0) {
-        const fullCode = coding.system ? `${coding.system}|${coding.code}` : coding.code;
-        notInSet = !(expanded.has(fullCode) || expanded.has(coding.code));
-    }
-
-    let wrongDisplay = false;
-    if (!notInSet && typeof coding.display === 'string') {
-        const expected = resolveExpectedCodingDisplay(coding, question);
-        wrongDisplay = expected !== null && expected !== coding.display;
-    }
-
-    if (!notInSet && !wrongDisplay) return [];
-
-    const valueSetName = valueSetUrl.split('/').pop()?.replace(/[-_]/g, ' ') ?? valueSetUrl;
-    const system = coding.system ?? '';
-    return [createValidationIssue({
-        code: 'qr-code-not-in-valueset',
-        path: answerPath,
-        resourceType: 'QuestionnaireResponse',
-        customMessage:
-            `The code '${coding.code}' in the system '${system}' is not in ` +
-            `the options value set (${valueSetName}) specified by the questionnaire`,
-        severityOverride: 'error',
-    })];
-}
-
-function findCodeSystemConcept(
-    concepts: CodeSystemConcept[] | undefined,
-    code: string,
-): CodeSystemConcept | null {
-    if (!concepts) return null;
-    for (const concept of concepts) {
-        if (concept.code === code) return concept;
-        const nested = findCodeSystemConcept(concept.concept, code);
-        if (nested) return nested;
-    }
-    return null;
 }
 
 function optionMatchesAnswer(

@@ -11,6 +11,7 @@ import { urlMatchesRequestedFhirVersion, type FhirVersionFamily } from '../core/
 import { logger } from '../logger';
 import type { ExtensionDefinition } from './extension-types';
 import type { extractExtensionDefinitions } from './extension-definition-extractor';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
 
 type ExtensionDefinitionContext = ReturnType<typeof extractExtensionDefinitions>;
 
@@ -39,7 +40,10 @@ export function filterDefinitionsForFhirVersion(
 
   for (const [url, definition] of definitions.entries()) {
     if (!isExtensionDefinitionCompatible(definition, fhirVersion)) {
-      logger.debug(`[ExtensionValidator] Skipping FHIR-version-incompatible extension definition: ${definition.profileUrl ?? definition.url} (${fhirVersion})`);
+      logger.debug('[ExtensionValidator] Skipping FHIR-version-incompatible extension definition', {
+        ...profileCanonicalMetadata(definition.profileUrl ?? definition.url),
+        fhirVersion,
+      });
       continue;
     }
     filtered.set(url, definition);
@@ -57,7 +61,10 @@ function filterDefinitionListsForFhirVersion(
   for (const [url, list] of definitions.entries()) {
     const compatible = list.filter(definition => {
       if (isExtensionDefinitionCompatible(definition, fhirVersion)) return true;
-      logger.debug(`[ExtensionValidator] Skipping FHIR-version-incompatible extension definition: ${definition.profileUrl ?? definition.url} (${fhirVersion})`);
+      logger.debug('[ExtensionValidator] Skipping FHIR-version-incompatible extension definition', {
+        ...profileCanonicalMetadata(definition.profileUrl ?? definition.url),
+        fhirVersion,
+      });
       return false;
     });
     if (compatible.length > 0) filtered.set(url, compatible);

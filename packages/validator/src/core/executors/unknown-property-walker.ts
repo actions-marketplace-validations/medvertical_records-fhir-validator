@@ -27,9 +27,11 @@
  */
 
 import type { ValidationIssue } from '../../types';
-import type { StructureDefinition } from '../structure-definition-types';
 import type { StructureDefinitionLoader } from '../structure-definition-loader';
 import { createValidationIssue } from '../../issues';
+import { buildSnapshotIndex, type SnapshotIndex } from './unknown-property-snapshot-index';
+
+export { buildSnapshotIndex, type SnapshotIndex } from './unknown-property-snapshot-index';
 
 const SPECIAL_RESOURCE_KEYS = new Set([
   'resourceType', 'id', 'meta', 'implicitRules', 'language',
@@ -41,18 +43,6 @@ const SPECIAL_BACKBONE_KEYS = new Set([
 ]);
 
 const PRIMITIVE_SIDECAR_KEYS = new Set(['id', 'extension']);
-
-const CHOICE_TYPE_SUFFIXES = [
-  'String', 'Boolean', 'Integer', 'Decimal', 'DateTime', 'Date', 'Time',
-  'Instant', 'Uri', 'Url', 'Canonical', 'Base64Binary', 'Code', 'Oid', 'Id',
-  'Markdown', 'UnsignedInt', 'PositiveInt', 'Integer64', 'Uuid', 'Quantity', 'Range',
-  'Ratio', 'RatioRange', 'Period', 'Coding', 'CodeableConcept', 'CodeableReference', 'Identifier', 'Reference',
-  'Attachment', 'Address', 'Age', 'Annotation', 'ContactPoint', 'Count',
-  'Distance', 'Duration', 'HumanName', 'Money', 'SampledData', 'Signature',
-  'Timing', 'ContactDetail', 'Contributor', 'DataRequirement', 'Expression',
-  'ParameterDefinition', 'RelatedArtifact', 'TriggerDefinition', 'UsageContext',
-  'Dosage', 'Meta', 'Availability', 'ExtendedContactDetail', 'VirtualServiceDetail',
-];
 
 const PRIMITIVE_TYPES = new Set([
   'boolean', 'integer', 'string', 'decimal', 'uri', 'url', 'canonical',
@@ -69,61 +59,24 @@ const BACKBONE_LIKE_TYPES = new Set([
 ]);
 
 const FHIR_DATATYPE_BASE_URL = 'http://hl7.org/fhir/StructureDefinition/';
+type ObjectRecord = Record<string, unknown>;
 
-interface PathInfo {
-  type?: string;
-}
-
-export interface SnapshotIndex {
-  knownPaths: Set<string>;
-  byPath: Map<string, PathInfo>;
+export interface SnapshotIndexCache {
+  has(key: string): boolean;
+  get(key: string): SnapshotIndex | null | undefined;
+  set(key: string, value: SnapshotIndex | null): void;
 }
 
 export interface WalkerDeps {
   sdLoader: StructureDefinitionLoader;
   fhirVersion: 'R4' | 'R5' | 'R6';
-  typeIndexCache: Map<string, SnapshotIndex | null>;
-}
-
-export function buildSnapshotIndex(sd: StructureDefinition | undefined): SnapshotIndex {
-  const knownPaths = new Set<string>();
-  const byPath = new Map<string, PathInfo>();
-  for (const el of sd?.snapshot?.element || []) {
-    if (!el?.path) continue;
-    if (typeof el.id === 'string' && el.id.includes(':')) continue;
-    const type = (el as any)?.type?.[0]?.code;
-    byPath.set(el.path, { type });
-    if (el.path.endsWith('[x]')) {
-      const base = el.path.slice(0, -3);
-      knownPaths.add(base);
-      for (const suffix of choiceSuffixesForElement(el)) {
-        knownPaths.add(base + suffix);
-        byPath.set(base + suffix, { type: suffix });
-      }
-    } else {
-      knownPaths.add(el.path);
-    }
-  }
-  return { knownPaths, byPath };
-}
-
-function choiceSuffixesForElement(element: any): string[] {
-  const types = Array.isArray(element?.type) ? element.type : [];
-  const suffixes = types
-    .map((type: any) => typeof type?.code === 'string' ? typeCodeToChoiceSuffix(type.code) : null)
-    .filter((suffix: string | null): suffix is string => Boolean(suffix));
-  return suffixes.length > 0 ? Array.from(new Set(suffixes)) : CHOICE_TYPE_SUFFIXES;
-}
-
-function typeCodeToChoiceSuffix(typeCode: string): string {
-  const normalized = typeCode.includes('/') ? typeCode.slice(typeCode.lastIndexOf('/') + 1) : typeCode;
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  typeIndexCache: SnapshotIndexCache;
 }
 
 export function makeWalkerDeps(
   sdLoader: StructureDefinitionLoader,
   fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
-  typeIndexCache: Map<string, SnapshotIndex | null> = new Map(),
+  typeIndexCache: SnapshotIndexCache = new Map(),
 ): WalkerDeps {
   return { sdLoader, fhirVersion, typeIndexCache };
 }
@@ -134,7 +87,7 @@ export function makeWalkerDeps(
  * when a `WalkerDeps` is provided — into complex datatype children too.
  */
 export async function detectUnknownProperties(
-  resource: any,
+  resource: unknown,
   index: SnapshotIndex,
   resourceType: string,
   sdUrl: string | undefined,
@@ -148,12 +101,12 @@ export async function detectUnknownProperties(
   }
 
   const issues: ValidationIssue[] = [];
-  await walk(resource, resourceType, index, sdUrl, issues, true, deps);
+  await walk(resource, resourceType, index, sdUrl, issues, true, deps, new WeakSet());
   return issues;
 }
 
-function hasSparseTopLevelSnapshot(resource: any, index: SnapshotIndex, resourceType: string): boolean {
-  if (!resource || typeof resource !== 'object' || Array.isArray(resource)) return false;
+function hasSparseTopLevelSnapshot(resource: unknown, index: SnapshotIndex, resourceType: string): boolean {
+  if (!isObjectRecord(resource)) return false;
 
   let knownNonSpecialKeys = 0;
   let missingNonSpecialKeys = 0;
@@ -172,19 +125,24 @@ function hasSparseTopLevelSnapshot(resource: any, index: SnapshotIndex, resource
 }
 
 async function walk(
-  value: any,
+  value: unknown,
   pathPrefix: string,
   index: SnapshotIndex,
   sdUrl: string | undefined,
   issues: ValidationIssue[],
   isRoot: boolean,
   deps: WalkerDeps | undefined,
+  visited: WeakSet<object>,
 ): Promise<void> {
-  if (!value || typeof value !== 'object') return;
+  if (typeof value !== 'object' || value === null || visited.has(value)) return;
+  visited.add(value);
   if (Array.isArray(value)) {
-    for (const item of value) await walk(item, pathPrefix, index, sdUrl, issues, false, deps);
+    for (const item of value) {
+      await walk(item, pathPrefix, index, sdUrl, issues, false, deps, visited);
+    }
     return;
   }
+  if (!isObjectRecord(value)) return;
 
   const allowedSpecial = isRoot ? SPECIAL_RESOURCE_KEYS : SPECIAL_BACKBONE_KEYS;
 
@@ -224,14 +182,14 @@ async function walk(
     }
 
     const info = index.byPath.get(childPath);
-    const childValue = (value as any)[key];
+    const childValue = value[key];
 
     if (!info?.type) continue;
     if (isPrimitiveTypeInfo(info.type)) continue;
     if (RESOURCE_LIKE_TYPES.has(info.type)) continue;
 
     if (BACKBONE_LIKE_TYPES.has(info.type)) {
-      await walk(childValue, childPath, index, sdUrl, issues, false, deps);
+      await walk(childValue, childPath, index, sdUrl, issues, false, deps, visited);
       continue;
     }
 
@@ -241,10 +199,14 @@ async function walk(
     if (deps) {
       const subIndex = await loadTypeIndex(info.type, deps);
       if (subIndex) {
-        await walk(childValue, info.type, subIndex, sdUrl, issues, false, deps);
+        await walk(childValue, info.type, subIndex, sdUrl, issues, false, deps, visited);
       }
     }
   }
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -299,14 +261,12 @@ async function loadTypeIndex(
       deps.fhirVersion,
     );
     if (!sd?.snapshot?.element?.length) {
-      deps.typeIndexCache.set(typeCode, null);
       return null;
     }
     const idx = buildSnapshotIndex(sd);
     deps.typeIndexCache.set(typeCode, idx);
     return idx;
   } catch {
-    deps.typeIndexCache.set(typeCode, null);
     return null;
   }
 }
@@ -327,14 +287,12 @@ async function isKnownBaseResourcePath(
       deps.fhirVersion,
     );
     if (!sd?.snapshot?.element?.length) {
-      deps.typeIndexCache.set(cacheKey, null);
       return false;
     }
     const idx = buildSnapshotIndex(sd);
     deps.typeIndexCache.set(cacheKey, idx);
     return idx.knownPaths.has(childPath);
   } catch {
-    deps.typeIndexCache.set(cacheKey, null);
     return false;
   }
 }

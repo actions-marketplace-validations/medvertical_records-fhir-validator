@@ -1,5 +1,6 @@
 import { logger } from '../logger';
 import type { StructureDefinition } from './structure-definition-types';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
 
 export function sanitizeProfile(sd: StructureDefinition): StructureDefinition {
   if (!sd || !sd.snapshot || !sd.snapshot.element) return sd;
@@ -22,7 +23,10 @@ export function sanitizeProfile(sd: StructureDefinition): StructureDefinition {
   }
 
   if (patched) {
-    logger.debug(`[SDLoader] Patched constraints in profile: ${sd.url}`);
+    logger.debug(
+      '[SDLoader] Patched constraints in profile',
+      profileCanonicalMetadata(sd.url ?? ''),
+    );
   }
 
   return sd;

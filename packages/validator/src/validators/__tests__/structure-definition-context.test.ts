@@ -30,4 +30,26 @@ describe('StructureDefinitionValidator context expressions', () => {
       path: 'StructureDefinition.context[0]',
     }));
   });
+
+  it('ignores malformed context entries without throwing', () => {
+    expect(() => validator.validate({
+      resourceType: 'StructureDefinition',
+      type: 'Extension',
+      url: 'http://example.org/StructureDefinition/malformed-context',
+      context: [
+        null,
+        { type: 'element', expression: 42 },
+        'ElementDefinition.nope',
+      ],
+      differential: { element: {} },
+    })).not.toThrow();
+  });
+
+  it('handles an Extension context warning when the canonical URL is missing', () => {
+    expect(() => validator.validate({
+      resourceType: 'StructureDefinition',
+      type: 'Extension',
+      context: [{ type: 'element', expression: 'Element' }],
+    })).not.toThrow();
+  });
 });

@@ -2,7 +2,7 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 
 export function validateElementValueBounds(
-  value: any,
+  value: unknown,
   elementAny: Record<string, unknown>,
   path: string,
   profileUrl?: string
@@ -20,7 +20,7 @@ export function validateElementValueBounds(
         path,
         resourceType: 'Unknown',
         profile: profileUrl,
-        customMessage: `Value ${JSON.stringify(value)} is less than minimum ${JSON.stringify(minimum)}`,
+        customMessage: `Value ${formatValue(value)} is less than minimum ${formatValue(minimum)}`,
         severityOverride: 'error',
       }));
     }
@@ -38,7 +38,7 @@ export function validateElementValueBounds(
         path,
         resourceType: 'Unknown',
         profile: profileUrl,
-        customMessage: `Value ${JSON.stringify(value)} is greater than maximum ${JSON.stringify(maximum)}`,
+        customMessage: `Value ${formatValue(value)} is greater than maximum ${formatValue(maximum)}`,
         severityOverride: 'error',
       }));
     }
@@ -48,8 +48,8 @@ export function validateElementValueBounds(
 }
 
 function compareOrderedValues(
-  actual: any,
-  bound: any,
+  actual: unknown,
+  bound: unknown,
   constraintKey: string,
   direction: 'min' | 'max'
 ): number | undefined {
@@ -102,13 +102,17 @@ function compareOrderedValues(
   return 0;
 }
 
-function isRelativeDurationConstraint(actual: any, bound: any, constraintKey: string): boolean {
+function isRelativeDurationConstraint(
+  actual: unknown,
+  bound: unknown,
+  constraintKey: string,
+): bound is Record<string, unknown> {
   return typeof actual === 'string' && constraintKey.endsWith('Duration') && areQuantityLike(bound);
 }
 
 function getRelativeDurationBoundary(
-  actual: any,
-  duration: any,
+  actual: unknown,
+  duration: unknown,
   constraintKey: string,
   direction: 'min' | 'max'
 ): number | undefined {
@@ -120,7 +124,11 @@ function getRelativeDurationBoundary(
   return boundary?.getTime();
 }
 
-function addDurationToDate(date: Date, duration: any, sign: 1 | -1): Date | undefined {
+function addDurationToDate(
+  date: Date,
+  duration: Record<string, unknown>,
+  sign: 1 | -1,
+): Date | undefined {
   if (typeof duration.value !== 'number' || !Number.isFinite(duration.value)) {
     return undefined;
   }
@@ -170,7 +178,7 @@ function addDurationToDate(date: Date, duration: any, sign: 1 | -1): Date | unde
   }
 }
 
-function toComparableValue(value: any): number | undefined {
+function toComparableValue(value: unknown): number | undefined {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : undefined;
   }
@@ -179,7 +187,7 @@ function toComparableValue(value: any): number | undefined {
     return parseTemporalValue(value);
   }
 
-  if (value && typeof value === 'object' && typeof value.value === 'number') {
+  if (isObjectRecord(value) && typeof value.value === 'number') {
     return Number.isFinite(value.value) ? value.value : undefined;
   }
 
@@ -205,11 +213,11 @@ function parseTemporalValue(value: string): number | undefined {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-function areQuantityLike(value: any): boolean {
-  return Boolean(value && typeof value === 'object' && 'value' in value);
+function areQuantityLike(value: unknown): value is Record<string, unknown> {
+  return isObjectRecord(value) && 'value' in value;
 }
 
-function haveCompatibleQuantityUnits(actual: any, bound: any): boolean {
+function haveCompatibleQuantityUnits(actual: unknown, bound: unknown): boolean {
   if (!areQuantityLike(actual) || !areQuantityLike(bound)) {
     return true;
   }
@@ -239,7 +247,7 @@ function haveCompatibleQuantityUnits(actual: any, bound: any): boolean {
   return true;
 }
 
-function toComparableQuantityValue(value: any): number | undefined {
+function toComparableQuantityValue(value: unknown): number | undefined {
   if (!areQuantityLike(value) || typeof value.value !== 'number' || !Number.isFinite(value.value)) {
     return undefined;
   }
@@ -247,7 +255,9 @@ function toComparableQuantityValue(value: any): number | undefined {
   return normalizeUcumQuantity(value)?.value ?? value.value;
 }
 
-function normalizeUcumQuantity(value: any): { dimension: string; value: number } | undefined {
+function normalizeUcumQuantity(
+  value: Record<string, unknown>,
+): { dimension: string; value: number } | undefined {
   if (value.system !== 'http://unitsofmeasure.org') {
     return undefined;
   }
@@ -261,7 +271,9 @@ function normalizeUcumQuantity(value: any): { dimension: string; value: number }
     ng: 0.000000001,
   };
 
-  if (typeof code === 'string' && code in massFactorToGram) {
+  if (typeof code === 'string' &&
+      code in massFactorToGram &&
+      typeof value.value === 'number') {
     return {
       dimension: 'mass-g',
       value: value.value * massFactorToGram[code],
@@ -269,4 +281,17 @@ function normalizeUcumQuantity(value: any): { dimension: string; value: number }
   }
 
   return undefined;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function formatValue(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized ?? String(value);
+  } catch {
+    return String(value);
+  }
 }

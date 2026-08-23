@@ -411,4 +411,77 @@ describe('validateUriFormat', () => {
       'TestReport',
     )).toBeNull();
   });
+
+  it('allows relative URIs in extension valueUri values (Java parity)', () => {
+    // PDex mTLS endpoint examples carry scheme-less IG references.
+    expect(validateUriFormat(
+      'hl7.org/fhir/us/davinci-pdex',
+      "Endpoint.extension[url='http://hl7.org/fhir/us/davinci-pdex/StructureDefinition/base-ext-endpoint-usecase'].extension[url='standard'].valueUri",
+      'Endpoint',
+    )).toBeNull();
+
+    expect(validateUriFormat(
+      'hl7.org/fhir/us/davinci-pdex',
+      'Endpoint.extension[0].extension[1].valueUri',
+      'Endpoint',
+    )).toBeNull();
+  });
+
+  it('allows relative ElementDefinition ids in Questionnaire item definitions', () => {
+    expect(validateUriFormat(
+      'Patient.birthDate',
+      'Questionnaire.item[1].definition',
+      'Questionnaire',
+    )).toBeNull();
+
+    expect(validateUriFormat(
+      'a9e99fcf535a4c08a249c77754d5b07d',
+      'Questionnaire.item[0].item[1].definition',
+      'Questionnaire',
+    )).toBeNull();
+  });
+
+  it('allows relative element-path tokens in ArtifactAssessment content paths', () => {
+    expect(validateUriFormat(
+      'overallSummary',
+      'ArtifactAssessment.content[0].path[0]',
+      'ArtifactAssessment',
+    )).toBeNull();
+
+    // content.component recurses content, so nested comment paths end in component.path
+    expect(validateUriFormat(
+      'identifier',
+      'ArtifactAssessment.content[4].component[3].path[0]',
+      'ArtifactAssessment',
+    )).toBeNull();
+  });
+
+  it('allows relative policy identifiers in AuditEvent.agent.policy', () => {
+    expect(validateUriFormat(
+      '_5a6b51b7-cd3e-4629-aac8-9846cbc3cf84',
+      'AuditEvent.agent[0].policy[0]',
+      'AuditEvent',
+    )).toBeNull();
+  });
+
+  it('keeps the absolute-URI requirement outside extension values', () => {
+    expect(validateUriFormat(
+      'hl7.org/fhir/us/davinci-pdex',
+      'Questionnaire.url',
+      'Questionnaire',
+    )).toEqual(expect.objectContaining({
+      code: 'structural-invalid-uri',
+      severity: 'error',
+    }));
+
+    // valueCanonical stays a canonical slot even inside extensions.
+    expect(validateUriFormat(
+      'ValueSet/some-local-id',
+      'Endpoint.extension[0].valueCanonical',
+      'Endpoint',
+    )).toEqual(expect.objectContaining({
+      code: 'structural-invalid-uri',
+      severity: 'error',
+    }));
+  });
 });

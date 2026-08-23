@@ -11,14 +11,17 @@
 import type { ValidationIssue, ValidationSettings } from '../../types';
 import { ReferenceValidator } from '../../reference';
 import { logger } from '../../logger';
+import { createExecutorFailureIssue } from './executor-failure-issue';
+import type { FhirClientLike } from '../profile-loader-utils';
+import { resourceTypeOf } from '../fhir-resource';
 
 // ============================================================================
 // Types
 // ============================================================================
 
 export interface ReferenceValidationContext {
-  resource: any;
-  fhirClient?: any;
+  resource: unknown;
+  fhirClient?: FhirClientLike;
   fhirVersion?: 'R4' | 'R5' | 'R6';
   settings?: ValidationSettings;
 }
@@ -42,13 +45,14 @@ export class ReferenceExecutor {
   ): Promise<ValidationIssue[]> {
     try {
       const { resource, fhirClient: _fhirClient, fhirVersion, settings } = context;
+      const resourceType = resourceTypeOf(resource);
 
-      logger.debug(`[ReferenceExecutor] Validating references for ${resource.resourceType}...`);
+      logger.debug(`[ReferenceExecutor] Validating references for ${resourceType}...`);
 
       // Delegate to reference validator's internal method (returns ValidationIssue[])
       const issues = await this.referenceValidator.validateInternal(
         resource,
-        resource.resourceType,
+        resourceType,
         fhirVersion,
         settings
       );
@@ -61,18 +65,9 @@ export class ReferenceExecutor {
 
       return issues;
 
-    } catch (error) {
-      logger.error('[ReferenceExecutor] Validation error:', error);
-      return [{
-        id: `reference-executor-error-${Date.now()}`,
-        aspect: 'reference',
-        severity: 'error',
-        code: 'validation-error',
-        message: `Reference validation failed: ${error instanceof Error ? error.message : String(error)}`,
-        path: '',
-        timestamp: new Date()
-      }];
+    } catch {
+      logger.error('[ReferenceExecutor] Validation failed');
+      return [createExecutorFailureIssue('reference', 'Reference')];
     }
   }
 }
-

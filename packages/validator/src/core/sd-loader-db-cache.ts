@@ -14,6 +14,9 @@
 import type { StructureDefinition } from './structure-definition-types';
 import { logger } from '../logger';
 import { getProfileSource, type ProfileSourceContext } from '../persistence';
+import { profileMatchesCanonical } from './sd-loader-profile-identity';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
 
 function matchesFhirVersion(sd: StructureDefinition, fhirVersion: 'R4' | 'R5' | 'R6'): boolean {
   const sdFhirVersion = (sd as { fhirVersion?: string }).fhirVersion;
@@ -23,72 +26,47 @@ function matchesFhirVersion(sd: StructureDefinition, fhirVersion: 'R4' | 'R5' | 
   return sdFhirVersion.startsWith(expectedPrefix);
 }
 
-function requestedCanonicalVersion(url: string): string | undefined {
-  const [, version] = url.split('|');
-  return version || undefined;
-}
-
-function matchesExplicitCanonicalVersion(sd: StructureDefinition, url: string): boolean {
-  const requestedVersion = requestedCanonicalVersion(url);
-  if (!requestedVersion) return true;
-
-  const sdVersion = (sd as { version?: string }).version;
-  return sdVersion === requestedVersion;
-}
-
 /**
  * Look up a profile in the embedder-provided ProfileSource.
  * @param url - Profile canonical URL
- * @param dbCacheNotFound - Negative cache set
  * @param fhirVersion - FHIR version to filter by (prevents R5 defs being returned for R4 validation)
  */
 export async function checkDatabaseCache(
   url: string,
-  dbCacheNotFound: Set<string>,
   fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
   context?: ProfileSourceContext,
 ): Promise<StructureDefinition | null> {
-  // Create a version-specific cache key for negative cache
-  const scopeSuffix = context?.organizationId !== undefined
-    ? `:org:${context.organizationId}:server:${context.serverId ?? 'any'}`
-    : '';
-  const cacheKey = `${url}:${fhirVersion}${scopeSuffix}`;
-
-  // Skip lookup if we already know it's not there (negative cache)
-  if (dbCacheNotFound.has(cacheKey)) {
-    logger.debug(`[SDLoader] Skipping ProfileSource check for ${cacheKey} (known not found)`);
-    return null;
-  }
-
   const source = getProfileSource();
   if (!source.findByUrl) {
     return null;
   }
 
-  logger.debug(`[SDLoader] Checking ProfileSource for: ${url} (${fhirVersion})`);
+  logger.debug('[SDLoader] Checking ProfileSource', {
+    ...profileCanonicalMetadata(url),
+    fhirVersion,
+  });
   try {
     const sd = await source.findByUrl(url, fhirVersion, context);
     if (sd) {
       if (!matchesFhirVersion(sd, fhirVersion)) {
-        logger.debug(`[SDLoader] Found in ProfileSource but wrong FHIR version for ${url}`);
-        dbCacheNotFound.add(cacheKey);
+        logger.debug('[SDLoader] ProfileSource result has wrong FHIR version', profileCanonicalMetadata(url));
         return null;
       }
-      if (!matchesExplicitCanonicalVersion(sd, url)) {
-        logger.debug(`[SDLoader] Found in ProfileSource but wrong canonical version for ${url}`);
-        dbCacheNotFound.add(cacheKey);
+      if (!profileMatchesCanonical(sd, url)) {
+        logger.debug('[SDLoader] ProfileSource result has mismatched canonical', profileCanonicalMetadata(url));
         return null;
       }
-      logger.debug(`[SDLoader] ✅ Found in ProfileSource: ${url}`);
+      logger.debug('[SDLoader] Found in ProfileSource', profileCanonicalMetadata(url));
       return sd;
     }
 
     logger.debug(`[SDLoader] Not found in ProfileSource`);
-    dbCacheNotFound.add(cacheKey);
     return null;
   } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.debug(`[SDLoader] ProfileSource lookup failed:`, err.message);
+    logger.debug(
+      '[SDLoader] ProfileSource lookup failed',
+      validationFailureMetadata(error),
+    );
     // Don't negative-cache errors — might be transient.
     return null;
   }

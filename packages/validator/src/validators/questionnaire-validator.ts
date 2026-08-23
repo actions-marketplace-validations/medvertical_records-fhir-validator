@@ -1,19 +1,19 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
-import { validateQuestionnaireAnswerTypes } from './questionnaire-answer-validator';
-import {
-    buildQuestionnaireAnswerMap,
-    isQuestionnaireItemEnabled,
-} from './questionnaire-enable-when';
+import { buildQuestionnaireAnswerMap } from './questionnaire-enable-when';
 import { validateQuestionnaireItems } from './questionnaire-item-validator';
 import { validateQuestionnaireSdcConstraints } from './questionnaire-sdc-validator';
-import { valueSetCache } from './valueset-cache';
+import { ValueSetCache } from './valueset-cache';
 import type {
-    QuestionnaireItem,
     QuestionnaireResponseAnswer,
-    QuestionnaireResponseItem,
 } from './questionnaire-types';
+import {
+    buildQuestionnaireItemMap,
+    validateQuestionnaireResponseItems,
+    validateQuestionnaireResponseItemsBasic,
+    validateRequiredQuestionnaireItems,
+} from './questionnaire-response-structure-validator';
 
 export type {
     AnswerOption,
@@ -28,34 +28,38 @@ export interface QuestionnaireValidationOptions {
 }
 
 export class QuestionnaireValidator {
+    constructor(private readonly cache: ValueSetCache = new ValueSetCache()) {}
 
     validateAnyResource(
-        resource: any,
-        contextQuestionnaire?: any,
+        resource: unknown,
+        contextQuestionnaire?: unknown,
         options: QuestionnaireValidationOptions = {},
         fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
     ): ValidationIssue[] {
-        if (!resource || typeof resource !== 'object') return [];
+        const resourceRecord = asRecord(resource);
+        if (!resourceRecord) return [];
         const issues: ValidationIssue[] = [];
 
-        const rt = resource.resourceType;
+        const rt = resourceRecord.resourceType;
         if (rt === 'Questionnaire') {
-            issues.push(...this.validateQuestionnaire(resource, 'Questionnaire', fhirVersion));
+            issues.push(...this.validateQuestionnaire(resourceRecord, 'Questionnaire', fhirVersion));
         } else if (rt === 'QuestionnaireResponse') {
-            let q = contextQuestionnaire;
-            if (!q && typeof resource.questionnaire === 'string' && resource.questionnaire.startsWith('#')) {
-                const id = resource.questionnaire.slice(1);
-                const contained = Array.isArray(resource.contained) ? resource.contained : [];
-                q = contained.find((c: any) => c?.id === id && c?.resourceType === 'Questionnaire');
+            let q = isQuestionnaire(contextQuestionnaire) ? contextQuestionnaire : undefined;
+            if (!q && typeof resourceRecord.questionnaire === 'string' && resourceRecord.questionnaire.startsWith('#')) {
+                const id = resourceRecord.questionnaire.slice(1);
+                const contained = Array.isArray(resourceRecord.contained) ? resourceRecord.contained : [];
+                q = contained.find(candidate =>
+                    isQuestionnaire(candidate) && candidate.id === id
+                );
             }
-            issues.push(...this.validateQuestionnaireResponse(resource, q, options));
+            issues.push(...this.validateQuestionnaireResponse(resourceRecord, q, options));
         }
 
-        if (Array.isArray(resource.contained)) {
-            for (let i = 0; i < resource.contained.length; i++) {
-                const c = resource.contained[i];
+        if (Array.isArray(resourceRecord.contained)) {
+            for (let i = 0; i < resourceRecord.contained.length; i++) {
+                const c = resourceRecord.contained[i];
                 const cPath = `${rt}.contained[${i}]`;
-                if (c?.resourceType === 'Questionnaire') {
+                if (isQuestionnaire(c)) {
                     issues.push(...this.validateQuestionnaire(c, cPath, fhirVersion));
                 }
             }
@@ -65,19 +69,20 @@ export class QuestionnaireValidator {
     }
 
     validateQuestionnaire(
-        questionnaire: any,
+        questionnaire: unknown,
         basePath: string = 'Questionnaire',
         fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
-        if (questionnaire?.resourceType !== 'Questionnaire') {
+        const questionnaireRecord = asRecord(questionnaire);
+        if (questionnaireRecord?.resourceType !== 'Questionnaire') {
             return issues;
         }
 
         logger.debug('[QuestionnaireValidator] Validating Questionnaire');
 
-        if (!questionnaire.status) {
+        if (!questionnaireRecord.status) {
             issues.push(createValidationIssue({
                 code: 'questionnaire-missing-status',
                 path: `${basePath}.status`,
@@ -87,8 +92,8 @@ export class QuestionnaireValidator {
             }));
         }
 
-        if (questionnaire.name !== undefined && questionnaire.name !== null) {
-            const name = String(questionnaire.name);
+        if (questionnaireRecord.name !== undefined && questionnaireRecord.name !== null) {
+            const name = String(questionnaireRecord.name);
             if (!/^[A-Z]([A-Za-z0-9_]){0,254}$/.test(name)) {
                 issues.push(createValidationIssue({
                     code: 'questionnaire-invariant-que-0',
@@ -103,10 +108,10 @@ export class QuestionnaireValidator {
             }
         }
 
-        if (questionnaire.item && Array.isArray(questionnaire.item)) {
+        if (Array.isArray(questionnaireRecord.item)) {
             const linkIdSet = new Set<string>();
             issues.push(...validateQuestionnaireItems(
-                questionnaire.item,
+                questionnaireRecord.item,
                 linkIdSet,
                 `${basePath}.item`,
                 fhirVersion,
@@ -117,19 +122,20 @@ export class QuestionnaireValidator {
     }
 
     validateQuestionnaireResponse(
-        response: any,
-        questionnaire?: any,
+        response: unknown,
+        questionnaire?: unknown,
         options: QuestionnaireValidationOptions = {},
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
-        if (response?.resourceType !== 'QuestionnaireResponse') {
+        const responseRecord = asRecord(response);
+        if (responseRecord?.resourceType !== 'QuestionnaireResponse') {
             return issues;
         }
 
         logger.debug('[QuestionnaireValidator] Validating QuestionnaireResponse');
 
-        if (!response.status) {
+        if (!responseRecord.status) {
             issues.push(createValidationIssue({
                 code: 'qr-missing-status',
                 path: 'QuestionnaireResponse.status',
@@ -140,10 +146,10 @@ export class QuestionnaireValidator {
         }
 
         if (!questionnaire) {
-            if (options.warnOnUnresolvedQuestionnaireReference && typeof response.questionnaire === 'string' && response.questionnaire.trim()) {
-                const canonical = response.questionnaire.split('|')[0];
-                const wrongType = valueSetCache.getValueSetFile(canonical) ??
-                    valueSetCache.getCodeSystemFile(canonical);
+            if (options.warnOnUnresolvedQuestionnaireReference && typeof responseRecord.questionnaire === 'string' && responseRecord.questionnaire.trim()) {
+                const canonical = responseRecord.questionnaire.split('|')[0];
+                const wrongType = this.cache.getValueSetFile(canonical) ??
+                    this.cache.getCodeSystemFile(canonical);
                 const explicitCanonicalType = canonical.match(
                     /\/(ValueSet|CodeSystem|StructureDefinition|ConceptMap|Library|PlanDefinition|ActivityDefinition)\//,
                 )?.[1];
@@ -154,7 +160,7 @@ export class QuestionnaireValidator {
                         path: 'QuestionnaireResponse.questionnaire',
                         resourceType: 'QuestionnaireResponse',
                         customMessage:
-                            `Canonical URL '${response.questionnaire}' refers to a resource that has the wrong type. ` +
+                            `Canonical URL '${responseRecord.questionnaire}' refers to a resource that has the wrong type. ` +
                             `Found ${wrongResourceType} expecting Questionnaire`,
                         severityOverride: 'error',
                     }));
@@ -163,39 +169,50 @@ export class QuestionnaireValidator {
                     code: 'questionnaire-reference-not-resolved',
                     path: 'QuestionnaireResponse.questionnaire',
                     resourceType: 'QuestionnaireResponse',
-                    customMessage: `Questionnaire '${response.questionnaire}' could not be resolved; QuestionnaireResponse items were not validated against the questionnaire definition.`,
+                    customMessage: `Questionnaire '${responseRecord.questionnaire}' could not be resolved; QuestionnaireResponse items were not validated against the questionnaire definition.`,
                     severityOverride: 'warning',
                     details: {
-                        questionnaire: response.questionnaire,
+                        questionnaire: responseRecord.questionnaire,
                     },
                 }));
             }
 
-            if (response.item && Array.isArray(response.item)) {
-                issues.push(...this.validateResponseItemsBasic(response.item, 'QuestionnaireResponse.item'));
+            if (Array.isArray(responseRecord.item)) {
+                issues.push(...validateQuestionnaireResponseItemsBasic(
+                    responseRecord.item,
+                    'QuestionnaireResponse.item',
+                ));
             }
             return issues;
         }
 
-        const questionMap = new Map<string, QuestionnaireItem>();
-        this.buildQuestionMap(questionnaire.item || [], questionMap);
+        const questionnaireRecord = asRecord(questionnaire);
+        if (!questionnaireRecord) return issues;
+        const questionnaireItems = Array.isArray(questionnaireRecord.item)
+            ? questionnaireRecord.item
+            : [];
+        const responseItems = Array.isArray(responseRecord.item)
+            ? responseRecord.item
+            : [];
+        const questionMap = buildQuestionnaireItemMap(questionnaireItems);
 
         const answerMap = new Map<string, QuestionnaireResponseAnswer[]>();
-        buildQuestionnaireAnswerMap(response.item || [], answerMap);
+        buildQuestionnaireAnswerMap(responseItems, answerMap);
 
-        if (response.item && Array.isArray(response.item)) {
-            issues.push(...this.validateResponseItems(
-                response.item,
+        if (responseItems.length > 0) {
+            issues.push(...validateQuestionnaireResponseItems(
+                responseItems,
                 questionMap,
-                'QuestionnaireResponse.item'
+                'QuestionnaireResponse.item',
+                this.cache,
             ));
         }
 
-        issues.push(...this.checkRequiredQuestions(response.item || [], questionMap, answerMap));
+        issues.push(...validateRequiredQuestionnaireItems(responseItems, questionMap, answerMap));
 
-        if (response.item && Array.isArray(response.item)) {
+        if (responseItems.length > 0) {
             issues.push(...validateQuestionnaireSdcConstraints(
-                response.item,
+                responseItems,
                 questionMap,
                 'QuestionnaireResponse.item'
             ));
@@ -204,185 +221,15 @@ export class QuestionnaireValidator {
         return issues;
     }
 
-    private validateResponseItemsBasic(
-        items: QuestionnaireResponseItem[],
-        basePath: string
-    ): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-
-        for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            const path = `${basePath}[${i}]`;
-
-            if (!item.linkId) {
-                issues.push(createValidationIssue({
-                    code: 'qr-missing-linkid',
-                    path: `${path}.linkId`,
-                    resourceType: 'QuestionnaireResponse',
-                    customMessage: 'Response item must have a linkId',
-                    severityOverride: 'error',
-                }));
-            }
-
-            if (item.item) {
-                issues.push(...this.validateResponseItemsBasic(item.item, `${path}.item`));
-            }
-        }
-
-        return issues;
-    }
-
-    private buildQuestionMap(
-        items: QuestionnaireItem[],
-        map: Map<string, QuestionnaireItem>
-    ): void {
-        for (const item of items) {
-            if (item.linkId) {
-                map.set(item.linkId, item);
-            }
-            if (item.item) {
-                this.buildQuestionMap(item.item, map);
-            }
-        }
-    }
-
-    private validateResponseItems(
-        items: QuestionnaireResponseItem[],
-        questionMap: Map<string, QuestionnaireItem>,
-        basePath: string
-    ): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-
-        for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            const path = `${basePath}[${i}]`;
-
-            if (!item.linkId) continue;
-
-            const question = questionMap.get(item.linkId);
-            if (!question) {
-                issues.push(createValidationIssue({
-                    code: 'not-found',
-                    path: `${path}.linkId`,
-                    resourceType: 'QuestionnaireResponse',
-                    customMessage: `LinkId '${item.linkId}' not found in questionnaire`,
-                    severityOverride: 'error',
-                }));
-                continue;
-            }
-
-            if (question.type === 'display' && item.answer && item.answer.length > 0) {
-                issues.push(createValidationIssue({
-                    code: 'structure',
-                    path,
-                    resourceType: 'QuestionnaireResponse',
-                    customMessage: `Items of type 'display' cannot have answers`,
-                    severityOverride: 'error',
-                }));
-                continue;
-            }
-
-            if (question.type === 'group' && item.answer && item.answer.length > 0) {
-                issues.push(createValidationIssue({
-                    code: 'structure',
-                    path,
-                    resourceType: 'QuestionnaireResponse',
-                    customMessage: `Items of type 'group' cannot have answers, only sub-items`,
-                    severityOverride: 'error',
-                }));
-            }
-
-            if (question.required && question.type !== 'display') {
-                if (question.type === 'group') {
-                    const hasSubItems = item.item && item.item.length > 0;
-                    if (!hasSubItems) {
-                        issues.push(createValidationIssue({
-                            code: 'qr-required-group',
-                            path,
-                            resourceType: 'QuestionnaireResponse',
-                            customMessage: `No sub-items found for required group`,
-                            severityOverride: 'error',
-                        }));
-                    }
-                } else if (!item.answer || item.answer.length === 0) {
-                    issues.push(createValidationIssue({
-                        code: 'required',
-                        path,
-                        resourceType: 'QuestionnaireResponse',
-                        customMessage: `No response answer found for required item '${item.linkId}'`,
-                        severityOverride: 'error',
-                    }));
-                }
-            }
-
-            if (!question.repeats && item.answer && item.answer.length > 1) {
-                issues.push(createValidationIssue({
-                    code: 'qr-repeats-violation',
-                    path,
-                    resourceType: 'QuestionnaireResponse',
-                    customMessage: `Only one response answer item with this linkId allowed`,
-                    severityOverride: 'error',
-                }));
-            }
-
-            if (item.answer) {
-                issues.push(...validateQuestionnaireAnswerTypes(item.answer, question, `${path}.answer`));
-            }
-
-            if (item.item) {
-                issues.push(...this.validateResponseItems(item.item, questionMap, `${path}.item`));
-            }
-        }
-
-        return issues;
-    }
-
-    private checkRequiredQuestions(
-        responseItems: QuestionnaireResponseItem[],
-        questionMap: Map<string, QuestionnaireItem>,
-        answerMap: Map<string, QuestionnaireResponseAnswer[]>
-    ): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-        const presentLinkIds = new Set<string>();
-
-        const collectPresent = (items: QuestionnaireResponseItem[]) => {
-            for (const item of items) {
-                if (item.linkId) {
-                    presentLinkIds.add(item.linkId);
-                }
-                if (item.item) collectPresent(item.item);
-            }
-        };
-        collectPresent(responseItems);
-
-        for (const [linkId, question] of questionMap) {
-            if (!question.required) continue;
-            if (presentLinkIds.has(linkId)) continue;
-            if (question.type === 'display') continue;
-
-            if (!isQuestionnaireItemEnabled(question, answerMap)) continue;
-
-            if (question.type === 'group') {
-                issues.push(createValidationIssue({
-                    code: 'qr-required-group',
-                    path: `QuestionnaireResponse.item(linkId=${linkId})`,
-                    resourceType: 'QuestionnaireResponse',
-                    customMessage: `No sub-items found for required group`,
-                    severityOverride: 'error',
-                }));
-            } else {
-                issues.push(createValidationIssue({
-                    code: 'required',
-                    path: `QuestionnaireResponse.item(linkId=${linkId})`,
-                    resourceType: 'QuestionnaireResponse',
-                    customMessage: `No response answer found for required item '${linkId}'`,
-                    severityOverride: 'error',
-                }));
-            }
-        }
-
-        return issues;
-    }
 }
 
-export const questionnaireValidator = new QuestionnaireValidator();
+function isQuestionnaire(value: unknown): value is Record<string, unknown> {
+    const record = asRecord(value);
+    return record?.resourceType === 'Questionnaire';
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
+}

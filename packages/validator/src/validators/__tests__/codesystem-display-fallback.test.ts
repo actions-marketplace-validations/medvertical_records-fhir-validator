@@ -261,7 +261,7 @@ describe('ValueSetValidator CodeSystem display fallback', () => {
       strategy: 'server-first',
       serverUrl: 'https://hgnc.example/fhir',
     });
-    (validator as any).validateCodeInLocalCodeSystem = vi.fn().mockResolvedValue({
+    (validator as any).codeSystems.validateLocal = vi.fn().mockResolvedValue({
       valid: false,
       reason: 'code-unknown',
       message: "Unknown code 'HGNC:3689::HGNC:2697' in CodeSystem 'http://www.genenames.org/geneId'",

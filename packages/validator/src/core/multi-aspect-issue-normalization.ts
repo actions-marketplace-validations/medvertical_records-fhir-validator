@@ -15,13 +15,18 @@ export function normalizeIssuesByAspect(aspects: AspectResult[]): AspectResult[]
   const ensureAspect = (aspect: AspectResult): AspectResult => {
     const existing = normalizedByAspect.get(aspect.aspect);
     if (existing) return existing;
-    const next = { ...aspect, issues: [], isValid: true };
+    const next = { ...aspect, issues: [], evidenceIssues: [], isValid: true };
     normalizedByAspect.set(aspect.aspect, next);
     return next;
   };
 
   for (const aspect of aspects) {
     ensureAspect(aspect);
+  }
+
+  for (const aspect of aspects) {
+    const target = ensureAspect(aspect);
+    target.evidenceIssues?.push(...(aspect.evidenceIssues ?? aspect.issues));
   }
 
   for (const aspect of aspects) {

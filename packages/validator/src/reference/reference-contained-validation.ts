@@ -3,18 +3,21 @@ import { extractReferences } from './reference-format-validator';
 import { createReferenceValidationIssue } from './reference-utils';
 
 export function validateContainedReferenceIssues(
-  resource: any,
-  resourceType: string = resource?.resourceType || 'Unknown'
+  resource: unknown,
+  resourceType: string = getResourceType(resource),
 ): ValidationIssue[] {
   if (!resource) {
     return [];
   }
 
   const issues: ValidationIssue[] = [];
+  const contained = toRecord(resource)?.contained;
   const containedIds = new Set(
-    (Array.isArray(resource.contained) ? resource.contained : [])
-      .filter((contained: any) => contained.id)
-      .map((contained: any) => contained.id)
+    (Array.isArray(contained) ? contained : [])
+      .flatMap((candidate) => {
+        const id = toRecord(candidate)?.id;
+        return typeof id === 'string' && id.length > 0 ? [id] : [];
+      }),
   );
 
   const containedRefs = extractReferences(resource, resourceType).filter(
@@ -51,4 +54,15 @@ export function validateContainedReferenceIssues(
   }
 
   return issues;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getResourceType(resource: unknown): string {
+  const resourceType = toRecord(resource)?.resourceType;
+  return typeof resourceType === 'string' ? resourceType : 'Unknown';
 }

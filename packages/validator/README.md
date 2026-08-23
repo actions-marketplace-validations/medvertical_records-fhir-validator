@@ -12,7 +12,7 @@ This package is the open-source validator surface for `medvertical/records-fhir-
 
 ## Two-Minute Quickstart
 
-Run the CLI against one resource:
+Run the CLI against a JSON, XML, or NDJSON input:
 
 ```sh
 npx -p @records-fhir/validator records-fhir-validator ./patient.json
@@ -29,11 +29,11 @@ Embed the TypeScript API:
 ```ts
 import { recordsValidator } from '@records-fhir/validator';
 
-const issues = await recordsValidator.validate(
-  { resourceType: 'Patient', id: 'example' },
-  'http://hl7.org/fhir/StructureDefinition/Patient',
-  'R4',
-);
+const issues = await recordsValidator.validateRequest({
+  resource: { resourceType: 'Patient', id: 'example' },
+  profileUrl: 'http://hl7.org/fhir/StructureDefinition/Patient',
+  fhirVersion: 'R4',
+});
 ```
 
 Gate pull requests with the GitHub Action:
@@ -130,8 +130,8 @@ Common options:
 | `--format text\|json` | `text` | Print human-readable lines or structured JSON. |
 | `--output <file>` | stdout | Write validation output to a file. Parent directories are created. |
 | `--summary-only` | off | Omit per-issue output and print only aggregate counts. |
-| `--include <glob>` | `**/*.json` | Include matching JSON files when walking folders. Repeatable or comma-separated. |
-| `--exclude <glob>` | none | Exclude matching JSON files when walking folders. Repeatable or comma-separated. |
+| `--include <glob>` | `**/*.json`, `**/*.xml`, `**/*.ndjson` | Include matching FHIR input files when walking folders. Repeatable or comma-separated. |
+| `--exclude <glob>` | none | Exclude matching FHIR input files when walking folders. Repeatable or comma-separated. |
 
 Example JSON output:
 
@@ -156,7 +156,30 @@ Exit codes are stable for CI:
 |---:|---|
 | `0` | Validation completed and did not meet the `--fail-on` threshold. |
 | `1` | Validation completed and met the `--fail-on` threshold. |
-| `2` | Invalid CLI input, unreadable paths, no matched JSON files, or output write failure. |
+| `2` | Invalid CLI input, unreadable paths, no matched FHIR input files, or output write failure. |
+
+### XML and NDJSON input adapters
+
+The same bounded adapters are available to embedders:
+
+```ts
+import { parseFhirNdjson, parseFhirXml } from '@records-fhir/validator';
+
+const xml = parseFhirXml(xmlSource, {
+  maxBytes: 20 * 1024 * 1024,
+  maxDepth: 200,
+  maxNodes: 1_000_000,
+});
+const ndjson = parseFhirNdjson(ndjsonSource, {
+  maxBytes: 20 * 1024 * 1024,
+  maxLineBytes: 2 * 1024 * 1024,
+  maxRecords: 100_000,
+});
+```
+
+Both return normalized `resources` and a `sourceMap`. XML accepts only the
+FHIR/XHTML namespaces and rejects DTD/entity declarations; NDJSON requires one
+FHIR resource object per non-empty line.
 
 ```json
 {
@@ -204,9 +227,11 @@ What these checks cover:
 
 ### Known Limits
 
-- The CLI validates JSON resources and folders of JSON resources. XML, Turtle,
-  CDA, HL7 v2, NDJSON, FML, CDS Hooks, SHC, and DSIG need dedicated loaders or
-  validators and are tracked outside the headline JSON-resource scope.
+- The CLI accepts JSON, FHIR XML, and one-resource-per-line NDJSON. XML and
+  NDJSON use bounded input adapters, but their Java-baseline parity metrics are
+  reported separately from the headline JSON-resource score. Turtle, CDA,
+  HL7 v2, FML, CDS Hooks, SHC, and DSIG still need dedicated loaders or
+  validators.
 - Local-only terminology avoids network calls. It can verify bundled/local
   expansions, but server-only terminology semantics require explicit terminology
   server configuration from embedder code.
@@ -233,11 +258,15 @@ setProfileSource(createFilesystemProfileSource({
   packageDirs: ['./fhir-packages'],
 }));
 
-const issues = await recordsValidator.validate(
-  { resourceType: 'Patient', id: 'example', name: [{ family: 'Doe' }] },
-  'http://hl7.org/fhir/StructureDefinition/Patient',
-  'R4', // 'R4' | 'R4B' | 'R5' | 'R6'
-);
+const issues = await recordsValidator.validateRequest({
+  resource: {
+    resourceType: 'Patient',
+    id: 'example',
+    name: [{ family: 'Doe' }],
+  },
+  profileUrl: 'http://hl7.org/fhir/StructureDefinition/Patient',
+  fhirVersion: 'R4', // 'R4' | 'R4B' | 'R5' | 'R6'
+});
 ```
 
 For ordered batch output, use `validateAll`. It preserves input order and wraps
@@ -301,16 +330,24 @@ const issues = await validator.validate({ resourceType: 'Patient' });
 
 ### FHIR version routing (R4B)
 
-`PublicFhirVersion` accepts `'R4' | 'R4B' | 'R5' | 'R6'`. R4B is
-routed through the R4 internal path because R4B is a maintenance
-release of R4 with the same StructureDefinitions and FHIRPath
-context. Use `toInternalFhirVersion` to apply the same mapping in
-embedder code:
+`PublicFhirVersion` accepts `'R4' | 'R4B' | 'R5' | 'R6'`. R4B retains
+the explicit `hl7.fhir.r4b.core#4.3.0` package identity while validation and
+FHIRPath evaluation currently use the R4 maintenance adapter. Use
+`resolveFhirReleaseContext` when package provenance matters and
+`toInternalFhirVersion` only when an engine literal is required:
 
 ```ts
-import { toInternalFhirVersion, type PublicFhirVersion } from '@records-fhir/validator';
+import {
+  resolveFhirReleaseContext,
+  toInternalFhirVersion,
+  type PublicFhirVersion,
+} from '@records-fhir/validator';
 
 const v: PublicFhirVersion = 'R4B';
+resolveFhirReleaseContext(v);
+// → { publicVersion: 'R4B', engineVersion: 'R4',
+//     corePackage: 'hl7.fhir.r4b.core#4.3.0',
+//     fhirPathModel: 'r4', compatibilityMode: 'r4b-maintenance-adapter' }
 toInternalFhirVersion(v); // → 'R4'
 ```
 
@@ -431,10 +468,11 @@ It is strongest for FHIR JSON resource validation, StructureDefinition
 constraints, slicing, references, terminology checks, and structured issue
 metadata that downstream applications can store or display.
 
-The package is not a claim of universal FHIR ecosystem coverage. XML resources,
-CDA, HL7 v2, CDS Hooks, SHC, DSIG, JSON5 harnesses, legacy STU3/DSTU versions,
-logical models, and site-level MII certification are outside the current
-headline support scope unless called out by a dedicated conformance lane.
+The package is not a claim of universal FHIR ecosystem coverage. The XML and
+NDJSON adapters do not change the JSON parity headline. CDA, HL7 v2, CDS Hooks,
+SHC, DSIG, JSON5 harnesses, legacy STU3/DSTU versions, logical models, and
+site-level MII certification remain outside the current headline support scope
+unless called out by a dedicated conformance lane.
 
 ## Conformance
 
@@ -469,7 +507,7 @@ Pre-filter exclusions:
 
 | Reason | Count |
 |---|---:|
-| XML resources (Records validator is JSON-only) | 299 |
+| XML resources (adapter active; separate parity lane pending) | 299 |
 | Non-R4/R5/R6 FHIR versions (`3.0`, `3.0.1`, `1.4`) | 47 |
 | Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 68 |
 | Disabled by upstream manifest (`use-test: false`) | 17 |
@@ -500,13 +538,13 @@ product scope with actual JSON resource validation correctness.
 
 | Excluded class | Why it is not part of this score | What would be needed to include it |
 |---|---|---|
-| XML resources | The package currently validates parsed JSON resources. XML requires parsing, XML-specific diagnostics, and stable XML-to-resource location mapping. | Add an XML parser/normalizer and an XML-aware diagnostic mapper, then run XML fixtures as a separate conformance lane. |
+| XML resources | The secure XML parser/normalizer now feeds the same object validator, but the 299 XML fixtures are not part of the JSON score. | Run XML fixtures with the emitted source locations against Java baselines and publish a separate XML lane. |
 | CDA, HL7 v2, CDS Hooks, SHC, DSIG, JSON5, XVer | These are adjacent standards or special harnesses, not plain FHIR JSON resource validation. Some are transformation/signature/protocol tests rather than resource validation tests. | Build dedicated modules and dedicated conformance harnesses for each format/protocol. |
 | Older FHIR versions (`3.0`, `3.0.1`, `1.4`) | The validator package targets R4, R5, and R6. Legacy STU3/DSTU-era behavior differs enough that it should not be silently mixed into the R4 score. | Add explicit legacy-version support and report it as a separate compatibility score. |
 | Upstream-disabled tests | The upstream manifest marks them with `use-test: false`, so the reference suite itself does not treat them as active comparison cases. | Re-enable only if upstream enables them or if this project defines its own expected baseline. |
 | Logical model tests | Logical models are not ordinary FHIR resource-instance validation cases. | Add logical-model validation support and a separate result category. |
 | Missing Java baselines | The comparison metric is Java parity. Without an expected Java `OperationOutcome`, there is no objective diff target. | Generate and commit Java baselines, or define a Records-owned expected baseline with a different metric name. |
-| `.fml` / `.ndjson` payloads | They pass the manifest filter but are not single JSON resource documents. | Add FML/NDJSON-specific loaders and compare them in dedicated lanes. |
+| `.fml` / `.ndjson` payloads | NDJSON has a bounded multi-resource loader; FML is a mapping-language input rather than a resource document. Neither belongs in the single-resource JSON score. | Publish a separate NDJSON lane; add an FML runner only if executable mapping becomes product scope. |
 
 For that reason, the headline number should be read as:
 

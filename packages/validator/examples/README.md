@@ -41,11 +41,12 @@ for its `resourceType`. To validate against a specific profile, pass the
 canonical URL:
 
 ```js
-const issues = await recordsValidator.validate(
+const issues = await recordsValidator.validateRequest({
   resource,
-  'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/PatientIn',
-  'R4',
-);
+  profileUrl:
+    'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/PatientIn',
+  fhirVersion: 'R4',
+});
 ```
 
 Profiles must be resolvable — either through the bundled-profiles package,

@@ -1,10 +1,43 @@
 import type { ValidationIssue } from '../../types';
-import { valueSetCache } from '../../validators/valueset-cache';
+import { createTerminologyIssue } from '../../terminology/terminology-issue';
+import { ValueSetCache } from '../../validators/valueset-cache';
 import { ValueSetPackageLoader } from '../../validators/valueset-package-loader';
+import { isAssertableCodeSystem } from '../../validators/valueset-code-system-rules';
+import {
+  getProfileSource,
+  getProfileSourceRevision,
+  type ProfileSourceContext,
+} from '../../persistence';
+import { BoundedLruCache } from '../../cache/bounded-lru-cache';
 
 type CodeSystemReferenceMode = 'syntax' | 'not-found';
 
-const localCodeSystemKnownCache = new Map<string, Promise<boolean>>();
+type CodeSystemLookupCacheEntry = {
+  lookup: Promise<boolean>;
+  expiresAt: number;
+};
+
+const HOST_CODE_SYSTEM_NEGATIVE_CACHE_TTL_MS = 60_000;
+
+export class CodeSystemReferenceLookupCache {
+  private readonly entries = new BoundedLruCache<string, CodeSystemLookupCacheEntry>(5_000);
+
+  get(key: string): CodeSystemLookupCacheEntry | undefined {
+    return this.entries.get(key);
+  }
+
+  set(key: string, entry: CodeSystemLookupCacheEntry): void {
+    this.entries.set(key, entry);
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+}
 
 const KNOWN_INCORRECT_CODE_SYSTEM_URLS: Readonly<Record<string, string>> = {
   // R4 Observation.category uses the terminology.hl7.org CodeSystem. The
@@ -15,81 +48,107 @@ const KNOWN_INCORRECT_CODE_SYSTEM_URLS: Readonly<Record<string, string>> = {
 };
 
 export async function validateCodeSystemReference(
-  coding: any,
+  coding: unknown,
   path: string,
   index: number,
   isArrayInput: boolean,
   mode: CodeSystemReferenceMode,
   fhirVersion?: 'R4' | 'R5' | 'R6',
+  sourceContext?: ProfileSourceContext,
+  cache: ValueSetCache = new ValueSetCache(),
+  lookupCache: CodeSystemReferenceLookupCache = new CodeSystemReferenceLookupCache(),
 ): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
   const systemPath = isArrayInput ? `${path}[${index}].system` : `${path}.system`;
+  const codingRecord = asRecord(coding);
 
   // Structural validation owns datatype errors. Terminology checks must stay
   // total over malformed JSON so one non-string system cannot abort the
   // remaining validation aspects.
-  if (typeof coding?.system !== 'string') return issues;
+  if (!codingRecord || typeof codingRecord.system !== 'string') return issues;
+  const system = codingRecord.system;
+  const code = typeof codingRecord.code === 'string' ? codingRecord.code : undefined;
+  const display = typeof codingRecord.display === 'string' ? codingRecord.display : undefined;
 
-  const correctedSystem = KNOWN_INCORRECT_CODE_SYSTEM_URLS[coding.system];
-  if (mode === 'syntax' && correctedSystem) {
-    issues.push({
-      id: `terminology-codesystem-canonical-mismatch-${Date.now()}-${index}`,
-      aspect: 'terminology',
+  const correctedSystem = KNOWN_INCORRECT_CODE_SYSTEM_URLS[system];
+  if (mode === 'syntax' && !isAbsoluteCodeSystemUri(system)) {
+    issues.push(createTerminologyIssue({
+      severity: 'error',
+      code: 'terminology-codesystem-url-not-absolute',
+      message: `Coding.system must be an absolute reference, not a local reference ('${system}')`,
+      path: systemPath,
+      details: {
+        system,
+        expectedSystemType: 'absolute CodeSystem URI',
+        fixHint:
+          `Replace Coding.system '${system}' with the absolute CodeSystem.url that defines the code; ` +
+          'Coding.system cannot be a local label or code-system mnemonic.',
+      },
+    }));
+  } else if (mode === 'syntax' && correctedSystem) {
+    issues.push(createTerminologyIssue({
       severity: 'error',
       code: 'terminology-code-system-canonical-mismatch',
       message:
-        `Coding.system '${coding.system}' is not a defined CodeSystem canonical URL; ` +
+        `Coding.system '${system}' is not a defined CodeSystem canonical URL; ` +
         `use '${correctedSystem}' instead`,
       path: systemPath,
-      timestamp: new Date(),
       details: {
-        system: coding.system,
+        system,
         suggestedSystem: correctedSystem,
-        fixHint: `Replace Coding.system '${coding.system}' with '${correctedSystem}'.`,
+        fixHint: `Replace Coding.system '${system}' with '${correctedSystem}'.`,
       },
-    });
-  } else if (mode === 'syntax' && /\/ValueSet\//i.test(coding.system)) {
-    issues.push({
-      id: `terminology-codesystem-is-valueset-${Date.now()}-${index}`,
-      aspect: 'terminology',
+    }));
+  } else if (mode === 'syntax' && /\/ValueSet\//i.test(system)) {
+    issues.push(createTerminologyIssue({
       severity: 'error',
       code: 'terminology-coding-system-valueset',
-      message: `The Coding references a value set, not a code system ('${coding.system}')`,
+      message: `The Coding references a value set, not a code system ('${system}')`,
       path: systemPath,
-      timestamp: new Date(),
       details: {
-        valueSetUrl: coding.system,
+        valueSetUrl: system,
         fixHint: 'Replace Coding.system with the CodeSystem URL that defines the code; do not use a ValueSet URL as Coding.system.',
       },
-    });
+    }));
   }
 
-  const systemValidation = validateCodeSystemUrl(coding.system);
+  if (
+    mode === 'not-found'
+    && (correctedSystem || /\/ValueSet\//i.test(system))
+  ) {
+    return issues;
+  }
+
+  const systemValidation = validateCodeSystemUrl(system);
+  const cachedCodeSystem = mode === 'not-found'
+    ? cache.getCodeSystem(system) ?? cache.getCodeSystemFile(system) ?? undefined
+    : undefined;
   const cacheKnowsIt = mode === 'not-found' && (
-    valueSetCache.hasCodeSystem(coding.system) ||
-    valueSetCache.hasCodeSystemFile(coding.system) ||
-    await localCodeSystemExists(coding.system, fhirVersion)
+    (cachedCodeSystem !== undefined && isAssertableCodeSystem(cachedCodeSystem))
+    || await localCodeSystemExists(system, fhirVersion, sourceContext, cache, lookupCache)
   );
   if (mode === 'not-found' && !systemValidation.valid && !cacheKnowsIt) {
-    issues.push({
-      id: `terminology-codesystem-unresolvable-${Date.now()}-${index}`,
-      aspect: 'terminology',
+    issues.push(createTerminologyIssue({
       severity: 'warning',
       code: 'terminology-codesystem-unresolvable',
-      message: `A definition for CodeSystem '${coding.system}' could not be found, so the code cannot be validated`,
+      message: `A definition for CodeSystem '${system}' could not be found, so the code cannot be validated`,
       path: systemPath,
-      timestamp: new Date(),
       details: {
-        code: coding.code,
-        system: coding.system,
-        ...(coding.display ? { display: coding.display } : {}),
-        fieldPath: systemPath,
-        ...buildCodeSystemUrlDetails(coding.system),
+        ...(code ? { code } : {}),
+        system,
+        ...(display ? { display } : {}),
+        ...buildCodeSystemUrlDetails(system),
       },
-    });
+    }));
   }
 
   return issues;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function fhirVersionToPackageMajor(fhirVersion?: 'R4' | 'R5' | 'R6'): string | undefined {
@@ -102,21 +161,56 @@ function fhirVersionToPackageMajor(fhirVersion?: 'R4' | 'R5' | 'R6'): string | u
 function localCodeSystemExists(
   systemUrl: string,
   fhirVersion?: 'R4' | 'R5' | 'R6',
+  sourceContext?: ProfileSourceContext,
+  cache: ValueSetCache = new ValueSetCache(),
+  lookupCache: CodeSystemReferenceLookupCache = new CodeSystemReferenceLookupCache(),
 ): Promise<boolean> {
   if (!isAbsoluteCodeSystemUri(systemUrl)) {
     return Promise.resolve(false);
   }
 
-  const key = `${systemUrl}|${fhirVersion ?? ''}`;
-  let lookup = localCodeSystemKnownCache.get(key);
-  if (!lookup) {
-    lookup = new ValueSetPackageLoader(valueSetCache)
-      .loadCodeSystem(systemUrl, fhirVersionToPackageMajor(fhirVersion))
-      .then(Boolean)
-      .catch(() => false);
-    localCodeSystemKnownCache.set(key, lookup);
+  const key = [
+    getProfileSourceRevision(),
+    sourceContext?.organizationId ?? '',
+    sourceContext?.serverId ?? '',
+    systemUrl,
+    fhirVersion ?? '',
+  ].join('|');
+  const now = Date.now();
+  let cacheEntry = lookupCache.get(key);
+  if (cacheEntry && cacheEntry.expiresAt <= now) {
+    lookupCache.delete(key);
+    cacheEntry = undefined;
   }
-  return lookup;
+  if (!cacheEntry) {
+    const source = getProfileSource();
+    if (source.hasCodeSystem && sourceContext?.organizationId !== undefined) {
+      cacheEntry = {
+        lookup: Promise.resolve(false),
+        // Keep concurrent requests on the same in-flight lookup. A negative
+        // result receives a bounded TTL once the promise settles.
+        expiresAt: Number.POSITIVE_INFINITY,
+      };
+      cacheEntry.lookup = source.hasCodeSystem(systemUrl, undefined, sourceContext)
+        .catch(() => false)
+        .then(found => {
+          cacheEntry!.expiresAt = found
+            ? Number.POSITIVE_INFINITY
+            : Date.now() + HOST_CODE_SYSTEM_NEGATIVE_CACHE_TTL_MS;
+          return found;
+        });
+    } else {
+      cacheEntry = {
+        lookup: new ValueSetPackageLoader(cache)
+          .loadCodeSystem(systemUrl, fhirVersionToPackageMajor(fhirVersion))
+          .then(codeSystem => Boolean(codeSystem && isAssertableCodeSystem(codeSystem)))
+          .catch(() => false),
+        expiresAt: Number.POSITIVE_INFINITY,
+      };
+    }
+    lookupCache.set(key, cacheEntry);
+  }
+  return cacheEntry.lookup;
 }
 
 function buildCodeSystemUrlDetails(systemUrl: string): Record<string, unknown> {
@@ -176,7 +270,6 @@ function validateCodeSystemUrl(systemUrl: string): { valid: boolean; message?: s
     /^http:\/\/www\.ada\.org\/snodent/,
     /^http:\/\/cts2\.nlm\.nih\.gov/,
     /^http:\/\/standardterms\.edqm\.eu\/?$/,
-    /^http:\/\/fhir\.de\//,
     /^http:\/\/fhir\.nl\//,
     /^http:\/\/fhir\.ch\//,
     /^https:\/\/fhir\.hl7\.org\.uk\//,

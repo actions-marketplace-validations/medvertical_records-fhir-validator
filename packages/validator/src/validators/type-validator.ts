@@ -25,8 +25,12 @@ import {
   PRIMITIVE_TYPE_CODES,
 } from './type-matching-helpers';
 import { getResolvedPrimitiveSidecarType, isResolvedPrimitiveSidecarValue } from '../core/fhir-primitive-sidecar';
-
-const INVALID_FORMAT_VALUE_PREVIEW_LIMIT = 120;
+import {
+  buildDateTimeFormatDetails,
+  validateDateYearPlausibility,
+  validatePrimitiveStringFormat,
+} from './primitive-string-format-validator';
+import { validateDecimalRange } from './decimal-range-validator';
 
 // ============================================================================
 // Type Validator
@@ -37,7 +41,7 @@ export class TypeValidator {
    * Validate type of a value
    */
   async validate(
-    value: any,
+    value: unknown,
     types: ElementType[],
     path: string,
     profileUrl?: string
@@ -66,7 +70,7 @@ export class TypeValidator {
    * Validate a single value against type definitions
    */
   private async validateSingle(
-    value: any,
+    value: unknown,
     types: ElementType[],
     path: string,
     profileUrl?: string
@@ -98,9 +102,21 @@ export class TypeValidator {
         }
 
         if (typeof value === 'string') {
-          const formatIssue = this.validatePrimitiveStringFormat(value, effectiveType, path, profileUrl);
+          const formatIssue = validatePrimitiveStringFormat(value, effectiveType, path, profileUrl);
           if (formatIssue) {
             issues.push(formatIssue);
+          } else {
+            const plausibilityIssue = validateDateYearPlausibility(value, effectiveType, path, profileUrl);
+            if (plausibilityIssue) {
+              issues.push(plausibilityIssue);
+            }
+          }
+        }
+
+        if (typeof value === 'number' && effectiveType === 'decimal') {
+          const rangeIssue = validateDecimalRange(value, path, profileUrl);
+          if (rangeIssue) {
+            issues.push(rangeIssue);
           }
         }
 
@@ -174,7 +190,7 @@ export class TypeValidator {
    * - FHIRPath types: 'http://hl7.org/fhirpath/System.String', etc.
    * - Complex types: 'CodeableConcept', 'Reference', etc.
    */
-  private async matchesType(value: any, typeCode: string): Promise<boolean> {
+  private async matchesType(value: unknown, typeCode: string): Promise<boolean> {
     const normalizedType = normalizeFhirType(typeCode);
     const effectiveType = normalizedType || typeCode;
 
@@ -195,65 +211,6 @@ export class TypeValidator {
     return matchesComplexType(value, effectiveType);
   }
 
-  private validatePrimitiveStringFormat(
-    value: string,
-    effectiveType: string,
-    path: string,
-    profileUrl?: string,
-  ): ValidationIssue | null {
-    switch (effectiveType) {
-      case 'date':
-        return isValidFhirDate(value)
-          ? null
-          : this.createInvalidFormatIssue(path, profileUrl, `Invalid date format: ${formatInvalidValueForMessage(value)}`, value, 'date');
-      case 'dateTime':
-      case 'instant':
-        if (value.includes('T') && !/[Z+-]/.test(value.split('T')[1] || '')) {
-          return this.createInvalidFormatIssue(path, profileUrl, 'If a date has a time, it must have a timezone', value, effectiveType);
-        }
-        return isValidFhirDateTime(value)
-          ? null
-          : this.createInvalidFormatIssue(path, profileUrl, `Invalid ${effectiveType} format: ${formatInvalidValueForMessage(value)}`, value, effectiveType);
-      case 'time':
-        return /^([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?$/.test(value)
-          ? null
-          : this.createInvalidFormatIssue(path, profileUrl, `Invalid time format: ${formatInvalidValueForMessage(value)}`, value, 'time');
-      case 'base64Binary':
-        return isValidBase64Binary(value)
-          ? null
-          : this.createInvalidFormatIssue(
-            path,
-            profileUrl,
-            `Invalid base64Binary format at ${path}`,
-            value,
-            'base64Binary',
-            'structural-invalid-base64-format',
-          );
-      default:
-        return null;
-    }
-  }
-
-  private createInvalidFormatIssue(
-    path: string,
-    profileUrl: string | undefined,
-    message: string,
-    value: string,
-    expectedType: string,
-    code: string = 'structural-invalid-format',
-  ): ValidationIssue {
-    return createValidationIssue({
-      code,
-      path,
-      resourceType: inferResourceTypeFromPath(path),
-      profile: profileUrl,
-      customMessage: message,
-      severityOverride: 'error',
-      details: expectedType === 'dateTime' || expectedType === 'instant'
-        ? buildDateTimeFormatDetails(value, expectedType)
-        : buildInvalidPrimitiveFormatDetails(value, expectedType),
-    });
-  }
 }
 
 function inferResourceTypeFromPath(path: string): string {
@@ -265,11 +222,12 @@ function narrowTypesForConcreteChoicePath(types: ElementType[], path: string): E
   const lastSegment = path.split('.').pop()?.replace(/\[\d+\]$/, '');
   if (!lastSegment || lastSegment.endsWith('[x]')) return types;
 
-  const matched = types.find(type => {
-    const suffix = choiceSuffixForType(type.code);
-    if (!suffix || lastSegment.length <= suffix.length) return false;
-    return lastSegment.endsWith(suffix);
-  });
+  const matched = types
+    .map(type => ({ type, suffix: choiceSuffixForType(type.code) }))
+    .filter(({ suffix }) =>
+      Boolean(suffix) && lastSegment.length > suffix!.length && lastSegment.endsWith(suffix!)
+    )
+    .sort((left, right) => right.suffix!.length - left.suffix!.length)[0]?.type;
 
   return matched ? [matched] : types;
 }
@@ -279,92 +237,4 @@ function choiceSuffixForType(typeCode: string): string | null {
   if (!effectiveType) return null;
   if (effectiveType === 'SimpleQuantity') return 'Quantity';
   return effectiveType.charAt(0).toUpperCase() + effectiveType.slice(1);
-}
-
-function buildDateTimeFormatDetails(value: string, expectedType: string): Record<string, unknown> {
-  const suggestedValue = suggestFhirDateTime(value);
-  return {
-    value,
-    expectedType,
-    ...(suggestedValue ? { suggestedValue } : {}),
-    fixHint: suggestedValue
-      ? `Replace '${value}' with '${suggestedValue}' or another valid FHIR ${expectedType} value with required seconds and timezone.`
-      : `Use a valid FHIR ${expectedType}: include seconds when a time is present and include a timezone (Z or +/-HH:MM).`,
-  };
-}
-
-function buildInvalidPrimitiveFormatDetails(value: string, expectedType: string): Record<string, unknown> {
-  if (value.length <= INVALID_FORMAT_VALUE_PREVIEW_LIMIT) {
-    return {
-      value,
-      expectedType,
-      fixHint: `Replace '${value}' with a valid FHIR ${expectedType} value.`,
-    };
-  }
-
-  return {
-    expectedType,
-    valuePreview: truncateInvalidFormatValue(value),
-    valueLength: value.length,
-    valueTruncated: true,
-    fixHint: `Replace this value with a valid FHIR ${expectedType} value. The current value is ${value.length} characters and was truncated in this report.`,
-  };
-}
-
-function formatInvalidValueForMessage(value: string): string {
-  return value.length <= INVALID_FORMAT_VALUE_PREVIEW_LIMIT
-    ? `'${value}'`
-    : `'${truncateInvalidFormatValue(value)}' (${value.length} characters)`;
-}
-
-function truncateInvalidFormatValue(value: string): string {
-  if (value.length <= INVALID_FORMAT_VALUE_PREVIEW_LIMIT) return value;
-  return `${value.slice(0, INVALID_FORMAT_VALUE_PREVIEW_LIMIT)}...`;
-}
-
-function suggestFhirDateTime(value: string): string | undefined {
-  const missingSeconds = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(Z|[+-]\d{2}:\d{2})$/);
-  if (missingSeconds) {
-    return `${missingSeconds[1]}:00${missingSeconds[2]}`;
-  }
-
-  const trailingComma = value.match(/^(.+)(Z|[+-]\d{2}:\d{2}),$/);
-  if (trailingComma) {
-    return `${trailingComma[1]}${trailingComma[2]}`;
-  }
-
-  if (value.includes('T') && !/[Z+-]/.test(value.split('T')[1] || '')) {
-    return `${value}Z`;
-  }
-
-  return undefined;
-}
-
-function isValidFhirDate(value: string): boolean {
-  if (!/^\d{4}(-\d{2}(-\d{2})?)?$/.test(value)) return false;
-  return hasValidCalendarDay(value);
-}
-
-function isValidFhirDateTime(value: string): boolean {
-  const fhirDateTimeRe = /^[0-9]{4}(-(0[1-9]|1[0-2])(-(0[1-9]|[12][0-9]|3[01])(T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\.[0-9]+)?(Z|[+-]((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))?)?)?$/;
-  if (!fhirDateTimeRe.test(value)) return false;
-  return hasValidCalendarDay(value);
-}
-
-function hasValidCalendarDay(value: string): boolean {
-  const dayMatch = value.match(/^([0-9]{4})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])/);
-  if (!dayMatch) return true;
-
-  const [, y, m, d] = dayMatch;
-  const dt = new Date(`${y}-${m}-${d}T00:00:00Z`);
-  return dt.getUTCFullYear() === Number(y)
-    && (dt.getUTCMonth() + 1) === Number(m)
-    && dt.getUTCDate() === Number(d);
-}
-
-function isValidBase64Binary(value: string): boolean {
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return false;
-  if (value.length % 4 !== 0) return false;
-  const paddingIndex = value.indexOf('=');
-  return paddingIndex === -1 || /^=+$/.test(value.slice(paddingIndex));
 }

@@ -39,6 +39,10 @@ describe('MetadataExecutor', () => {
       // Missing meta generates info-level issues, not errors
       const errors = issues.filter(i => i.severity === 'error');
       expect(errors).toEqual([]);
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'missing-meta',
+        severity: 'info',
+      }));
     });
 
     it('should return empty array for valid meta field', async () => {
@@ -46,6 +50,22 @@ describe('MetadataExecutor', () => {
       const errors = issues.filter(i => i.severity === 'error');
       expect(errors).toEqual([]);
     });
+
+    it.each(['', false, 0, []])(
+      'classifies present meta value %j as an invalid type',
+      async meta => {
+        mockContext.resource = {
+          resourceType: 'Patient',
+          id: 'test-001',
+          meta,
+        };
+
+        const issues = await executor.validate(mockContext);
+
+        expect(issues.some(issue => issue.code === 'invalid-meta-type')).toBe(true);
+        expect(issues.some(issue => issue.code === 'missing-meta')).toBe(false);
+      },
+    );
 
     it('should validate meta.profile is an array', async () => {
       mockContext.resource.meta.profile = 'not-an-array' as any;

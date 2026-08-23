@@ -6,7 +6,7 @@ export interface NormalizedReferenceValidationArgs {
 }
 
 export function normalizeReferenceValidationArgs(
-  fhirClientOrVersion?: any,
+  fhirClientOrVersion?: unknown,
   fhirVersionOrSettings?: 'R4' | 'R5' | 'R6' | ValidationSettings,
   settings?: ValidationSettings,
 ): NormalizedReferenceValidationArgs {
@@ -19,11 +19,15 @@ export function normalizeReferenceValidationArgs(
     actualSettings = fhirVersionOrSettings;
   }
 
-  if (typeof fhirClientOrVersion === 'string') {
-    fhirVersion = fhirClientOrVersion as 'R4' | 'R5' | 'R6';
+  if (isFhirVersion(fhirClientOrVersion)) {
+    fhirVersion = fhirClientOrVersion;
   }
 
   return { fhirVersion, actualSettings };
+}
+
+function isFhirVersion(value: unknown): value is 'R4' | 'R5' | 'R6' {
+  return value === 'R4' || value === 'R5' || value === 'R6';
 }
 
 export function getRecursiveValidationConfig(settings?: ValidationSettings) {

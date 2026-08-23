@@ -150,7 +150,7 @@ export function validateResourceTypeSettingsForVersion(
   // Check for R5-specific types when using R4
   if (version === 'R4') {
     const r5SpecificIncluded = resourceTypes.includedTypes.filter(type =>
-      getR5SpecificResourceTypes().includes(type as any)
+      getR5SpecificResourceTypes().includes(type)
     );
     if (r5SpecificIncluded.length > 0) {
       errors.push(`R5-specific resource types cannot be used with FHIR R4: ${r5SpecificIncluded.join(', ')}`);

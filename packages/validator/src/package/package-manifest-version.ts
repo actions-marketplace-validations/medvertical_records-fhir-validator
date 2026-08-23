@@ -1,19 +1,15 @@
 import type { PackageManifest } from './package-registry-types.js';
+import { isSafePackageVersion } from './package-artifact-policy.js';
+import { compareVersions } from '../package-resolver/version-comparator.js';
 
 function getLatestManifestVersion(manifest: PackageManifest): string | null {
-  const versions = Object.keys(manifest.versions);
+  const versions = Object.keys(manifest.versions)
+    .filter(version => isManifestVersion(manifest, version));
   if (versions.length === 0) return null;
 
-  versions.sort((a, b) => {
-    const aParts = a.split('.').map(Number);
-    const bParts = b.split('.').map(Number);
-    for (let index = 0; index < Math.max(aParts.length, bParts.length); index++) {
-      const difference = (bParts[index] || 0) - (aParts[index] || 0);
-      if (difference !== 0) return difference;
-    }
-    return 0;
-  });
-  return versions[0];
+  const stableVersions = versions.filter(version => !version.includes('-'));
+  const candidates = stableVersions.length > 0 ? stableVersions : versions;
+  return candidates.sort((left, right) => compareVersions(right, left))[0];
 }
 
 function normalizeShortSemverVersion(version: string): string {
@@ -26,14 +22,31 @@ export function resolvePackageManifestVersion(
   requestedVersion?: string,
 ): string | null {
   if (requestedVersion) {
-    if (manifest.versions[requestedVersion]) return requestedVersion;
+    if (isManifestVersion(manifest, requestedVersion)) return requestedVersion;
 
     const normalizedVersion = normalizeShortSemverVersion(requestedVersion);
-    if (normalizedVersion !== requestedVersion && manifest.versions[normalizedVersion]) {
+    if (
+      normalizedVersion !== requestedVersion
+      && isManifestVersion(manifest, normalizedVersion)
+    ) {
       return normalizedVersion;
     }
-    return requestedVersion;
+    return null;
   }
 
-  return manifest['dist-tags'].latest || getLatestManifestVersion(manifest);
+  const taggedLatest = manifest['dist-tags'].latest;
+  if (
+    taggedLatest
+    && isManifestVersion(manifest, taggedLatest)
+  ) {
+    return taggedLatest;
+  }
+  return getLatestManifestVersion(manifest);
+}
+
+function isManifestVersion(manifest: PackageManifest, version: string): boolean {
+  const entry = manifest.versions[version];
+  return isSafePackageVersion(version)
+    && entry?.name === manifest.name
+    && entry.version === version;
 }

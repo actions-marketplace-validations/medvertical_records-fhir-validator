@@ -97,6 +97,144 @@ describe('ComplexTypeValidator Period per-1', () => {
     expect(parentPathReads).toBe(readsAfterFirstPath);
   });
 
+  it('does not reuse effective elements across distinct profile revisions with the same canonical', async () => {
+    const localLoader = {
+      loadProfile: vi.fn().mockResolvedValue({
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/CodeableConcept',
+        name: 'CodeableConcept',
+        status: 'active',
+        kind: 'complex-type',
+        abstract: false,
+        type: 'CodeableConcept',
+        snapshot: {
+          element: [
+            { path: 'CodeableConcept' },
+            { path: 'CodeableConcept.text', min: 0, max: '1', type: [{ code: 'string' }] },
+          ],
+        },
+      }),
+    };
+    const validator = new ComplexTypeValidator(localLoader as any);
+    const elementDef = {
+      id: 'Claim.productOrService',
+      path: 'Claim.productOrService',
+      type: [{ code: 'CodeableConcept' }],
+    };
+    const profile = (min: number) => ({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.test/StructureDefinition/Claim',
+      version: '1.0.0',
+      name: 'Claim',
+      status: 'active',
+      kind: 'resource',
+      abstract: false,
+      type: 'Claim',
+      snapshot: {
+        element: [
+          {
+            path: 'Claim.productOrService.text',
+            min,
+            max: '1',
+            type: [{ code: 'string' }],
+          },
+        ],
+      },
+    });
+
+    const initialIssues = await validator.validateComplexTypeSubElements(
+      {},
+      elementDef,
+      'Claim.productOrService',
+      'http://example.test/StructureDefinition/Claim',
+      profile(0) as any,
+    );
+    const revisedIssues = await validator.validateComplexTypeSubElements(
+      {},
+      elementDef,
+      'Claim.productOrService',
+      'http://example.test/StructureDefinition/Claim',
+      profile(1) as any,
+    );
+
+    expect(initialIssues).toHaveLength(0);
+    expect(revisedIssues.some(issue => issue.code === 'structural-required-element-missing')).toBe(true);
+  });
+
+  it('retries a datatype definition that was temporarily unavailable', async () => {
+    const codeableConceptSd = {
+      resourceType: 'StructureDefinition',
+      url: 'http://hl7.org/fhir/StructureDefinition/CodeableConcept',
+      name: 'CodeableConcept',
+      status: 'active',
+      kind: 'complex-type',
+      abstract: false,
+      type: 'CodeableConcept',
+      snapshot: {
+        element: [
+          { path: 'CodeableConcept' },
+          { path: 'CodeableConcept.text', min: 1, max: '1', type: [{ code: 'string' }] },
+        ],
+      },
+    };
+    const localLoader = {
+      loadProfile: vi.fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(codeableConceptSd),
+    };
+    const validator = new ComplexTypeValidator(localLoader as any);
+    const elementDef = {
+      path: 'Claim.productOrService',
+      type: [{ code: 'CodeableConcept' }],
+    };
+
+    // Consumes the transient null; the failed load must not be negative-cached.
+    await validator.validateComplexTypeSubElements(
+      {}, elementDef, 'Claim.productOrService', 'http://example.test/Claim',
+    );
+    const retryIssues = await validator.validateComplexTypeSubElements(
+      {}, elementDef, 'Claim.productOrService', 'http://example.test/Claim',
+    );
+
+    expect(retryIssues.some(issue => issue.code === 'structural-required-element-missing')).toBe(true);
+    expect(localLoader.loadProfile.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('treats an empty repeating child as missing when its minimum is positive', async () => {
+    const localLoader = {
+      loadProfile: vi.fn().mockResolvedValue({
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/CodeableConcept',
+        name: 'CodeableConcept',
+        status: 'active',
+        kind: 'complex-type',
+        abstract: false,
+        type: 'CodeableConcept',
+        snapshot: {
+          element: [
+            { path: 'CodeableConcept' },
+            { path: 'CodeableConcept.coding', min: 1, max: '*', type: [{ code: 'Coding' }] },
+          ],
+        },
+      }),
+    };
+    const validator = new ComplexTypeValidator(localLoader as any);
+
+    const issues = await validator.validateComplexTypeSubElements(
+      { coding: [] },
+      { path: 'Claim.productOrService', type: [{ code: 'CodeableConcept' }] },
+      'Claim.productOrService',
+      'http://example.test/Claim',
+    );
+
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'structural-required-element-missing',
+        path: 'Claim.productOrService.coding',
+      }),
+    ]));
+  });
+
   it('preserves the requested FHIR version for nested primitive bindings', async () => {
     const backboneElementSd = {
       resourceType: 'StructureDefinition',

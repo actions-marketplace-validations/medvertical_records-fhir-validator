@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { TerminologyExecutor } from '../terminology-executor';
 import { getValueAtPath } from '../../validation-utils';
-import { valueSetCache } from '../../../validators/valueset-cache';
+import { ValueSetCache } from '../../../validators/valueset-cache';
 import type { StructureDefinition } from '../../structure-definition-types';
+
+const valueSetCache = new ValueSetCache();
 
 describe('TerminologyExecutor local CodeSystem validation', () => {
   beforeEach(() => {
@@ -58,7 +60,7 @@ describe('TerminologyExecutor local CodeSystem validation', () => {
       },
     } as StructureDefinition;
 
-    const issues = await new TerminologyExecutor().validate({
+    const issues = await new TerminologyExecutor(undefined, valueSetCache).validate({
       resource,
       structureDef,
       getValueAtPath,

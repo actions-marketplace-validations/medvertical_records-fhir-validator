@@ -1,17 +1,15 @@
-import type { EnableWhen, QuestionnaireItem, QuestionnaireResponseAnswer, QuestionnaireResponseItem } from './questionnaire-types';
+import type { EnableWhen, QuestionnaireItem, QuestionnaireResponseAnswer } from './questionnaire-types';
+import { visitQuestionnaireResponseItems } from './questionnaire-response-traversal';
 
 export function buildQuestionnaireAnswerMap(
-    items: QuestionnaireResponseItem[],
+    items: unknown[],
     map: Map<string, QuestionnaireResponseAnswer[]>,
 ): void {
-    for (const item of items) {
+    visitQuestionnaireResponseItems(items, 'QuestionnaireResponse.item', item => {
         if (item.linkId && item.answer) {
             map.set(item.linkId, item.answer);
         }
-        if (item.item) {
-            buildQuestionnaireAnswerMap(item.item, map);
-        }
-    }
+    });
 }
 
 export function isQuestionnaireItemEnabled(
@@ -58,7 +56,7 @@ function evaluateSingleEnableWhen(
     ));
 }
 
-function getEnableWhenValue(ew: EnableWhen): any {
+function getEnableWhenValue(ew: EnableWhen): unknown {
     if (ew.answerBoolean !== undefined) return ew.answerBoolean;
     if (ew.answerDecimal !== undefined) return ew.answerDecimal;
     if (ew.answerInteger !== undefined) return ew.answerInteger;
@@ -72,7 +70,7 @@ function getEnableWhenValue(ew: EnableWhen): any {
     return undefined;
 }
 
-function getAnswerValue(answer: QuestionnaireResponseAnswer): any {
+function getAnswerValue(answer: QuestionnaireResponseAnswer): unknown {
     if (answer.valueBoolean !== undefined) return answer.valueBoolean;
     if (answer.valueDecimal !== undefined) return answer.valueDecimal;
     if (answer.valueInteger !== undefined) return answer.valueInteger;
@@ -87,7 +85,7 @@ function getAnswerValue(answer: QuestionnaireResponseAnswer): any {
     return undefined;
 }
 
-function compareValues(actual: any, operator: EnableWhen['operator'], expected: any): boolean {
+function compareValues(actual: unknown, operator: EnableWhen['operator'], expected: unknown): boolean {
     switch (operator) {
         case '=':
             return actual === expected;

@@ -9,6 +9,69 @@ import {
 } from '../reference-type-constraint-validator';
 
 describe('Reference parsing', () => {
+  it('preserves a typed diagnostic for invalid references', () => {
+    expect(parseReference('patient/1')).toMatchObject({
+      isValid: false,
+      referenceType: 'invalid',
+      metadata: {
+        error: 'Resource type must start with uppercase letter',
+      },
+    });
+  });
+
+  it('accepts a bare contained back-reference to the containing resource', () => {
+    expect(validateReferenceFormat('#')).toMatchObject({
+      isValid: true,
+      referenceType: 'contained',
+      resourceId: '',
+      issues: [],
+    });
+  });
+
+  it.each([
+    ['urn:', 'error'],
+    ['urn:uuid:not-a-uuid', 'warning'],
+  ] as const)('rejects malformed logical references %s', (reference, severity) => {
+    const result = validateReferenceFormat(reference);
+
+    expect(result).toMatchObject({
+      isValid: false,
+      referenceType: 'logical',
+    });
+    expect(result.issues[0]).toMatchObject({
+      code: 'reference-invalid-format',
+      severity,
+    });
+  });
+
+  it('does not infer a FHIR resource type from an opaque absolute URL', () => {
+    expect(validateReferenceFormat('https://example.org/baseR4Patient/id')).toMatchObject({
+      isValid: true,
+      referenceType: 'absolute',
+      resourceType: undefined,
+    });
+  });
+
+  it('creates deterministic issue IDs for identical standalone findings', () => {
+    const first = validateReferenceFormat('Patient/').issues[0];
+    const second = validateReferenceFormat('Patient/').issues[0];
+
+    expect(first.id).toBe(second.id);
+  });
+
+  it('handles non-string reference inputs without throwing', () => {
+    expect(validateReferenceFormat(Symbol('bad-reference'))).toMatchObject({
+      isValid: false,
+      referenceType: 'invalid',
+      issues: [{
+        code: 'reference-empty',
+        details: {
+          reference: 'bad-reference',
+        },
+      }],
+    });
+  });
+
   it.each([
     ['__proto__', 'polluted'],
     ['constructor', 'polluted'],

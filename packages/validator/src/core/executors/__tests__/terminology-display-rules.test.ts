@@ -3,7 +3,28 @@ import {
   extractAcceptedDisplays,
   extractExpectedDisplay,
   uniqueAcceptedDisplays,
+  validateKnownLoincDisplays,
 } from '../terminology-display-rules';
+
+function observationWithDisplay(
+  display: string,
+  code = '8716-3',
+  language?: string,
+): Record<string, unknown> {
+  return {
+    resourceType: 'Observation',
+    ...(language ? { language } : {}),
+    code: {
+      coding: [
+        {
+          system: 'http://loinc.org',
+          code,
+          display,
+        },
+      ],
+    },
+  };
+}
 
 describe('terminology display rule helpers', () => {
   it('extracts a single accepted display', () => {
@@ -45,5 +66,48 @@ describe('terminology display rule helpers', () => {
       'Essential hypertension',
       'Primary hypertension',
     ]);
+  });
+});
+
+describe('validateKnownLoincDisplays', () => {
+  it('accepts the exact Long Common Name', () => {
+    expect(validateKnownLoincDisplays(observationWithDisplay('Vital signs note'))).toEqual([]);
+  });
+
+  it('accepts any valid LOINC designation, not only the Long Common Name', () => {
+    expect(validateKnownLoincDisplays(observationWithDisplay('Vital signs'))).toEqual([]);
+  });
+
+  it('accepts designations case-insensitively', () => {
+    expect(validateKnownLoincDisplays(observationWithDisplay('VITAL SIGNS'))).toEqual([]);
+  });
+
+  it('flags a display matching no accepted designation as an error (Java parity)', () => {
+    const issues = validateKnownLoincDisplays(observationWithDisplay('Blood pressure'));
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toEqual(expect.objectContaining({
+      severity: 'error',
+      code: 'terminology-display-mismatch',
+      path: 'Observation.code.coding[0].display',
+    }));
+  });
+
+  // LOINC 2.78 renamed document-section LCNs from '<X> Narrative' to
+  // '<X> note'; ballot IGs built against older releases still carry the
+  // former names, which stay valid designations (tx.fhir.org LOINC 2.77).
+  it('accepts former document-section Long Common Names', () => {
+    expect(validateKnownLoincDisplays(
+      observationWithDisplay('Social history Narrative', '29762-2'),
+    )).toEqual([]);
+    expect(validateKnownLoincDisplays(
+      observationWithDisplay('Relevant diagnostic tests/laboratory data Narrative', '30954-2'),
+    )).toEqual([]);
+  });
+
+  it('accepts former German designations for German-language resources', () => {
+    expect(validateKnownLoincDisplays(
+      observationWithDisplay('Sozialanamnese - Freitext', '29762-2', 'de-DE'),
+    )).toEqual([]);
   });
 });

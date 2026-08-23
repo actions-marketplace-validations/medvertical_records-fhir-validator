@@ -9,7 +9,7 @@ import type { ReferenceResolver, SliceDefinition } from './slice-types';
 import { codingMatchesBindingCodes, getValueAtPath, matchesPattern } from './slice-utils';
 
 export function matchElementToSlice(
-  element: any,
+  element: unknown,
   slices: SliceDefinition[],
   slicingDef: SlicingDefinition,
   resolver: ReferenceResolver | null,
@@ -25,7 +25,7 @@ export function matchElementToSlice(
 
 export function shouldSuppressUnresolvedBindingOnlyMin(
   slice: SliceDefinition,
-  elements: any[],
+  elements: unknown[],
 ): boolean {
   if (elements.length === 0 || !isUnresolvedBindingOnlySlice(slice)) return false;
   const discriminators = slice.discriminator ?? [];
@@ -36,7 +36,7 @@ export function shouldSuppressUnresolvedBindingOnlyMin(
 }
 
 export function referenceDiscriminatorCouldNotBeResolved(
-  element: any,
+  element: unknown,
   discriminator: SlicingDiscriminator,
   resolver: ReferenceResolver | null,
 ): boolean {
@@ -46,7 +46,9 @@ export function referenceDiscriminatorCouldNotBeResolved(
   const referenceValue = traversesResolve || rawPath === '$this'
     ? element
     : getValueAtPath(element, rawPath);
-  if (!referenceValue || typeof referenceValue !== 'object' || referenceValue.meta?.profile) return false;
+  if (!isRecord(referenceValue)) return false;
+  const meta = isRecord(referenceValue.meta) ? referenceValue.meta : null;
+  if (meta?.profile) return false;
   const reference = referenceValue.reference;
   if (typeof reference !== 'string') return false;
   if (!resolver) return true;
@@ -92,7 +94,7 @@ export function isSliceCompatibleWithFhirVersion(
 }
 
 export function elementCountsForSliceCardinality(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   discriminators: SlicingDiscriminator[],
   allSlices: SliceDefinition[],
@@ -117,7 +119,7 @@ export function elementCountsForSliceCardinality(
 }
 
 function elementMatchesSlice(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   discriminators: SlicingDiscriminator[],
   allSlices: SliceDefinition[],
@@ -140,4 +142,8 @@ function elementMatchesSlice(
       allSlices,
     )
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

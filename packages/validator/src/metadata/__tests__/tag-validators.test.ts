@@ -45,6 +45,19 @@ describe('TagValidator', () => {
       expect(invalidObjectIssue?.severity).toBe('error');
     });
 
+    it('should continue validating after a null tag', () => {
+      const tags = [
+        null,
+        { system: 'http://example.com/tags', code: 'duplicate' },
+        { system: 'http://example.com/tags', code: 'duplicate' },
+      ];
+
+      const issues = validator.validate(tags, 'Patient');
+
+      expect(issues.some(issue => issue.code === 'metadata-tag-invalid-object')).toBe(true);
+      expect(issues.some(issue => issue.code === 'metadata-tag-duplicate')).toBe(true);
+    });
+
     it('should warn about missing system and code', () => {
       const tags = [{}];
       const issues = validator.validate(tags, 'Patient');

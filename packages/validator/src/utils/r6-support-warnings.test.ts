@@ -107,11 +107,11 @@ describe('R6 Support Warnings (Task 2.10)', () => {
       expect(warning.message).toContain(context);
     });
 
-    it('should generate unique warning IDs', () => {
+    it('should generate deterministic warning IDs', () => {
       const warning1 = createR6Warning('structural', 'general');
       const warning2 = createR6Warning('structural', 'general');
 
-      expect(warning1.id).not.toBe(warning2.id);
+      expect(warning1.id).toBe(warning2.id);
     });
 
     it('should include timestamp in warning', () => {
@@ -234,6 +234,20 @@ describe('R6 Support Warnings (Task 2.10)', () => {
       expect(result.length).toBe(1);
       expect(result[0].code).toBe('r6-profile-limited');
     });
+
+    it('adds an aspect warning when a different R6 warning already exists', () => {
+      const profileWarning = createR6Warning('profile', 'profile');
+      const result = addR6WarningIfNeeded(
+        [profileWarning],
+        'R6',
+        'terminology',
+      );
+
+      expect(result.map(issue => issue.code)).toEqual([
+        'r6-terminology-limited',
+        'r6-profile-limited',
+      ]);
+    });
   });
 
   // ==========================================================================
@@ -273,6 +287,13 @@ describe('R6 Support Warnings (Task 2.10)', () => {
 
       expect(summary.limitations.length).toBeGreaterThan(0);
       expect(summary.limitations.some(l => l.includes('Terminology'))).toBe(true);
+    });
+
+    it('returns defensive limitation arrays', () => {
+      const first = getR6SupportSummary();
+      first.limitations.length = 0;
+
+      expect(getR6SupportSummary().limitations.length).toBeGreaterThan(0);
     });
   });
 

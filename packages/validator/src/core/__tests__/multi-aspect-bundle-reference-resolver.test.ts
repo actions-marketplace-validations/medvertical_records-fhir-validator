@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { createBundleReferenceResolver } from '../multi-aspect-bundle-reference-resolver';
 
 describe('multi-aspect bundle reference resolver', () => {
+  it('resolves a bare hash to the containing resource', () => {
+    const containingResource = {
+      resourceType: 'Organization',
+      id: 'owner',
+      contained: [{ resourceType: 'OrganizationAffiliation', id: 'affiliation' }],
+    };
+    const resolver = createBundleReferenceResolver(undefined, containingResource);
+
+    expect(resolver?.('#')).toBe(containingResource);
+  });
+
   it('resolves exact fullUrl references before relative fallbacks', () => {
     const exactTarget = {
       resourceType: 'Patient',
@@ -104,5 +115,40 @@ describe('multi-aspect bundle reference resolver', () => {
     const resolver = createBundleReferenceResolver(bundle, rootResource);
 
     expect(resolver?.('#contained-1')).toBe(containedTarget);
+  });
+
+  it('skips malformed bundle and contained entries without aborting resolution', () => {
+    const containedTarget = { resourceType: 'Observation', id: 'contained-1' };
+    const bundleTarget = { resourceType: 'Patient', id: 'p1' };
+    const rootResource = {
+      resourceType: 'Patient',
+      contained: [null, [], { id: 42 }, containedTarget],
+    };
+    const bundle = {
+      resourceType: 'Bundle',
+      entry: [
+        null,
+        [],
+        { resource: null },
+        { fullUrl: 'urn:uuid:invalid', resource: [] },
+        { fullUrl: 'urn:uuid:p1', resource: bundleTarget },
+      ],
+    };
+
+    const resolver = createBundleReferenceResolver(bundle, rootResource);
+
+    expect(resolver?.('#contained-1')).toBe(containedTarget);
+    expect(resolver?.('urn:uuid:p1')).toBe(bundleTarget);
+    expect(resolver?.('urn:uuid:invalid')).toBeNull();
+  });
+
+  it('does not reuse an index across independent resolver sessions', () => {
+    const bundle: Record<string, unknown> = { resourceType: 'Bundle', entry: [] };
+    expect(createBundleReferenceResolver(bundle, bundle)).toBeNull();
+
+    const patient = { resourceType: 'Patient', id: 'later' };
+    bundle.entry = [{ fullUrl: 'urn:uuid:later', resource: patient }];
+
+    expect(createBundleReferenceResolver(bundle, bundle)?.('urn:uuid:later')).toBe(patient);
   });
 });

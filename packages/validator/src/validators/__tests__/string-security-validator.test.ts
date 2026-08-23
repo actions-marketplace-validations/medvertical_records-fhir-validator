@@ -94,4 +94,12 @@ describe('StringSecurityValidator', () => {
 
     expect(issues).toHaveLength(0);
   });
+
+  it('terminates safely for cyclic object graphs', () => {
+    const validator = new StringSecurityValidator();
+    const resource: Record<string, unknown> = { resourceType: 'Patient' };
+    resource.self = resource;
+
+    expect(validator.validate(resource)).toEqual([]);
+  });
 });

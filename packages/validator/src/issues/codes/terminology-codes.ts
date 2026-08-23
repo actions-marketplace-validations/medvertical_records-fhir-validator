@@ -83,6 +83,11 @@ export const TerminologyCodes = {
         severity: 'error',
         description: 'Coding.system uses a known incorrect canonical URL for a CodeSystem',
     },
+    'terminology-codesystem-url-not-absolute': {
+        aspect: 'terminology',
+        severity: 'error',
+        description: 'Coding.system is a local reference instead of an absolute CodeSystem URI',
+    },
     'terminology-codesystem-unresolvable': {
         aspect: 'terminology',
         severity: 'warning',
@@ -97,6 +102,11 @@ export const TerminologyCodes = {
         aspect: 'terminology',
         severity: 'information',
         description: 'Binding could not be verified; ValueSet not expandable locally and no terminology server confirmed the code',
+    },
+    'terminology-valueset-unavailable': {
+        aspect: 'terminology',
+        severity: 'information',
+        description: 'ValueSet could not be resolved, so binding validation is incomplete',
     },
 } as const satisfies Record<string, ValidationCodeMetadata>;
 

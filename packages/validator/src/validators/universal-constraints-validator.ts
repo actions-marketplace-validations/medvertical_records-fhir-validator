@@ -21,19 +21,31 @@ export class UniversalConstraintsValidator {
     /**
      * Validate universal constraints on any resource
      */
-    validate(resource: any): ValidationIssue[] {
-        if (!resource?.resourceType) return [];
+    validate(resource: unknown): ValidationIssue[] {
+        if (!resource || typeof resource !== 'object' || Array.isArray(resource)) return [];
+        const record = resource as Record<string, unknown>;
+        if (typeof record.resourceType !== 'string' || record.resourceType.length === 0) return [];
 
         const issues: ValidationIssue[] = [];
-        const resourceType = resource.resourceType;
+        const resourceType = record.resourceType;
 
         logger.debug(`[UniversalConstraints] Validating ${resourceType}`);
 
         // ele-1: All FHIR elements must have a @value or children
-        issues.push(...this.validateEle1(resource, resourceType, resourceType));
+        issues.push(...this.validateEle1(
+            record,
+            resourceType,
+            resourceType,
+            new WeakSet<object>(),
+        ));
 
         // ref-1: References must be valid
-        issues.push(...this.validateRef1(resource, resourceType, resourceType));
+        issues.push(...this.validateRef1(
+            record,
+            resourceType,
+            resourceType,
+            new WeakSet<object>(),
+        ));
 
         return issues;
     }
@@ -44,15 +56,22 @@ export class UniversalConstraintsValidator {
      * Expression: hasValue() or (children().count() > id.count()) or $this is Parameters
      * Human: All FHIR elements must have a @value or children
      */
-    private validateEle1(obj: any, resourceType: string, path: string): ValidationIssue[] {
+    private validateEle1(
+        obj: unknown,
+        resourceType: string,
+        path: string,
+        visited: WeakSet<object>,
+    ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         if (!obj || typeof obj !== 'object') return issues;
+        if (visited.has(obj)) return issues;
+        visited.add(obj);
 
         // Skip arrays, process items individually
         if (Array.isArray(obj)) {
             for (let i = 0; i < obj.length; i++) {
-                issues.push(...this.validateEle1(obj[i], resourceType, `${path}[${i}]`));
+                issues.push(...this.validateEle1(obj[i], resourceType, `${path}[${i}]`, visited));
             }
             return issues;
         }
@@ -60,9 +79,10 @@ export class UniversalConstraintsValidator {
         // Check for empty objects (no value and no children).
         // Primitive sidecars (_field) count as children only when they carry
         // meaningful FHIR content such as id or extensions.
-        const keys = Object.keys(obj).filter(k => !k.startsWith('_'));
-        const primitiveSidecarKeys = Object.keys(obj).filter(k =>
-            k.startsWith('_') && k.length > 1 && getPrimitiveSidecar(obj, k.slice(1)) !== undefined
+        const record = obj as Record<string, unknown>;
+        const keys = Object.keys(record).filter(k => !k.startsWith('_'));
+        const primitiveSidecarKeys = Object.keys(record).filter(k =>
+            k.startsWith('_') && k.length > 1 && getPrimitiveSidecar(record, k.slice(1)) !== undefined
         );
 
         // Empty object check
@@ -81,15 +101,15 @@ export class UniversalConstraintsValidator {
 
         // Recurse into children
         for (const key of keys) {
-            if (typeof obj[key] === 'object' && obj[key] !== null) {
-                issues.push(...this.validateEle1(obj[key], resourceType, `${path}.${key}`));
+            if (typeof record[key] === 'object' && record[key] !== null) {
+                issues.push(...this.validateEle1(record[key], resourceType, `${path}.${key}`, visited));
             }
         }
         for (const key of primitiveSidecarKeys) {
             const childPath = `${path}.${key.slice(1)}`;
-            const sidecar = getPrimitiveSidecar(obj, key.slice(1));
+            const sidecar = getPrimitiveSidecar(record, key.slice(1));
             if (sidecar && typeof sidecar === 'object') {
-                issues.push(...this.validateEle1(sidecar, resourceType, childPath));
+                issues.push(...this.validateEle1(sidecar, resourceType, childPath, visited));
             }
         }
 
@@ -102,21 +122,29 @@ export class UniversalConstraintsValidator {
      * Expression: reference.exists() implies (reference.startsWith('#') or reference.contains('/'))
      * Human: SHALL have a contained resource if a local reference is provided
      */
-    private validateRef1(obj: any, resourceType: string, path: string): ValidationIssue[] {
+    private validateRef1(
+        obj: unknown,
+        resourceType: string,
+        path: string,
+        visited: WeakSet<object>,
+    ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         if (!obj || typeof obj !== 'object') return issues;
+        if (visited.has(obj)) return issues;
+        visited.add(obj);
 
         if (Array.isArray(obj)) {
             for (let i = 0; i < obj.length; i++) {
-                issues.push(...this.validateRef1(obj[i], resourceType, `${path}[${i}]`));
+                issues.push(...this.validateRef1(obj[i], resourceType, `${path}[${i}]`, visited));
             }
             return issues;
         }
 
         // Check for reference field
-        if (obj.reference !== undefined) {
-            const ref = obj.reference;
+        const record = obj as Record<string, unknown>;
+        if (record.reference !== undefined) {
+            const ref = record.reference;
 
             if (typeof ref === 'string' && ref.length > 0) {
                 // ref-1: reference must be a fragment, URL/relative URL, or URN.
@@ -138,9 +166,9 @@ export class UniversalConstraintsValidator {
         }
 
         // Recurse into children
-        for (const key of Object.keys(obj)) {
-            if (typeof obj[key] === 'object' && obj[key] !== null && key !== 'reference') {
-                issues.push(...this.validateRef1(obj[key], resourceType, `${path}.${key}`));
+        for (const [key, value] of Object.entries(record)) {
+            if (typeof value === 'object' && value !== null && key !== 'reference') {
+                issues.push(...this.validateRef1(value, resourceType, `${path}.${key}`, visited));
             }
         }
 

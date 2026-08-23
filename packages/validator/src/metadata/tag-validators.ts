@@ -12,6 +12,8 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
+import { isObjectRecord } from './metadata-boundary-utils';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
 /**
  * Validates meta.tag labels
@@ -20,7 +22,7 @@ export class TagValidator {
   /**
    * Validate tags
    */
-  validate(tags: any, resourceType: string): ValidationIssue[] {
+  validate(tags: unknown, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
@@ -34,10 +36,10 @@ export class TagValidator {
         return issues;
       }
 
-      tags.forEach((tag: any, index: number) => {
+      tags.forEach((tag: unknown, index: number) => {
         const path = `meta.tag[${index}]`;
 
-        if (typeof tag !== 'object' || Array.isArray(tag)) {
+        if (!isObjectRecord(tag)) {
           issues.push(createValidationIssue({
             code: 'metadata-tag-invalid-object',
             path,
@@ -107,8 +109,16 @@ export class TagValidator {
         }
 
         // Check consistency
-        if (tag.system && tag.code && tag.display) {
-          issues.push(...this.validateTagConsistency(tag, index, resourceType));
+        if (
+          typeof tag.system === 'string' &&
+          typeof tag.code === 'string' &&
+          typeof tag.display === 'string'
+        ) {
+          issues.push(...this.validateTagConsistency({
+            system: tag.system,
+            code: tag.code,
+            display: tag.display,
+          }, index, resourceType));
         }
 
         // Warn if code without system
@@ -125,8 +135,11 @@ export class TagValidator {
         // The Coding.display field is 0..1 cardinality.
 
         // Check for duplicates
-        const duplicateIndex = tags.findIndex((otherTag: any, otherIndex: number) =>
-          otherIndex > index && otherTag.system === tag.system && otherTag.code === tag.code
+        const duplicateIndex = tags.findIndex((otherTag: unknown, otherIndex: number) =>
+          otherIndex > index &&
+          isObjectRecord(otherTag) &&
+          otherTag.system === tag.system &&
+          otherTag.code === tag.code
         );
 
         if (duplicateIndex !== -1) {
@@ -141,7 +154,7 @@ export class TagValidator {
       });
 
     } catch (error) {
-      logger.error('[TagValidator] validation failed:', error);
+      logger.error('[TagValidator] validation failed', validationFailureMetadata(error));
     }
 
     return issues;
@@ -150,7 +163,11 @@ export class TagValidator {
   /**
    * Validate tag consistency
    */
-  private validateTagConsistency(tag: any, index: number, resourceType: string): ValidationIssue[] {
+  private validateTagConsistency(
+    tag: { system: string; code: string; display: string },
+    index: number,
+    resourceType: string,
+  ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
     const path = `meta.tag[${index}]`;
 
@@ -194,7 +211,7 @@ export class TagValidator {
       }
 
     } catch (error) {
-      logger.error('[TagValidator] consistency check failed:', error);
+      logger.error('[TagValidator] consistency check failed', validationFailureMetadata(error));
     }
 
     return issues;

@@ -1,6 +1,6 @@
 import type { VersionAlgorithm } from './types';
 
-const SEMVER_REGEX = /^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.+-]+))?$/;
+const SEMVER_REGEX = /^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.-]+))?(?:\+[a-zA-Z0-9.-]+)?$/;
 const INTEGER_REGEX = /^\d{6,}$/;
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -44,8 +44,35 @@ function compareSemver(a: string, b: string): number {
   // Pre-release: absent > present (4.0.1 > 4.0.1-alpha)
   if (!matchA[4] && matchB[4]) return 1;
   if (matchA[4] && !matchB[4]) return -1;
-  if (matchA[4] && matchB[4]) return matchA[4].localeCompare(matchB[4]);
+  if (matchA[4] && matchB[4]) return comparePrerelease(matchA[4], matchB[4]);
 
+  return 0;
+}
+
+function comparePrerelease(a: string, b: string): number {
+  const left = a.split('.');
+  const right = b.split('.');
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index++) {
+    const leftPart = left[index];
+    const rightPart = right[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    if (leftPart === rightPart) continue;
+
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) {
+      const normalizedLeft = leftPart.replace(/^0+(?=\d)/, '');
+      const normalizedRight = rightPart.replace(/^0+(?=\d)/, '');
+      if (normalizedLeft.length !== normalizedRight.length) {
+        return normalizedLeft.length - normalizedRight.length;
+      }
+      return normalizedLeft.localeCompare(normalizedRight);
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftPart.localeCompare(rightPart);
+  }
   return 0;
 }
 

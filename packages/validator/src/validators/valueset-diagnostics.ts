@@ -12,6 +12,7 @@ function createEmptyTerminologyReasonCounters(): TerminologyReasonCounters {
     byReason: {
       'empty-expansion': 0,
       'unsupported-filter': 0,
+      'unenumerable-system-include': 0,
       'unresolvable-snomed-extension-filter': 0,
       'validation-error': 0,
     },

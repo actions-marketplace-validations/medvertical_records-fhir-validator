@@ -5,7 +5,7 @@
  * Extracted from validator-engine.ts to comply with global.mdc guidelines.
  */
 
-import type { ValidationIssue } from '../types';
+import type { ValidationIssue, ValidationSettings } from '../types';
 import { computeValidationIssueId } from '@records-fhir/validation-types';
 import type { StructureDefinition } from './structure-definition-types';
 import {
@@ -18,20 +18,22 @@ import {
   MetadataExecutor
 } from './executors';
 import { getValueAtPath } from './validation-utils';
-import { terminologyResourceValidator } from '../validators/terminology-resource-validator';
 import type { ReferenceResolver } from '../validators/slicing-validator';
+import { TerminologyResourceValidator } from '../validators/terminology-resource-validator';
+import type { FhirResource } from './fhir-resource';
 
 export interface ValidationOrchestratorContext {
-  resource: any;
+  resource: FhirResource;
   resourceType: string;
   profileUrl: string;
   fhirVersion: 'R4' | 'R5' | 'R6';
   structureDef: StructureDefinition;
   strictMode: boolean;
-  settings?: any;
+  settings?: ValidationSettings;
   referenceResolver?: ReferenceResolver | null;
-  contextQuestionnaire?: any;
+  contextQuestionnaire?: unknown;
   organizationId?: number;
+  serverId?: number;
 }
 
 /**
@@ -45,7 +47,8 @@ export async function runAllAspectValidations(
   invariantExecutor: InvariantExecutor,
   customRuleExecutor: CustomRuleExecutor,
   metadataExecutor: MetadataExecutor,
-  referenceExecutor?: ReferenceExecutor
+  referenceExecutor: ReferenceExecutor | undefined,
+  composedTerminologyResourceValidator: TerminologyResourceValidator,
 ): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
 
@@ -61,7 +64,8 @@ export async function runAllAspectValidations(
         structureDef: context.structureDef,
         getValueAtPath,
         contextQuestionnaire: context.contextQuestionnaire,
-        settings: context.settings
+        settings: context.settings,
+        referenceResolver: context.referenceResolver,
       }
     );
     issues.push(...structuralIssues);
@@ -88,13 +92,18 @@ export async function runAllAspectValidations(
       resource: context.resource,
       structureDef: context.structureDef,
       getValueAtPath,
-      fhirVersion: context.fhirVersion
+      fhirVersion: context.fhirVersion,
+      sourceContext: {
+        organizationId: context.organizationId,
+        serverId: context.serverId,
+        fhirVersion: context.fhirVersion,
+      },
     });
     issues.push(...terminologyIssues);
 
     // Terminology resource business rules (CodeSystem/ValueSet canonical URLs,
     // caseSensitive, concept definitions, compose.include validation)
-    const terminologyResourceIssues = terminologyResourceValidator.validate(
+    const terminologyResourceIssues = composedTerminologyResourceValidator.validate(
       context.resource,
       context.fhirVersion,
     );

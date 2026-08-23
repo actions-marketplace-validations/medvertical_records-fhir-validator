@@ -188,7 +188,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         undefined,
-        'R4'
+        'R4', expect.anything()
       );
     });
 
@@ -283,7 +283,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Observation.component',
-        'R4'
+        'R4', expect.anything()
       );
     });
 
@@ -364,7 +364,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'PractitionerRole.extension',
-        'R4',
+        'R4', expect.anything(),
       );
       expect(validateSlicingSpy).toHaveBeenNthCalledWith(
         2,
@@ -373,7 +373,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'PractitionerRole.extension:qualification.extension',
-        'R4',
+        'R4', expect.anything(),
       );
     });
 
@@ -441,7 +441,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'PractitionerRole.extension',
-        'R4',
+        'R4', expect.anything(),
       );
     });
 
@@ -538,7 +538,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Condition.extension',
-        'R4',
+        'R4', expect.anything(),
       );
       expect(validateSlicingSpy).toHaveBeenCalledWith(
         ['2022-09-29'],
@@ -546,7 +546,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Condition.extension:Festgestellt_am.value[x]',
-        'R4',
+        'R4', expect.anything(),
       );
       expect(validateSlicingSpy).toHaveBeenCalledWith(
         [dueToExtension.valueCodeableConcept],
@@ -554,7 +554,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Condition.extension:Ursache.value[x]',
-        'R4',
+        'R4', expect.anything(),
       );
     });
 
@@ -622,7 +622,7 @@ describe('ProfileExecutor', () => {
       expect.anything(),
       undefined,
       'Practitioner.name:name.family.extension',
-      'R4',
+      'R4', expect.anything(),
     );
   });
 
@@ -690,7 +690,7 @@ describe('ProfileExecutor', () => {
       expect.anything(),
       undefined,
       'Practitioner.name:name.prefix.extension',
-      'R4',
+      'R4', expect.anything(),
     );
   });
 
@@ -995,7 +995,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Observation.component.value[x]',
-        'R4'
+        'R4', expect.anything()
       );
       expect(validateSlicingSpy).toHaveBeenNthCalledWith(
         2,
@@ -1004,7 +1004,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Observation.component.value[x]',
-        'R4'
+        'R4', expect.anything()
       );
     });
 
@@ -1059,7 +1059,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Medication.ingredient.item[x].coding',
-        'R4'
+        'R4', expect.anything()
       );
       expect(validateSlicingSpy).toHaveBeenNthCalledWith(
         2,
@@ -1068,7 +1068,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         'Medication.ingredient.item[x].coding',
-        'R4'
+        'R4', expect.anything()
       );
     });
 
@@ -1101,7 +1101,7 @@ describe('ProfileExecutor', () => {
         expect.anything(),
         undefined,
         undefined,
-        'R4'
+        'R4', expect.anything()
       );
     });
 
@@ -1219,26 +1219,25 @@ describe('ProfileExecutor', () => {
       mockContext.getValueAtPath = () => {
         throw new Error('Test error');
       };
-
       const issues = await executor.validate(mockContext);
-      
       expect(issues).toHaveLength(1);
       expect(issues[0].aspect).toBe('profile');
       expect(issues[0].severity).toBe('error');
       expect(issues[0].code).toBe('validation-error');
-      expect(issues[0].message).toContain('Profile validation failed');
-      expect(issues[0].message).toContain('Test error');
+      expect(issues[0].message)
+        .toBe('Profile validation could not be completed because the validator encountered an operational error.');
+      expect(issues[0].message).not.toContain('Test error');
     });
 
     it('should handle non-Error exceptions', async () => {
       mockContext.getValueAtPath = () => {
         throw 'String error';
       };
-
       const issues = await executor.validate(mockContext);
-      
       expect(issues).toHaveLength(1);
-      expect(issues[0].message).toContain('String error');
+      expect(issues[0].message)
+        .toBe('Profile validation could not be completed because the validator encountered an operational error.');
+      expect(issues[0].message).not.toContain('String error');
     });
 
     it('should handle different strictMode settings', async () => {

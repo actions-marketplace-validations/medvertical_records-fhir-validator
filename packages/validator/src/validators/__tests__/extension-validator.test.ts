@@ -4,6 +4,7 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { ExtensionValidator } from "../extension-validator";
+import { ExtensionUrlResolver } from "../extension-url-resolver";
 import { getValueAtPath } from "../../core/validation-utils";
 import type {
   StructureDefinition,
@@ -27,6 +28,21 @@ describe("ExtensionValidator", () => {
     mockValueSetValidator,
     mockElementRulesValidator,
   );
+
+  it("scopes extension resolvability by FHIR version and retries prior misses", async () => {
+    const extensionUrl = "http://example.org/StructureDefinition/versioned-extension";
+    const loadProfile = vi
+      .fn()
+      .mockResolvedValueOnce({ resourceType: "StructureDefinition" })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ resourceType: "StructureDefinition" });
+    const resolver = new ExtensionUrlResolver({ loadProfile } as any);
+
+    await expect(resolver.isResolvable(extensionUrl, "R4")).resolves.toBe(true);
+    await expect(resolver.isResolvable(extensionUrl, "R5")).resolves.toBe(false);
+    await expect(resolver.isResolvable(extensionUrl, "R5")).resolves.toBe(true);
+    expect(loadProfile).toHaveBeenCalledTimes(3);
+  });
 
   // Mock UK Core Patient profile with birthSex extension
   const mockUKCorePatientProfile: StructureDefinition = {
@@ -76,6 +92,88 @@ describe("ExtensionValidator", () => {
   }
 
   describe("validateExtensions", () => {
+    it("does not expose extension validator exception text", async () => {
+      const secret = "postgresql://user:password@example.test/private";
+      const brokenProfile = { ...mockUKCorePatientProfile };
+      Object.defineProperty(brokenProfile, "snapshot", {
+        get() {
+          throw new Error(secret);
+        },
+      });
+      const resource = { resourceType: "Patient", extension: [] };
+
+      const issues = await validator.validateExtensions(
+        resource,
+        brokenProfile,
+        makeContext(resource, brokenProfile),
+      );
+
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: "profile-extension-validation-error",
+        message:
+          "Extension validation could not be completed because the validator encountered an operational error.",
+      }));
+      expect(JSON.stringify(issues)).not.toContain(secret);
+    });
+
+    it("preserves universal issues when profile-scoped validation fails", async () => {
+      const extensionUrl = "http://example.org/StructureDefinition/partial-failure";
+      const extensionProfile: StructureDefinition = {
+        resourceType: "StructureDefinition",
+        url: extensionUrl,
+        name: "PartialFailureExtension",
+        status: "active",
+        kind: "complex-type",
+        abstract: false,
+        type: "Extension",
+        snapshot: {
+          element: [{ id: "Extension", path: "Extension", min: 0, max: "*" }],
+        },
+      };
+      const patientProfile: StructureDefinition = {
+        ...mockUKCorePatientProfile,
+        snapshot: {
+          element: [
+            mockUKCorePatientProfile.snapshot!.element[0],
+            {
+              id: "Patient.extension:partialFailure",
+              path: "Patient.extension",
+              sliceName: "partialFailure",
+              min: 0,
+              max: "1",
+              type: [{ code: "Extension", profile: [extensionUrl] }],
+            },
+          ],
+        },
+      };
+      const isolatedValidator = new ExtensionValidator(
+        { loadProfile: vi.fn().mockResolvedValue(extensionProfile) } as any,
+        mockTypeValidator,
+        mockValueSetValidator,
+        mockElementRulesValidator,
+        { execute: vi.fn().mockRejectedValue(new Error("pipeline failure")) } as any,
+      );
+      const resource = {
+        resourceType: "Patient",
+        extension: [{
+          url: extensionUrl,
+          valueString: "value",
+          extension: [{ url: "nested", valueString: "nested" }],
+        }],
+      };
+
+      const issues = await isolatedValidator.validateExtensions(
+        resource,
+        patientProfile,
+        makeContext(resource, patientProfile),
+      );
+
+      expect(issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: "profile-extension-value-and-nested" }),
+        expect.objectContaining({ code: "profile-extension-validation-error" }),
+      ]));
+    });
+
     it("should validate valid extension", async () => {
       const resource = {
         resourceType: "Patient",

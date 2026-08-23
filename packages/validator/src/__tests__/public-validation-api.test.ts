@@ -125,7 +125,63 @@ describe('public validation API helpers', () => {
       aspect: 'general',
       severity: 'error',
       code: 'validation-execution-error',
-      message: 'Validation failed: boom',
+      message:
+        'Validation could not be completed because the validator encountered an operational error.',
     });
+    expect(JSON.stringify(results[1].issues)).not.toContain('boom');
+  });
+
+  it('handles hostile non-Error throw values and keeps fallback IDs stable', async () => {
+    const thrown = {
+      toString() {
+        throw new Error('string conversion failed');
+      },
+    };
+    const deps = makeDeps();
+    deps.validateBatch.mockRejectedValue(new Error('batch failed'));
+    deps.validate.mockRejectedValue(thrown);
+    const input = [{
+      resource: patient('bad'),
+      profileUrl: 'http://example.org/A',
+    }];
+
+    const first = await validateAllResources(deps, input, { continueOnError: true });
+    const second = await validateAllResources(deps, input, { continueOnError: true });
+
+    expect(first[0]?.issues[0]).toMatchObject({
+      code: 'validation-execution-error',
+      message:
+        'Validation could not be completed because the validator encountered an operational error.',
+      details: {
+        inputIndex: 0,
+      },
+    });
+    expect(first[0]?.issues[0]?.id).toBe(second[0]?.issues[0]?.id);
+  });
+
+  it('falls back to individual validation when a batch omits an input result', async () => {
+    const first = patient('a');
+    const second = patient('b');
+    const deps = makeDeps();
+    deps.validateBatch.mockResolvedValue(new Map([[first, []]]));
+
+    const results = await validateAllResources(deps, [first, second], {
+      continueOnError: true,
+    });
+
+    expect(deps.validateBatch).toHaveBeenCalledOnce();
+    expect(deps.validate).toHaveBeenCalledTimes(2);
+    expect(results.map(result => result.id)).toEqual(['a', 'b']);
+    expect(results.every(result => result.isValid)).toBe(true);
+  });
+
+  it('rejects malformed batch results instead of marking resources valid', async () => {
+    const resource = patient('a');
+    const deps = makeDeps();
+    deps.validateBatch.mockResolvedValue(new Map([[resource, { issues: [] }]]));
+
+    await expect(validateAllResources(deps, [resource])).rejects.toThrow(
+      'Batch validation returned a malformed issue list',
+    );
   });
 });

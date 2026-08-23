@@ -7,8 +7,40 @@ import {
 import { convertToFHIRSchema } from '../sd-to-fhir-schema';
 import { compileFHIRSchemaToValidationGraph } from '../validation-graph-compiler';
 import { validateResourceWithGraph } from '../validation-graph-executor';
+import type { ValidationGraph, ValidationGraphNode } from '../validation-graph-types';
 
 describe('FHIR Schema validation graph', () => {
+  it('reports cyclic graph nodes instead of overflowing the call stack', () => {
+    const node: ValidationGraphNode = {
+      path: 'Patient.child',
+      schemaPath: 'Patient.child',
+      name: 'child',
+      source: { schemaUrl: 'test', schemaType: 'Patient' },
+    };
+    node.children = [node];
+    const graph: ValidationGraph = {
+      url: 'test',
+      name: 'CyclicPatient',
+      type: 'Patient',
+      nodes: [node],
+      stats: {
+        nodeCount: 1,
+        sliceNodeCount: 0,
+        maxDepth: 1,
+        requiredCount: 0,
+        choiceCount: 0,
+        fixedPatternCount: 0,
+        bindingCount: 0,
+        referenceCount: 0,
+        constraintCount: 0,
+        slicingCount: 0,
+      },
+    };
+
+    expect(validateResourceWithGraph({ child: { child: {} } }, graph))
+      .toContainEqual(expect.objectContaining({ code: 'structural-validation-graph-cycle' }));
+  });
+
   it('keeps the graph path explicitly evidence-only', () => {
     expect(isFhirSchemaDefaultRuntimeEnabled()).toBe(false);
     expect(FHIR_SCHEMA_RUNTIME_POLICY.mode).toBe('evidence-only');

@@ -21,6 +21,11 @@ export function checkExtensionPathCardinality(
         resourceType,
         profile: profileUrl,
         messageParams: { url, found: count, min: def.min },
+        target: {
+          path: elementPath,
+          elementId: elementPath,
+          extensionUrl: url,
+        },
       }));
     }
 
@@ -33,6 +38,11 @@ export function checkExtensionPathCardinality(
           resourceType,
           profile: profileUrl,
           messageParams: { url, found: count, max: def.max },
+          target: {
+            path: elementPath,
+            elementId: elementPath,
+            extensionUrl: url,
+          },
         }));
       }
     }

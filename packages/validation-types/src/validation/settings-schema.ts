@@ -13,263 +13,36 @@
 
 import { z } from 'zod';
 import { normalizeValidationSettings } from './aspect-aliases';
-
-// ============================================================================
-// Enum Schemas
-// ============================================================================
-
-export const ValidationAspectSchema = z.enum([
-    'structural', 'profile', 'terminology', 'reference', 'invariant', 'custom_rule', 'metadata', 'anomaly'
-]);
-
-export const ValidationSeveritySchema = z.enum([
-    'fatal', 'error', 'warning', 'information', 'info', 'inherit'
-]);
-
-export const ValidationStrictnessSchema = z.enum([
-    'compatibility', 'standard', 'strict'
-]);
-
-export const ServerStatusSchema = z.enum([
-    'healthy', 'degraded', 'unhealthy', 'circuit-open', 'unknown'
-]);
-
-export const FHIRVersionSchema = z.enum(['R4', 'R5', 'R6']);
-
-// Engine types
-export const StructuralValidationEngineSchema = z.enum(['records', 'schema', 'hapi', 'server']);
-export const ProfileValidationEngineSchema = z.enum(['records', 'hapi', 'server', 'auto']);
-export const TerminologyValidationEngineSchema = z.enum(['records', 'server', 'terminology-servers', 'cached', 'hapi']);
-export const ReferenceValidationEngineSchema = z.enum(['records', 'internal', 'server']);
-export const InvariantValidationEngineSchema = z.enum(['fhirpath', 'hapi']);
-export const CustomRuleValidationEngineSchema = z.enum(['fhirpath', 'custom']);
-export const MetadataValidationEngineSchema = z.enum(['records', 'schema', 'hapi']);
-
-// ============================================================================
-// Component Schemas
-// ============================================================================
-
-export const ValidationAspectConfigSchema = z.object({
-    enabled: z.boolean(),
-    severity: ValidationSeveritySchema,
-    engine: z.string().optional(),
-});
-
-export const ProfileSourcesConfigSchema = z.object({
-    simplifier: z.boolean(),
-    packageRegistry: z.boolean(),
-});
-
-export const DEFAULT_PROFILE_SOURCES_CONFIG = {
-    simplifier: true,
-    packageRegistry: true,
-} satisfies z.infer<typeof ProfileSourcesConfigSchema>;
-
-export function normalizeProfileSourcesConfig(value: unknown): z.infer<typeof ProfileSourcesConfigSchema> {
-    const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
-    return {
-        simplifier: typeof source.simplifier === 'boolean'
-            ? source.simplifier
-            : DEFAULT_PROFILE_SOURCES_CONFIG.simplifier,
-        packageRegistry: typeof source.packageRegistry === 'boolean'
-            ? source.packageRegistry
-            : DEFAULT_PROFILE_SOURCES_CONFIG.packageRegistry,
-    };
-}
-
-export const TerminologyAuthConfigSchema = z.object({
-    type: z.enum(['none', 'basic', 'bearer', 'oauth2', 'mtls']),
-    username: z.string().optional(),
-    password: z.string().optional(),
-    token: z.string().optional(),
-    clientId: z.string().optional(),
-    clientSecret: z.string().optional(),
-    scope: z.string().optional(),
-    tokenUrl: z.string().optional(),
-    clientCert: z.string().optional(),
-    clientCertPath: z.string().optional(),
-    clientKey: z.string().optional(),
-    clientKeyPath: z.string().optional(),
-    caCert: z.string().optional(),
-    caCertPath: z.string().optional(),
-    passphrase: z.string().optional(),
-    rejectUnauthorized: z.boolean().optional(),
-});
-
-export const MiiTerminologyModeSchema = z.enum(['mii-local-blaze', 'mii-ontoserver', 'mii-hybrid']);
-
-export const MiiValidationSettingsSchema = z.object({
-    preset: z.enum(['mii-2026', 'ehds-2026']),
-    terminologyMode: MiiTerminologyModeSchema,
-    packageLockHash: z.string().optional(),
-    maxOntoserverRequestsPerRun: z.number().int().positive().optional(),
-    allowHighVolumeOntoserver: z.boolean().optional(),
-});
-
-export const TerminologyServerSchema = z.object({
-    id: z.string(),
-    name: z.string(),
-    url: z.string(),
-    enabled: z.boolean(),
-    fhirVersions: z.array(z.enum(['R4', 'R5', 'R6'])),
-    status: ServerStatusSchema,
-    failureCount: z.number(),
-    lastFailureTime: z.number().nullable(),
-    circuitOpen: z.boolean(),
-    responseTimeAvg: z.number(),
-    lastTested: z.number().nullable().optional(),
-    testScore: z.number().optional(),
-    authConfig: TerminologyAuthConfigSchema.optional(),
-    preferredSystems: z.array(z.string()).optional(),
-});
-
-export const CircuitBreakerConfigSchema = z.object({
-    failureThreshold: z.number(),
-    resetTimeout: z.number(),
-    halfOpenTimeout: z.number(),
-});
-
-export const AdvancedTerminologyConfigSchema = z.object({
-    hierarchyValidation: z.object({
-        enabled: z.boolean(),
-        contextMappings: z.record(z.string(), z.string()).optional(),
-    }),
-    eclValidation: z.object({
-        enabled: z.boolean(),
-        customExpressions: z.record(z.string(), z.string()).optional(),
-    }),
-    crossMappingValidation: z.object({
-        enabled: z.boolean(),
-        strictness: z.enum(['warn', 'error']),
-        checkPairs: z.array(z.object({
-            sourceSystem: z.string(),
-            targetSystem: z.string(),
-        })).optional(),
-    }),
-});
-
-export const TerminologyResolutionSchema = z.object({
-    strategy: z.enum(['local-first', 'server-first', 'local-only']),
-    serverDelegation: z.object({
-        expandValueSets: z.boolean(),
-        validateCodes: z.boolean(),
-        cacheResults: z.boolean(),
-        cacheTTLSeconds: z.number(),
-        requestTimeoutMs: z.number().optional(),
-        slowResponseThresholdMs: z.number().optional(),
-        maxRemoteCodeSystemValidations: z.number().optional(),
-    }).optional(),
-    twoPhaseExpansion: z.object({
-        enabled: z.boolean(),
-        mode: z.enum(['shadow', 'enforce']),
-        logMismatches: z.boolean().optional(),
-    }).optional(),
-    unknownCodeBehavior: z.enum(['required-closed', 'all-open', 'all-closed']).optional(),
-    /**
-     * Surface bindings that cannot be verified (no local expansion, no
-     * terminology-server confirmation) as informational issues instead of
-     * silently failing open. Off by default — precision-neutral (gap P-3 step b).
-     */
-    reportUnverifiedBindings: z.boolean().optional(),
-    /**
-     * Strict terminology policy: raise unverifiable *required* bindings to
-     * warning severity (implies reportUnverifiedBindings). Off by default
-     * (gap P-3 step c).
-     */
-    strictUnverifiedRequiredBindings: z.boolean().optional(),
-});
-
-export const PackageDownloadConfigSchema = z.object({
-    versionPolicy: z.enum(['prefer-stable', 'prefer-latest']),
-    pinnedVersions: z.record(z.string(), z.string()),
-    approvedPackages: z.array(z.string()),
-    requireApproval: z.boolean(),
-    autoDownload: z.boolean(),
-});
-
-export const RecursiveReferenceValidationSchema = z.object({
-    enabled: z.boolean(),
-    maxDepth: z.number(),
-    validateExternal: z.boolean(),
-    validateContained: z.boolean(),
-    validateBundleEntries: z.boolean(),
-    excludeResourceTypes: z.array(z.string()).optional(),
-    maxReferencesPerResource: z.number().optional(),
-    timeoutMs: z.number().optional(),
-    // Opt-in (default off): validate that a resolvable reference target conforms
-    // to the profile named in the element's Reference(targetProfile), emitting a
-    // warning on non-conformance. Gap P-2 step "profile conformance".
-    validateTargetProfiles: z.boolean().optional(),
-});
-
-export const CacheConfigSchema = z.object({
-    layers: z.object({
-        L1: z.enum(['enabled', 'disabled']).optional(),
-        L2: z.enum(['enabled', 'disabled']).optional(),
-        L3: z.enum(['enabled', 'disabled']).optional(),
-    }).optional(),
-    l1MaxSizeMb: z.number().optional(),
-    l2MaxSizeGb: z.number().optional(),
-    l3MaxSizeGb: z.number().optional(),
-    ttl: z.object({
-        validation: z.number().optional(),
-        profile: z.number().optional(),
-        terminology: z.number().optional(),
-        igPackage: z.number().optional(),
-        default: z.number().optional(),
-    }).optional(),
-    enableWarmup: z.boolean().optional(),
-    warmupProfiles: z.array(z.string()).optional(),
-    warmupTerminologySystems: z.array(z.string()).optional(),
-});
-
-export const HapiConfigSchema = z.object({
-    enabled: z.boolean(),
-    available: z.boolean().optional(),
-    timeout: z.number().optional(),
-    igPackages: z.array(z.string()).optional(),
-    useProcessPool: z.boolean().optional(),
-    poolSize: z.number().optional(),
-    cachePath: z.string().optional(),
-    enableBestPractice: z.boolean().optional(),
-});
-
-export const ImposedProfilePolicySchema = z.object({
-    id: z.string().optional(),
-    enabled: z.boolean().optional(),
-    resourceType: z.string().min(1),
-    profileUrl: z.string().min(1),
-    label: z.string().optional(),
-    packageId: z.string().optional(),
-    packageVersion: z.string().optional(),
-    reason: z.string().optional(),
-});
-
-export const ImposedProfilesConfigSchema = z.object({
-    enabled: z.boolean(),
-    policies: z.array(ImposedProfilePolicySchema),
-});
-
-export const AdvisorRuleSchema = z.object({
-    id: z.string(),
-    action: z.enum(['suppress', 'override-severity', 'override-message']),
-    match: z.object({
-        code: z.union([z.string(), z.array(z.string())]).optional(),
-        path: z.union([z.string(), z.array(z.string())]).optional(),
-        message: z.string().optional(),
-        messageRegex: z.union([z.string(), z.array(z.string())]).optional(),
-        aspect: z.union([z.string(), z.array(z.string())]).optional(),
-        severity: z.string().optional(),
-        profile: z.string().optional(),
-        resourceType: z.union([z.string(), z.array(z.string())]).optional(),
-    }),
-    transform: z.object({
-        severity: z.enum(['error', 'warning', 'information', 'info']).optional(),
-        message: z.string().optional(),
-    }).optional(),
-    reason: z.string().optional(),
-    enabled: z.boolean().optional(),
-});
+import {
+    AdvisorRuleSchema,
+    CacheConfigSchema,
+    FHIRVersionSchema,
+    HapiConfigSchema,
+    ImposedProfilesConfigSchema,
+    PackageDownloadConfigSchema,
+    ProfileSourcesConfigSchema,
+    RecursiveReferenceValidationSchema,
+    ValidationAspectConfigSchema,
+    ValidationStrictnessSchema,
+} from './settings-core-schema';
+export * from './settings-core-schema';
+import {
+    AdvancedTerminologyConfigSchema,
+    CircuitBreakerConfigSchema,
+    MiiValidationSettingsSchema,
+    TerminologyResolutionSchema,
+    TerminologyServerSchema,
+} from './settings-terminology-schema';
+export {
+    AdvancedTerminologyConfigSchema,
+    CircuitBreakerConfigSchema,
+    MiiTerminologyModeSchema,
+    MiiValidationSettingsSchema,
+    ServerStatusSchema,
+    TerminologyAuthConfigSchema,
+    TerminologyResolutionSchema,
+    TerminologyServerSchema,
+} from './settings-terminology-schema';
 
 // ============================================================================
 // Main ValidationSettings Schema
@@ -302,6 +75,7 @@ const ValidationSettingsObjectSchema = z.object({
         excludedTypes: z.array(z.string()),
         fhirVersion: FHIRVersionSchema.optional(),
     }).strict(),
+    fhirVersion: FHIRVersionSchema.optional(),
 
     // Optional settings
     terminologyServers: z.array(TerminologyServerSchema).optional(),
@@ -333,6 +107,10 @@ const ValidationSettingsObjectSchema = z.object({
     validationStrictness: ValidationStrictnessSchema.optional(),
     recursiveReferenceValidation: RecursiveReferenceValidationSchema.optional(),
     cacheConfig: CacheConfigSchema.optional(),
+    caching: z.object({
+        enableFilesystemCache: z.boolean().optional(),
+        filesystemCacheDirectory: z.string().min(1).optional(),
+    }).strict().optional(),
     hapiConfig: HapiConfigSchema.optional(),
     autoApplyCustomRules: z.boolean().optional(),
     engine: z.string().optional(),

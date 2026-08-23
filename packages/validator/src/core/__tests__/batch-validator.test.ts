@@ -217,6 +217,20 @@ describe('executeBatchValidation', () => {
       expect(peak).toBe(3);
     });
 
+    it('routes every resource through the shared run scheduler', async () => {
+      const resources = Array.from({ length: 4 }, (_, i) => patient(`p${i}`, `Family${i}`));
+      const ctx = makeContext(async () => []);
+      const scheduleValidation = vi.fn(async <T>(task: () => Promise<T>) => task());
+
+      await executeBatchValidation(
+        resources,
+        { ...BASE_OPTIONS, scheduleValidation },
+        ctx,
+      );
+
+      expect(scheduleValidation).toHaveBeenCalledTimes(resources.length);
+    });
+
     it('does not serialize independent profile groups', async () => {
       let releaseSecondProfile!: () => void;
       const secondProfileStarted = new Promise<void>(resolve => {

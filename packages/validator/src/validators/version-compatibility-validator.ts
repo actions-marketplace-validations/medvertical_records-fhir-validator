@@ -3,7 +3,6 @@
  * 
  * Validates resources for R5/R6 compatibility:
  * - Deprecated element detection with migration hints
- * - New R5/R6 element requirements
  * - Breaking changes between FHIR versions
  * - FHIR version detection from resource structure
  * 
@@ -13,148 +12,20 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
+import {
+    DEPRECATED_ELEMENTS,
+    RENAMED_ELEMENTS,
+    type DeprecatedElement,
+    type FHIRVersion,
+    type VersionCompatibilityConfig,
+} from './version-compatibility-rules';
 
-// ============================================================================
-// Types
-// ============================================================================
-
-export type FHIRVersion = 'R4' | 'R4B' | 'R5' | 'R6';
-
-export interface VersionCompatibilityConfig {
-    /** Target FHIR version to validate against */
-    targetVersion: FHIRVersion;
-    /** Report deprecated elements */
-    reportDeprecated: boolean;
-    /** Report new required elements */
-    reportNewRequired: boolean;
-    /** Report renamed elements */
-    reportRenamed: boolean;
-}
-
-export interface DeprecatedElement {
-    resourceType: string;
-    path: string;
-    deprecatedIn: FHIRVersion;
-    removedIn?: FHIRVersion;
-    replacement?: string;
-    migrationHint: string;
-}
-
-export interface RenamedElement {
-    resourceType: string;
-    oldPath: string;
-    newPath: string;
-    changedIn: FHIRVersion;
-}
-
-// ============================================================================
-// Deprecated Elements Database (R4 → R5 → R6)
-// ============================================================================
-
-const DEPRECATED_ELEMENTS: DeprecatedElement[] = [
-    // Patient
-    {
-        resourceType: 'Patient',
-        path: 'Patient.managingOrganization',
-        deprecatedIn: 'R5',
-        replacement: 'Patient.generalPractitioner',
-        migrationHint: 'Use generalPractitioner with appropriate role instead'
-    },
-
-    // Encounter
-    {
-        resourceType: 'Encounter',
-        path: 'Encounter.hospitalization',
-        deprecatedIn: 'R5',
-        replacement: 'Encounter.admission',
-        migrationHint: 'hospitalization was renamed to admission in R5'
-    },
-    {
-        resourceType: 'Encounter',
-        path: 'Encounter.class',
-        deprecatedIn: 'R5',
-        migrationHint: 'class changed from Coding to CodeableConcept in R5'
-    },
-
-    // MedicationRequest
-    {
-        resourceType: 'MedicationRequest',
-        path: 'MedicationRequest.medicationCodeableConcept',
-        deprecatedIn: 'R5',
-        replacement: 'MedicationRequest.medication',
-        migrationHint: 'medication[x] consolidated to CodeableReference in R5'
-    },
-    {
-        resourceType: 'MedicationRequest',
-        path: 'MedicationRequest.medicationReference',
-        deprecatedIn: 'R5',
-        replacement: 'MedicationRequest.medication',
-        migrationHint: 'Use medication with CodeableReference type'
-    },
-
-    // Observation
-    {
-        resourceType: 'Observation',
-        path: 'Observation.performer',
-        deprecatedIn: 'R6',
-        migrationHint: 'performer may be replaced with more specific roles in R6'
-    },
-
-    // Condition
-    {
-        resourceType: 'Condition',
-        path: 'Condition.asserter',
-        deprecatedIn: 'R5',
-        migrationHint: 'Consider using participant with asserter role instead'
-    },
-
-    // DiagnosticReport
-    {
-        resourceType: 'DiagnosticReport',
-        path: 'DiagnosticReport.imagingStudy',
-        deprecatedIn: 'R5',
-        replacement: 'DiagnosticReport.study',
-        migrationHint: 'imagingStudy renamed to study in R5'
-    },
-
-    // Procedure
-    {
-        resourceType: 'Procedure',
-        path: 'Procedure.reasonReference',
-        deprecatedIn: 'R5',
-        replacement: 'Procedure.reason',
-        migrationHint: 'reasonCode and reasonReference merged into reason (CodeableReference)'
-    },
-
-    // Bundle
-    {
-        resourceType: 'Bundle',
-        path: 'Bundle.signature',
-        deprecatedIn: 'R5',
-        migrationHint: 'Bundle.signature moved to individual components in R5'
-    },
-];
-
-const RENAMED_ELEMENTS: RenamedElement[] = [
-    { resourceType: 'Encounter', oldPath: 'hospitalization', newPath: 'admission', changedIn: 'R5' },
-    { resourceType: 'DiagnosticReport', oldPath: 'imagingStudy', newPath: 'study', changedIn: 'R5' },
-    { resourceType: 'Procedure', oldPath: 'reasonCode', newPath: 'reason', changedIn: 'R5' },
-    { resourceType: 'Procedure', oldPath: 'reasonReference', newPath: 'reason', changedIn: 'R5' },
-    { resourceType: 'MedicationRequest', oldPath: 'requester', newPath: 'requester', changedIn: 'R5' }, // Type change
-];
-
-// ============================================================================
-// New R5/R6 Required Elements
-// ============================================================================
-
-const _NEW_REQUIRED_ELEMENTS: { resourceType: string; path: string; addedIn: FHIRVersion; description: string }[] = [
-    { resourceType: 'Encounter', path: 'Encounter.class', addedIn: 'R5', description: 'class now has 0..* cardinality with CodeableConcept' },
-    { resourceType: 'Observation', path: 'Observation.triggeredBy', addedIn: 'R5', description: 'New element for triggered observations' },
-];
-
-// ============================================================================
-// Version Compatibility Validator
-// ============================================================================
+export type {
+    DeprecatedElement,
+    FHIRVersion,
+    RenamedElement,
+    VersionCompatibilityConfig,
+} from './version-compatibility-rules';
 
 export class VersionCompatibilityValidator {
     private config: VersionCompatibilityConfig;
@@ -163,7 +34,6 @@ export class VersionCompatibilityValidator {
         this.config = {
             targetVersion: 'R5',
             reportDeprecated: true,
-            reportNewRequired: true,
             reportRenamed: true,
             ...config
         };
@@ -179,13 +49,12 @@ export class VersionCompatibilityValidator {
     /**
      * Validate resource for version compatibility
      */
-    validate(resource: any): ValidationIssue[] {
+    validate(resource: unknown): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
-        const resourceType = resource?.resourceType;
-
-        if (!resourceType) {
+        if (!isRecord(resource) || typeof resource.resourceType !== 'string') {
             return issues;
         }
+        const resourceType = resource.resourceType;
 
         logger.debug(`[VersionValidator] Checking ${resourceType} for ${this.config.targetVersion} compatibility`);
 
@@ -199,18 +68,16 @@ export class VersionCompatibilityValidator {
             issues.push(...this.checkRenamedElements(resource, resourceType));
         }
 
-        // Check for new required elements (missing)
-        if (this.config.reportNewRequired) {
-            issues.push(...this.checkNewRequiredElements(resource, resourceType));
-        }
-
         return issues;
     }
 
     /**
      * Check for deprecated elements in resource
      */
-    private checkDeprecatedElements(resource: any, resourceType: string): ValidationIssue[] {
+    private checkDeprecatedElements(
+        resource: Record<string, unknown>,
+        resourceType: string,
+    ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         const relevantDeprecated = DEPRECATED_ELEMENTS.filter(
@@ -244,7 +111,10 @@ export class VersionCompatibilityValidator {
     /**
      * Check for elements that need renaming
      */
-    private checkRenamedElements(resource: any, resourceType: string): ValidationIssue[] {
+    private checkRenamedElements(
+        resource: Record<string, unknown>,
+        resourceType: string,
+    ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         const relevantRenamed = RENAMED_ELEMENTS.filter(
@@ -270,15 +140,6 @@ export class VersionCompatibilityValidator {
     }
 
     /**
-     * Check for new required elements that are missing
-     */
-    private checkNewRequiredElements(_resource: any, _resourceType: string): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-        // Placeholder for future implementation
-        return issues;
-    }
-
-    /**
      * Check if element is deprecated for current target version
      */
     private isDeprecatedForVersion(dep: DeprecatedElement): boolean {
@@ -296,10 +157,10 @@ export class VersionCompatibilityValidator {
     /**
      * Get value at path in object
      */
-    private getValueAtPath(obj: any, pathParts: string[]): any {
-        let current = obj;
+    private getValueAtPath(obj: unknown, pathParts: string[]): unknown {
+        let current: unknown = obj;
         for (const part of pathParts) {
-            if (current === undefined || current === null) return undefined;
+            if (!isRecord(current)) return undefined;
             current = current[part];
         }
         return current;
@@ -308,21 +169,24 @@ export class VersionCompatibilityValidator {
     /**
      * Detect FHIR version from resource structure
      */
-    detectVersion(resource: any): { detected: FHIRVersion; confidence: 'high' | 'medium' | 'low'; hints: string[] } {
+    detectVersion(resource: unknown): { detected: FHIRVersion; confidence: 'high' | 'medium' | 'low'; hints: string[] } {
         const hints: string[] = [];
         let detected: FHIRVersion = 'R4';
         let confidence: 'high' | 'medium' | 'low' = 'low';
+        if (!isRecord(resource)) return { detected, confidence, hints };
 
         // Check fhirVersion in meta (most reliable)
-        if (resource.meta?.profile) {
-            for (const profile of resource.meta.profile) {
+        const meta = isRecord(resource.meta) ? resource.meta : undefined;
+        if (Array.isArray(meta?.profile)) {
+            for (const profile of meta.profile) {
+                if (typeof profile !== 'string') continue;
                 if (profile.includes('/5.0/') || profile.includes('|5.0')) {
                     hints.push('Profile URL indicates R5');
-                    detected = 'R5';
+                    if (this.versionCompare(detected, 'R5') < 0) detected = 'R5';
                     confidence = 'high';
                 } else if (profile.includes('/6.0/') || profile.includes('|6.0')) {
                     hints.push('Profile URL indicates R6');
-                    detected = 'R6';
+                    if (this.versionCompare(detected, 'R6') < 0) detected = 'R6';
                     confidence = 'high';
                 }
             }
@@ -336,7 +200,8 @@ export class VersionCompatibilityValidator {
             if (confidence === 'low') confidence = 'medium';
         }
 
-        if (resourceType === 'MedicationRequest' && resource.medication?.concept) {
+        const medication = isRecord(resource.medication) ? resource.medication : undefined;
+        if (resourceType === 'MedicationRequest' && medication?.concept) {
             hints.push('MedicationRequest.medication uses CodeableReference (R5+)');
             if (detected === 'R4') detected = 'R5';
             if (confidence === 'low') confidence = 'medium';
@@ -346,5 +211,6 @@ export class VersionCompatibilityValidator {
     }
 }
 
-// Singleton
-export const versionCompatibilityValidator = new VersionCompatibilityValidator();
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

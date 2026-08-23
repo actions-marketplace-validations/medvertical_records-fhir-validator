@@ -1,27 +1,43 @@
 import type { ReferenceResolver } from '../validators/slicing-validator';
+import { normalizeFhirReferenceKey } from './fhir-reference-key';
 
-const bundleReferenceIndexCache = new WeakMap<Record<string, unknown>, BundleReferenceIndex>();
+type FhirResource = Record<string, unknown>;
 
 interface BundleReferenceIndex {
-  fullUrl: Map<string, any>;
-  relative: Map<string, any>;
+  fullUrl: Map<string, FhirResource>;
+  relative: Map<string, FhirResource>;
   hasEntries: boolean;
+}
+
+export class BundleReferenceIndexCache {
+  private readonly indexes = new WeakMap<Record<string, unknown>, BundleReferenceIndex>();
+
+  get(bundle: Record<string, unknown>): BundleReferenceIndex {
+    const cached = this.indexes.get(bundle);
+    if (cached) return cached;
+    const index = buildBundleReferenceIndex(bundle);
+    this.indexes.set(bundle, index);
+    return index;
+  }
 }
 
 export function createBundleReferenceResolver(
   bundle: Record<string, unknown> | undefined,
   rootResource: Record<string, unknown>,
+  indexCache: BundleReferenceIndexCache = new BundleReferenceIndexCache(),
 ): ReferenceResolver | null {
-  const contained = Array.isArray((rootResource as any).contained)
-    ? (rootResource as any).contained
+  const contained = Array.isArray(rootResource.contained)
+    ? rootResource.contained
     : [];
-  const bundleIndex = bundle ? getBundleReferenceIndex(bundle) : null;
+  const bundleIndex = bundle ? indexCache.get(bundle) : null;
 
   if (contained.length === 0 && !bundleIndex?.hasEntries) return null;
   const containedById = contained.length > 0
-    ? new Map(contained
-      .filter((resource: any) => typeof resource?.id === 'string')
-      .map((resource: any) => [resource.id, resource]))
+    ? new Map<string, FhirResource>(contained
+      .filter((resource): resource is FhirResource =>
+        isObjectRecord(resource) && typeof resource.id === 'string'
+      )
+      .map(resource => [resource.id as string, resource]))
     : null;
 
   return (reference: string) => {
@@ -29,10 +45,11 @@ export function createBundleReferenceResolver(
 
     if (reference.startsWith('#')) {
       const id = reference.slice(1);
+      if (id.length === 0) return rootResource;
       return containedById?.get(id) ?? null;
     }
 
-    const relativeKey = normalizeReferenceKey(reference);
+    const relativeKey = normalizeFhirReferenceKey(reference);
 
     return bundleIndex?.fullUrl.get(reference)
       ?? bundleIndex?.relative.get(reference)
@@ -41,17 +58,14 @@ export function createBundleReferenceResolver(
   };
 }
 
-function getBundleReferenceIndex(bundle: Record<string, unknown>): BundleReferenceIndex {
-  const cached = bundleReferenceIndexCache.get(bundle);
-  if (cached) return cached;
-
-  const fullUrl = new Map<string, any>();
-  const relative = new Map<string, any>();
-  const entries = Array.isArray((bundle as any).entry) ? (bundle as any).entry : [];
+function buildBundleReferenceIndex(bundle: Record<string, unknown>): BundleReferenceIndex {
+  const fullUrl = new Map<string, FhirResource>();
+  const relative = new Map<string, FhirResource>();
+  const entries = Array.isArray(bundle.entry) ? bundle.entry : [];
 
   for (const entry of entries) {
-    const resource = entry?.resource;
-    if (!resource || typeof resource !== 'object') continue;
+    if (!isObjectRecord(entry) || !isObjectRecord(entry.resource)) continue;
+    const resource = entry.resource;
 
     if (typeof entry.fullUrl === 'string' && !fullUrl.has(entry.fullUrl)) {
       fullUrl.set(entry.fullUrl, resource);
@@ -63,40 +77,9 @@ function getBundleReferenceIndex(bundle: Record<string, unknown>): BundleReferen
     }
   }
 
-  const index = { fullUrl, relative, hasEntries: fullUrl.size > 0 || relative.size > 0 };
-  bundleReferenceIndexCache.set(bundle, index);
-  return index;
+  return { fullUrl, relative, hasEntries: fullUrl.size > 0 || relative.size > 0 };
 }
 
-function normalizeReferenceKey(reference: string): string | null {
-  if (!reference || reference.startsWith('#')) return null;
-
-  const path = extractReferencePath(reference);
-  if (!path) return null;
-
-  const segments = path
-    .split('/')
-    .map(segment => segment.trim())
-    .filter(Boolean);
-  if (segments.length < 2) return null;
-
-  const historyIndex = segments.indexOf('_history');
-  if (historyIndex >= 2) {
-    return `${segments[historyIndex - 2]}/${segments[historyIndex - 1]}`;
-  }
-
-  return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
-}
-
-function extractReferencePath(reference: string): string | null {
-  try {
-    if (/^https?:\/\//i.test(reference)) {
-      return new URL(reference).pathname;
-    }
-  } catch {
-    return null;
-  }
-
-  const withoutQuery = reference.split('?')[0]?.split('#')[0] ?? '';
-  return withoutQuery || null;
+function isObjectRecord(value: unknown): value is FhirResource {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

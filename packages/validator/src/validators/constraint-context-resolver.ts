@@ -12,6 +12,7 @@ import {
   getThisCastType,
   hasUnresolvableChoiceTypes,
 } from './constraint-choice-context';
+import type { FhirResource } from './constraint-validation-input';
 
 /**
  * Resolve the evaluation context and (possibly rewritten) expression for a constraint.
@@ -31,10 +32,10 @@ import {
  *    the resource root and navigate with `pathSegments.all(expr)`.
  */
 export function resolveConstraintContext(
-  resource: any,
+  resource: FhirResource,
   elementPath: string,
   rawExpression: string,
-): { context: any; expression: string } {
+): { context: unknown; expression: string } {
   if (expressionStartsAtResourceRoot(rawExpression, resource.resourceType)) {
     return { context: resource, expression: rawExpression };
   }
@@ -62,7 +63,9 @@ export function resolveConstraintContext(
   // (e.g. `valueQuantity`, `effectiveDateTime`) that match names
   // used in the expression.
   if (Array.isArray(ctx) && ctx.some(item =>
-    item && typeof item === 'object' && !item.resourceType && hasUnresolvableChoiceTypes(item, rawExpression)
+    isRecord(item) &&
+    typeof item.resourceType !== 'string' &&
+    hasUnresolvableChoiceTypes(item, rawExpression)
   )) {
     const segments = elementPath.split('.');
     if (segments.length > 1 && segments[0] === resource.resourceType) {
@@ -71,7 +74,11 @@ export function resolveConstraintContext(
     }
   }
 
-  if (ctx && typeof ctx === 'object' && !Array.isArray(ctx) && !ctx.resourceType && ctx !== resource) {
+  if (
+    isRecord(ctx) &&
+    typeof ctx.resourceType !== 'string' &&
+    ctx !== resource
+  ) {
     if (hasUnresolvableChoiceTypes(ctx, rawExpression)) {
       const segments = elementPath.split('.');
       if (segments.length > 1 && segments[0] === resource.resourceType) {
@@ -82,4 +89,8 @@ export function resolveConstraintContext(
   }
 
   return { context: ctx, expression: rawExpression };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

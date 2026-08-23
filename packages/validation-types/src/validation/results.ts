@@ -13,6 +13,22 @@ import type { ValidationIssue } from './messages';
 // Validation Result
 // ============================================================================
 
+export interface ValidationAspectResult {
+  aspect: string;
+  isValid: boolean;
+  issues: ValidationIssue[];
+  evidenceIssues?: ValidationIssue[];
+  validationTime?: number;
+  durationMs?: number;
+  executionTime?: number;
+  score?: number;
+  errorCount?: number;
+  warningCount?: number;
+  informationCount?: number;
+  status?: string;
+  reason?: string;
+}
+
 /**
  * Validation result for UI display
  */
@@ -22,7 +38,7 @@ export interface ValidationResult {
   resourceType: string;
   isValid: boolean;
   issues: ValidationIssue[];
-  aspects: any[]; // AspectValidationResult from schema
+  aspects: ValidationAspectResult[];
   validatedAt: Date;
   validationTime: number;
   overallScore?: number;
@@ -44,7 +60,7 @@ export interface ValidationResult {
     score?: number;
     passed: boolean;
     issuesByAspect?: Record<string, number>;
-    aspectBreakdown?: Record<string, any>;
+    aspectBreakdown?: Record<string, unknown>;
   };
 
   // Performance metrics
@@ -61,9 +77,9 @@ export interface ValidationResult {
   };
 
   // Settings and context
-  settingsUsed?: any;
+  settingsUsed?: unknown;
   settingsVersion?: number;
-  context?: any;
+  context?: unknown;
 }
 
 
@@ -175,4 +191,3 @@ export interface ValidationMetrics {
   totalErrorResources: number;
   lastRunDate?: Date;
 }
-

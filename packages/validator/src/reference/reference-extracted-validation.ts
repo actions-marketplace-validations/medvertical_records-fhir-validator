@@ -25,7 +25,10 @@ export function validateExtractedReferences(
   constraintValidator: ReferenceTypeConstraintValidator,
 ): ValidationIssue[] {
   return extractedRefs.flatMap(({ path, reference }) => {
-    const formatResult = validateReferenceFormat(reference);
+    const formatResult = validateReferenceFormat(reference, {
+      path: `${path}.reference`,
+      resourceType,
+    });
     if (!formatResult.isValid || !formatResult.resourceType) {
       return annotateReferenceFormatIssues(formatResult.issues, path, reference, resourceType);
     }

@@ -1,4 +1,5 @@
 import { ValidationCode } from './message-catalog';
+import { interpolateMessageTemplate } from './message-template-interpolation';
 
 export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'terminology-binding-required':
@@ -23,6 +24,8 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
         "ValueSet validation failed: {error}",
     'terminology-binding-unverified':
         "Code '{code}' could not be verified against value set '{valueSet}' (binding strength: {strength}); no local expansion and no terminology server confirmation available",
+    'terminology-valueset-unavailable':
+        "Value set '{valueSet}' could not be resolved; validation of the {strength} binding is incomplete",
 
     'metadata-version-id-invalid-type':
         "versionId must be a string",
@@ -211,6 +214,8 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
         "Cardinality violated for {element}: expected {expected}, found {actual}",
     'structural-type-mismatch':
         "Type mismatch for {element}: expected {expected}, found {actual}",
+    'structural-primitive-type-mismatch':
+        "Primitive type mismatch for {element}: expected {expected}, found {actual}",
     'structural-validation-error':
         "Structural validation failed: {error}",
     'structural-hapi-error':
@@ -315,45 +320,21 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
 };
 
 export function formatMessage(
-    code: string,
-    params: Record<string, unknown> = {}
+  code: string,
+  params: Record<string, unknown> = {},
 ): string {
-    const template = MessageTemplates[code as ValidationCode];
-
-    if (!template) {
-        if (params.message) {
-            return String(params.message);
-        }
-        return `Validation issue: ${code}`;
-    }
-
-    let result = template;
-    for (const [key, value] of Object.entries(params)) {
-        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value ?? ''));
-    }
-
-    return result;
+  const template = MessageTemplates[code as ValidationCode];
+  if (!template) return params.message ? String(params.message) : `Validation issue: ${code}`;
+  return interpolateMessageTemplate(template, params);
 }
 
-export const HumanReadableTemplates: Partial<Record<ValidationCode, string>> = {
-};
+export const HumanReadableTemplates: Partial<Record<ValidationCode, string>> = {};
 
 export function getHumanReadableMessage(
-    code: string,
-    params: Record<string, unknown> = {}
+  code: string,
+  params: Record<string, unknown> = {},
 ): string {
-    const template =
-        HumanReadableTemplates[code as ValidationCode] ||
-        MessageTemplates[code as ValidationCode];
-
-    if (!template) {
-        return formatMessage(code, params);
-    }
-
-    let result = template;
-    for (const [key, value] of Object.entries(params)) {
-        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value ?? ''));
-    }
-
-    return result;
+  const template = HumanReadableTemplates[code as ValidationCode]
+    ?? MessageTemplates[code as ValidationCode];
+  return template ? interpolateMessageTemplate(template, params) : formatMessage(code, params);
 }

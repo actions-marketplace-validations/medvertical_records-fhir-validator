@@ -1,4 +1,5 @@
 import type { StructureDefinition } from './structure-definition-types';
+import { getDeclaredProfiles } from './declared-profile-utils';
 
 interface BundleEntrySliceCandidate {
   resourceType: string;
@@ -28,9 +29,7 @@ export function getBundleEntrySliceDefinitions(
     );
     const resourceTypes = new Set<string>();
     const profiles = new Set<string>();
-    const types = Array.isArray((resourceElement as any)?.type)
-      ? (resourceElement as any).type
-      : [];
+    const types = resourceElement?.type ?? [];
     for (const type of types) {
       if (typeof type?.code === 'string' && type.code !== 'Resource') {
         resourceTypes.add(type.code);
@@ -64,9 +63,20 @@ export function childMatchesBundleEntrySliceCandidate(
   return slice.profiles.some(profile => declaredProfiles.includes(profile));
 }
 
-function getDeclaredProfiles(resource: Record<string, unknown>): string[] {
-  const profiles = (resource.meta as any)?.profile;
-  return Array.isArray(profiles)
-    ? profiles.filter((profile: unknown): profile is string => typeof profile === 'string')
-    : [];
+/**
+ * Choose a single parent-slice profile for an embedded entry that does not
+ * declare its own meta.profile. This lets the child validation prove (or
+ * explicitly fail to prove) the conformance required by the Bundle profile.
+ * Ambiguous profile sets fail open here and remain owned by slicing rules.
+ */
+export function getBundleEntryRequiredProfile(
+  child: BundleEntrySliceCandidate,
+  structureDef: StructureDefinition | undefined,
+): string | undefined {
+  const profiles = new Set(
+    getBundleEntrySliceDefinitions(structureDef)
+      .filter(slice => childMatchesBundleEntrySliceCandidate(child, slice))
+      .flatMap(slice => slice.profiles),
+  );
+  return profiles.size === 1 ? [...profiles][0] : undefined;
 }

@@ -9,6 +9,8 @@ import {
 } from './validation-graph-slice-matching';
 import type { ValidationGraph, ValidationGraphNode } from './validation-graph-types';
 import { graphValuesMatch } from './validation-graph-value-matching';
+import { createValidationGraphIssue as createIssue, isGraphRecord as isRecord } from './validation-graph-issues';
+import { patternStrictlyContains } from './validation-graph-pattern-containment';
 
 export function validateResourceWithGraph(resource: unknown, graph: ValidationGraph): ValidationIssue[] {
   if (!isRecord(resource)) {
@@ -17,7 +19,7 @@ export function validateResourceWithGraph(resource: unknown, graph: ValidationGr
 
   const issues: ValidationIssue[] = [];
   for (const node of graph.nodes) {
-    validateNode(resource, node, graph, issues);
+    validateNode(resource, node, graph, issues, new Set());
   }
   return issues;
 }
@@ -27,13 +29,14 @@ function validateNode(
   node: ValidationGraphNode,
   graph: ValidationGraph,
   issues: ValidationIssue[],
+  ancestors: Set<ValidationGraphNode>,
 ): void {
   if (node.sliceName) {
     return;
   }
 
   const parentValues = getParentValues(resource, node);
-  validateNodeForParents(parentValues, node, graph, issues);
+  validateNodeForParents(parentValues, node, graph, issues, ancestors);
 }
 
 function validateNodeForParents(
@@ -41,15 +44,26 @@ function validateNodeForParents(
   node: ValidationGraphNode,
   graph: ValidationGraph,
   issues: ValidationIssue[],
+  ancestors: Set<ValidationGraphNode>,
 ): void {
   if (parentValues.length === 0) {
     return;
   }
+  if (ancestors.has(node)) {
+    issues.push(createIssue(
+      'structural-validation-graph-cycle',
+      node.path,
+      `Validation graph contains a cycle at '${node.path}'`,
+      graph,
+    ));
+    return;
+  }
+  ancestors.add(node);
   const values = parentValues.flatMap(parent => getDirectValues(parent, node.name));
   const required = node.required || (node.min ?? 0) > 0;
 
   if (node.type === 'choice' || node.choices?.length) {
-    validateChoiceNode(parentValues, node, graph, issues);
+    validateChoiceNode(parentValues, node, graph, issues, ancestors);
   } else if (required) {
     const min = node.min ?? 1;
     for (const parent of parentValues) {
@@ -114,15 +128,16 @@ function validateNodeForParents(
   const children = node.children ?? [];
   const sliceChildren = children.filter(child => child.sliceName);
   if (sliceChildren.length > 0 && node.type !== 'choice' && !node.choices?.length) {
-    validateSliceChildren(values, node, sliceChildren, graph, issues);
+    validateSliceChildren(values, node, sliceChildren, graph, issues, ancestors);
   }
 
   for (const child of children) {
     if (child.sliceName) {
       continue;
     }
-    validateNodeForParents(values, child, graph, issues);
+    validateNodeForParents(values, child, graph, issues, ancestors);
   }
+  ancestors.delete(node);
 }
 
 function validateSliceChildren(
@@ -131,6 +146,7 @@ function validateSliceChildren(
   sliceNodes: ValidationGraphNode[],
   graph: ValidationGraph,
   issues: ValidationIssue[],
+  ancestors: Set<ValidationGraphNode>,
 ): void {
   const enforceableSlices = sliceNodes.filter(slice => isSliceMatchableByValue(parentNode, slice));
   const unmatchableRequiredSlices = sliceNodes.filter(slice =>
@@ -153,7 +169,7 @@ function validateSliceChildren(
       if (child.sliceName) {
         continue;
       }
-      validateNodeForParents(matchedValues, child, graph, issues);
+      validateNodeForParents(matchedValues, child, graph, issues, ancestors);
     }
   }
 
@@ -216,41 +232,13 @@ function isShadowedForbiddenSliceMatch(
   );
 }
 
-function patternStrictlyContains(narrower: unknown, broader: unknown): boolean {
-  const comparison = comparePatternContainment(narrower, broader);
-  return comparison.contains && comparison.strict;
-}
-
-function comparePatternContainment(
-  narrower: unknown,
-  broader: unknown,
-): { contains: boolean; strict: boolean } {
-  if (!isRecord(narrower) || !isRecord(broader)) {
-    return { contains: graphValuesMatch(narrower, broader), strict: false };
-  }
-
-  let strict = Object.keys(narrower).length > Object.keys(broader).length;
-  for (const [key, expected] of Object.entries(broader)) {
-    if (!(key in narrower)) {
-      return { contains: false, strict: false };
-    }
-    const child = comparePatternContainment(narrower[key], expected);
-    if (!child.contains) {
-      return { contains: false, strict: false };
-    }
-    strict ||= child.strict;
-  }
-
-  return { contains: true, strict };
-}
-
 function validateChoiceNode(
   parentValues: unknown[],
   node: ValidationGraphNode,
   graph: ValidationGraph,
   issues: ValidationIssue[],
+  ancestors: Set<ValidationGraphNode>,
 ): void {
-  const choices = node.choices ?? [];
   const required = node.required || (node.min ?? 0) > 0;
 
   for (const parent of parentValues) {
@@ -319,7 +307,7 @@ function validateChoiceNode(
         if (child.sliceName) {
           continue;
         }
-        validateNodeForParents([entry.value], child, graph, issues);
+        validateNodeForParents([entry.value], child, graph, issues, ancestors);
       }
     }
   }
@@ -336,23 +324,4 @@ function getChoiceEntries(parent: unknown, node: ValidationGraphNode): Array<{ n
     : Object.keys(parent).filter(key => isChoiceProperty(key, node.name));
 
   return names.flatMap(name => getDirectValues(parent, name).map(value => ({ name, value })));
-}
-
-function createIssue(code: string, path: string, message: string, graph?: ValidationGraph): ValidationIssue {
-  return {
-    aspect: 'profile',
-    severity: 'error',
-    code,
-    path,
-    expression: path,
-    message,
-    resourceType: graph?.type,
-    profile: graph?.url,
-    validationMethod: 'fhir-schema-graph',
-    timestamp: new Date(),
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

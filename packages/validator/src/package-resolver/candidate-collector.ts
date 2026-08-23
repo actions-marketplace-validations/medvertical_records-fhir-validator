@@ -46,6 +46,9 @@ const CANONICAL_RESOURCE_TYPES = new Set([
 ]);
 
 const VALID_STATUS = new Set(['active', 'draft', 'retired', 'unknown']);
+const MAX_CANONICAL_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_CANONICAL_URL_LENGTH = 4_096;
+const MAX_VERSION_LENGTH = 255;
 
 export interface CollectorOptions {
   /** Package search root list in priority order. */
@@ -70,14 +73,16 @@ export interface CollectorResult {
  * package.
  */
 function resolvePackageDir(packageId: string, searchPaths: string[]): string | null {
+  if (!isSafePackageId(packageId)) return null;
+
   for (const root of searchPaths) {
-    const candidate = path.join(root, packageId, 'package');
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+    const candidate = resolveContainedDirectory(root, packageId, 'package');
+    if (candidate) {
       return candidate;
     }
     // Some packages place the resources at the root, not under `package/`.
-    const flat = path.join(root, packageId);
-    if (fs.existsSync(flat) && fs.statSync(flat).isDirectory()) {
+    const flat = resolveContainedDirectory(root, packageId);
+    if (flat) {
       const flatHasPackageJson = fs.existsSync(path.join(flat, 'package.json'));
       if (flatHasPackageJson) return flat;
     }
@@ -85,20 +90,55 @@ function resolvePackageDir(packageId: string, searchPaths: string[]): string | n
   return null;
 }
 
+function isSafePackageId(packageId: string): boolean {
+  if (!packageId || packageId.length > 255 || packageId.includes('\0') || path.isAbsolute(packageId)) {
+    return false;
+  }
+  return packageId.split(/[\\/]/).every(segment => segment !== '' && segment !== '.' && segment !== '..');
+}
+
+function resolveContainedDirectory(root: string, ...segments: string[]): string | null {
+  try {
+    const realRoot = fs.realpathSync(root);
+    const candidate = path.join(realRoot, ...segments);
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) return null;
+
+    const realCandidate = fs.realpathSync(candidate);
+    const relative = path.relative(realRoot, realCandidate);
+    if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+      return realCandidate;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 /** Read one JSON file and emit a CanonicalCandidate if it carries a canonical URL. */
 function readCandidate(filePath: string, sourcePackage: string): CanonicalCandidate | null {
-  let parsed: any;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== 'object') return null;
+  if (!isRecord(parsed)) return null;
   const rt = parsed.resourceType;
   if (typeof rt !== 'string' || !CANONICAL_RESOURCE_TYPES.has(rt)) return null;
   const url = parsed.url;
   const version = parsed.version;
-  if (typeof url !== 'string' || typeof version !== 'string') return null;
+  if (
+    typeof url !== 'string'
+    || !url.trim()
+    || url.length > MAX_CANONICAL_URL_LENGTH
+    || typeof version !== 'string'
+    || !version.trim()
+    || version.length > MAX_VERSION_LENGTH
+  ) return null;
 
   const status = typeof parsed.status === 'string' && VALID_STATUS.has(parsed.status)
     ? (parsed.status as CanonicalCandidate['status'])
@@ -111,7 +151,7 @@ function readCandidate(filePath: string, sourcePackage: string): CanonicalCandid
     status,
   };
   if (typeof parsed.content === 'string') result.content = parsed.content;
-  if (parsed.expansion && typeof parsed.expansion === 'object') result.hasExpansion = true;
+  if (isRecord(parsed.expansion)) result.hasExpansion = true;
   return result;
 }
 
@@ -139,11 +179,11 @@ function collectFromPackageDir(
     const full = path.join(dir, entry);
     let stat: fs.Stats;
     try {
-      stat = fs.statSync(full);
+      stat = fs.lstatSync(full);
     } catch {
       continue;
     }
-    if (!stat.isFile()) continue;
+    if (!stat.isFile() || stat.size > MAX_CANONICAL_FILE_BYTES) continue;
 
     const candidate = readCandidate(full, sourcePackage);
     if (candidate) candidates.push(candidate);

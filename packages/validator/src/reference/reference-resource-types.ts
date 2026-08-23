@@ -34,6 +34,7 @@ export const KNOWN_FHIR_RESOURCE_TYPES = new Set([
   'Task', 'Appointment', 'AppointmentResponse', 'Schedule', 'Slot', 'Encounter',
   'EncounterHistory', 'EpisodeOfCare', 'Flag', 'List', 'Library', 'Measure', 'MeasureReport',
   'Communication', 'CommunicationRequest', 'GuidanceResponse', 'RequestOrchestration',
+  'RequestGroup',
   'SupplyDelivery', 'SupplyRequest', 'Transport',
 
   // Foundation

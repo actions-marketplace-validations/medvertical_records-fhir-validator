@@ -1,6 +1,7 @@
 import { logger } from '../logger';
 import { getMaxRemoteCodeSystemValidations } from './terminology-api-remote-policy';
 import type { TerminologyResolutionConfig } from './valueset-types';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 
 export class RemoteCodeSystemValidationBudget {
   private validationCount = 0;
@@ -16,9 +17,12 @@ export class RemoteCodeSystemValidationBudget {
     if (this.validationCount >= maxValidations) {
       if (!this.exhaustionWarningLogged) {
         logger.warn(
-          `[TerminologyApiClient] Remote CodeSystem validation budget exhausted ` +
-          `(${this.validationCount}/${maxValidations}) for ${serverUrl}; ` +
-          `failing open for further direct CodeSystem checks`,
+          '[TerminologyApiClient] Remote CodeSystem validation budget exhausted',
+          {
+            ...terminologyTargetMetadata(serverUrl),
+            validationCount: this.validationCount,
+            maxValidations,
+          },
         );
         this.exhaustionWarningLogged = true;
       }

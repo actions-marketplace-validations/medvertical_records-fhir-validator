@@ -2,28 +2,19 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import type { StructureDefinition } from './structure-definition-types';
 import { logger } from '../logger';
-import { compareVersions } from './sd-loader-package-scanner';
-import { matchesRequestedFhirVersion, type FhirVersionFamily } from './sd-loader-version-utils';
-
-type IndexedProfile = {
-  sd: StructureDefinition;
-  sourceName: string;
-};
-
-type PackageProfileIndex = {
-  byUrl: Map<string, IndexedProfile[]>;
-  byVersionedUrl: Map<string, IndexedProfile>;
-};
-
-const packageProfileIndexCache = new Map<string, Promise<PackageProfileIndex>>();
-
-function isPreReleaseVersion(version: string | undefined): boolean {
-  return typeof version === 'string' && version.includes('-');
-}
-
-function allowsUnversionedPreRelease(targetUrl: string): boolean {
-  return targetUrl.includes('hl7.eu/fhir/eps');
-}
+import { recordProfilePackageProvenance } from '../package/canonical-pin-provenance';
+import { matchesPackageVersionPin } from './sd-loader-package-version-pin';
+import {
+  loadPackageProfileIndex,
+  packageIndexMayContainCanonical,
+  selectBetterUnversionedProfile,
+  selectExactProfile,
+  selectUnversionedCandidate,
+  PackageProfileIndexCache,
+  type IndexedProfile,
+} from './sd-loader-package-profile-index';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
 
 function hl7UvPackagePrefix(url: string): string | null {
   const match = url.toLowerCase().match(/^https?:\/\/hl7\.org\/fhir\/uv\/([^/]+)\//);
@@ -113,7 +104,9 @@ export function isRelevantPackage(
 export async function loadFromLocalCache(
   url: string,
   packageSources: string[],
-  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
+  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+  packageVersionPins: Record<string, string> = {},
+  indexCache: PackageProfileIndexCache = new PackageProfileIndexCache(),
 ): Promise<StructureDefinition | null> {
   try {
     let targetUrl = url;
@@ -134,6 +127,7 @@ export async function loadFromLocalCache(
 
         for (const entry of entries) {
           if (!entry.isDirectory()) continue;
+          if (!matchesPackageVersionPin(entry.name, packageVersionPins)) continue;
 
           if (!isRelevantPackage(entry.name, targetUrl, fhirVersion)) {
             continue;
@@ -146,14 +140,30 @@ export async function loadFromLocalCache(
 
           for (const packagePath of packagePaths) {
             try {
-              const index = await loadPackageProfileIndex(packagePath, entry.name, resourceType);
+              if (!await packageIndexMayContainCanonical(packagePath, targetUrl, indexCache)) {
+                continue;
+              }
+              const index = await loadPackageProfileIndex(
+                packagePath,
+                entry.name,
+                resourceType,
+                indexCache,
+              );
               const exact = selectExactProfile(index, targetUrl, targetVersion, fhirVersion);
               if (exact) {
                 if (targetVersion) {
-                  logger.debug(`[SDLoader] Loaded ${url} from ${exact.sourceName}`);
+                  logger.debug('[SDLoader] Loaded exact profile from package', {
+                    ...profileCanonicalMetadata(url, exact.sd.version),
+                  });
+                  recordProfilePackageProvenance(exact.sd.url, exact.sd.version, entry.name);
                   return exact.sd;
                 }
-                sourceMatch = selectBetterUnversionedProfile(sourceMatch, exact, targetUrl);
+                sourceMatch = selectBetterUnversionedProfile(
+                  sourceMatch,
+                  exact,
+                  targetUrl,
+                  fhirVersion,
+                );
               }
 
               if (!targetVersion && !sourceMatch) {
@@ -170,8 +180,13 @@ export async function loadFromLocalCache(
 
         if (sourceMatch) {
           logger.info(
-            `[SDLoader] Loaded ${url} from ${sourceMatch.sourceName} ` +
-            `(selected version ${sourceMatch.sd.version || 'unknown'})`
+            '[SDLoader] Loaded profile from local package source',
+            profileCanonicalMetadata(url, sourceMatch.sd.version),
+          );
+          recordProfilePackageProvenance(
+            sourceMatch.sd.url,
+            sourceMatch.sd.version,
+            sourceMatch.sourceName.split('/')[0],
           );
           return sourceMatch.sd;
         }
@@ -186,153 +201,12 @@ export async function loadFromLocalCache(
 
     return null;
   } catch (error) {
-    logger.error(`[SDLoader] Error loading from local cache:`, error);
+    logger.error(
+      '[SDLoader] Local profile cache load failed',
+      validationFailureMetadata(error),
+    );
     return null;
   }
-}
-
-async function loadPackageProfileIndex(
-  packagePath: string,
-  packageName: string,
-  preferredResourceType: string
-): Promise<PackageProfileIndex> {
-  const cacheKey = packagePath;
-  const existing = packageProfileIndexCache.get(cacheKey);
-  if (existing) return existing;
-
-  await fs.access(packagePath);
-  const promise = buildPackageProfileIndex(packagePath, packageName, preferredResourceType);
-  packageProfileIndexCache.set(cacheKey, promise);
-  return promise;
-}
-
-async function buildPackageProfileIndex(
-  packagePath: string,
-  packageName: string,
-  preferredResourceType: string
-): Promise<PackageProfileIndex> {
-  const index: PackageProfileIndex = {
-    byUrl: new Map(),
-    byVersionedUrl: new Map(),
-  };
-
-  const files = await fs.readdir(packagePath);
-  const preferredFile = `StructureDefinition-${preferredResourceType}.json`;
-  const jsonFiles = files
-    .filter(file => file.endsWith('.json'))
-    .sort((a, b) => {
-      if (a === preferredFile) return -1;
-      if (b === preferredFile) return 1;
-      return a.localeCompare(b);
-    });
-
-  for (const file of jsonFiles) {
-    const filePath = path.join(packagePath, file);
-    try {
-      const content = await fs.readFile(filePath, 'utf-8');
-      const sd = JSON.parse(content) as StructureDefinition;
-      if (sd?.resourceType !== 'StructureDefinition' || typeof sd.url !== 'string') {
-        continue;
-      }
-
-      const indexed: IndexedProfile = { sd, sourceName: `${packageName}/${file}` };
-      const candidates = index.byUrl.get(sd.url) ?? [];
-      candidates.push(indexed);
-      index.byUrl.set(sd.url, candidates);
-
-      if (typeof sd.version === 'string' && sd.version.length > 0) {
-        index.byVersionedUrl.set(`${sd.url}|${sd.version}`, indexed);
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return index;
-}
-
-function selectExactProfile(
-  index: PackageProfileIndex,
-  targetUrl: string,
-  targetVersion: string | undefined,
-  fhirVersion: FhirVersionFamily,
-): IndexedProfile | null {
-  if (targetVersion) {
-    const exact = index.byVersionedUrl.get(`${targetUrl}|${targetVersion}`);
-    if (exact && matchesRequestedFhirVersion(exact.sd, fhirVersion)) return exact;
-
-    const candidates = index.byUrl.get(targetUrl) ?? [];
-    return candidates.find(candidate =>
-      typeof candidate.sd.version === 'string' &&
-      matchesRequestedFhirVersion(candidate.sd, fhirVersion) &&
-      areCanonicalVersionsEquivalent(targetVersion, candidate.sd.version)
-    ) ?? null;
-  }
-
-  const candidates = index.byUrl.get(targetUrl) ?? [];
-  for (const candidate of candidates) {
-    if (!matchesRequestedFhirVersion(candidate.sd, fhirVersion)) {
-      logger.info(`[SDLoader] Skipping FHIR-version-incompatible profile ${targetUrl}@${candidate.sd.version} from ${candidate.sourceName}`);
-      continue;
-    }
-    if (isPreReleaseVersion(candidate.sd.version) && !allowsUnversionedPreRelease(targetUrl)) {
-      logger.info(`[SDLoader] Skipping pre-release profile ${targetUrl}@${candidate.sd.version} from ${candidate.sourceName}; unversioned canonicals must resolve to stable packages`);
-      continue;
-    }
-    return candidate;
-  }
-
-  return null;
-}
-
-function areCanonicalVersionsEquivalent(requested: string, actual: string): boolean {
-  if (requested === actual) return true;
-  return normalizeShortSemverVersion(requested) === normalizeShortSemverVersion(actual);
-}
-
-function normalizeShortSemverVersion(version: string): string {
-  const match = version.match(/^(\d+)\.(\d+)$/);
-  if (!match) return version;
-  return `${match[1]}.${match[2]}.0`;
-}
-
-function selectBetterUnversionedProfile(
-  current: IndexedProfile | null,
-  candidate: IndexedProfile,
-  targetUrl: string
-): IndexedProfile | null {
-  if (isPreReleaseVersion(candidate.sd.version) && !allowsUnversionedPreRelease(targetUrl)) {
-    logger.info(
-      `[SDLoader] Skipping pre-release profile ${targetUrl}@${candidate.sd.version} ` +
-      `from ${candidate.sourceName}; unversioned canonicals must resolve to stable packages`
-    );
-    return current;
-  }
-
-  if (!current) return candidate;
-
-  const candidateVersion = candidate.sd.version || '0.0.0';
-  const currentVersion = current.sd.version || '0.0.0';
-  if (compareVersions(candidateVersion, currentVersion) > 0) {
-    return candidate;
-  }
-
-  return current;
-}
-
-function selectUnversionedCandidate(
-  index: PackageProfileIndex,
-  targetUrl: string,
-  fhirVersion: FhirVersionFamily,
-): IndexedProfile | null {
-  const candidates = index.byUrl.get(targetUrl) ?? [];
-  for (const candidate of candidates) {
-    if (!matchesRequestedFhirVersion(candidate.sd, fhirVersion)) continue;
-    if (!isPreReleaseVersion(candidate.sd.version) || allowsUnversionedPreRelease(targetUrl)) {
-      return candidate;
-    }
-  }
-  return null;
 }
 
 export async function loadFromSource(

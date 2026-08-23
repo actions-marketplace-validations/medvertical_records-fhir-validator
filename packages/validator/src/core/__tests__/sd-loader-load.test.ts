@@ -58,6 +58,22 @@ describe('sd-loader loadProfile fallback behavior', () => {
       .resolves.toBeNull();
   });
 
+  it('fails the tenant lookup closed when the host has no scoped resolver capability', async () => {
+    const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
+    const globalProfile = {
+      resourceType: 'StructureDefinition',
+      id: 'global-v8',
+      url: canonical,
+      version: '8.0.0',
+      type: 'Observation',
+      fhirVersion: '4.0.1',
+    } as StructureDefinition;
+    setProfileSource({});
+
+    await expect(loadProfile(makeScopedContext(canonical, globalProfile), canonical, 'R4'))
+      .resolves.toBeNull();
+  });
+
   it('rejects a centrally resolved tenant profile from the wrong FHIR family', async () => {
     const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
     const r5Profile = {
@@ -72,6 +88,59 @@ describe('sd-loader loadProfile fallback behavior', () => {
 
     await expect(loadProfile(makeScopedContext(canonical, r5Profile), canonical, 'R4'))
       .resolves.toBeNull();
+  });
+
+  it('rejects a centrally resolved tenant profile for another canonical', async () => {
+    const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
+    const wrongProfile = {
+      resourceType: 'StructureDefinition',
+      id: 'wrong-canonical',
+      url: 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient',
+      type: 'Patient',
+      fhirVersion: '4.0.1',
+    } as StructureDefinition;
+    setProfileSource({ resolveProfile: vi.fn().mockResolvedValue(wrongProfile) });
+
+    await expect(loadProfile(makeScopedContext(canonical, wrongProfile), canonical, 'R4'))
+      .resolves.toBeNull();
+  });
+
+  it('rechecks an earlier public-source miss so newly synchronized profiles load', async () => {
+    const canonical = 'https://example.test/fhir/StructureDefinition/DynamicPatient';
+    const profile = {
+      resourceType: 'StructureDefinition',
+      id: 'dynamic-patient',
+      url: canonical,
+      type: 'Patient',
+      fhirVersion: '4.0.1',
+    } as StructureDefinition;
+    const findByUrl = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(profile);
+    setProfileSource({ findByUrl });
+    const ctx: LoadProfileContext = {
+      availableProfiles: new Set(),
+      packageSources: [],
+      cache: new Map(),
+      profileLoadPromises: new Map(),
+      autoDownload: false,
+      registryClient: {} as any,
+      packageDownloader: {} as any,
+      allowedPackages: [],
+      packageVersionPins: {},
+      profileSourcesConfig: {
+        simplifier: false,
+        packageRegistry: false,
+      },
+      resolvePinnedCanonical: url => url,
+    };
+
+    await expect(loadProfile(ctx, canonical, 'R4')).resolves.toBeNull();
+    await expect(loadProfile(ctx, canonical, 'R4')).resolves.toMatchObject({
+      id: 'dynamic-patient',
+      url: canonical,
+    });
+    expect(findByUrl).toHaveBeenCalledTimes(2);
   });
 
   it('continues to auto-download when an availableProfiles filesystem hit cannot be loaded', async () => {
@@ -103,8 +172,6 @@ describe('sd-loader loadProfile fallback behavior', () => {
       availableProfiles: new Set([profileUrl]),
       packageSources: [source],
       cache: new Map(),
-      profileNotFound: new Set(),
-      dbCacheNotFound: new Set(),
       profileLoadPromises: new Map(),
       autoDownload: true,
       registryClient: {
@@ -130,7 +197,6 @@ describe('sd-loader loadProfile fallback behavior', () => {
       url: sd.url,
       version: '1.1.0',
     });
-    expect(ctx.profileNotFound.size).toBe(0);
   });
 
   it('loads explicitly versioned local profiles even when the deduped index only lists another package version', async () => {
@@ -165,8 +231,6 @@ describe('sd-loader loadProfile fallback behavior', () => {
       ]),
       packageSources: [source],
       cache: new Map(),
-      profileNotFound: new Set(),
-      dbCacheNotFound: new Set(),
       profileLoadPromises: new Map(),
       autoDownload: false,
       registryClient: {} as any,
@@ -184,7 +248,6 @@ describe('sd-loader loadProfile fallback behavior', () => {
       url: 'http://fhir.de/StructureDefinition/CodingICD10GM',
       version: '1.3.2',
     });
-    expect(ctx.profileNotFound.has(`${requestedUrl}:R4`)).toBe(false);
   });
 });
 
@@ -196,8 +259,6 @@ function makeScopedContext(
     availableProfiles: new Set([canonical]),
     packageSources: [],
     cache: new Map([[`${canonical}:R4`, globalProfile]]),
-    profileNotFound: new Set(),
-    dbCacheNotFound: new Set(),
     profileLoadPromises: new Map(),
     autoDownload: true,
     registryClient: {} as any,

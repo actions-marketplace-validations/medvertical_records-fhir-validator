@@ -188,7 +188,16 @@ export const R4_DEFAULT_INCLUDED_RESOURCE_TYPES = [
 
   // Administrative Resources (R4)
   'Organization', 'Practitioner', 'PractitionerRole', 'Location',
-  'DocumentReference', 'Composition', 'List', 'Appointment', 'Schedule', 'Slot'
+  'DocumentReference', 'Composition', 'List', 'Appointment', 'Schedule', 'Slot',
+
+  // Additional clinical, workflow, consent, research, and financial resources
+  // that occur in real R4/MII datasets. Keeping these in the default cohort
+  // avoids a green run silently omitting supported server resources.
+  'MedicationStatement', 'MedicationAdministration', 'Specimen', 'Consent',
+  'Device', 'DeviceMetric', 'FamilyMemberHistory', 'RequestGroup',
+  'ClinicalImpression', 'Coverage', 'AdverseEvent', 'QuestionnaireResponse',
+  'Task', 'BodyStructure', 'Claim', 'ClaimResponse', 'ImagingStudy',
+  'ResearchStudy', 'RiskAssessment', 'Substance'
 ];
 
 // R5 Default included resource types (most important for validation)
@@ -201,6 +210,13 @@ export const R5_DEFAULT_INCLUDED_RESOURCE_TYPES = [
   // Administrative Resources (R5)
   'Organization', 'Practitioner', 'PractitionerRole', 'Location',
   'DocumentReference', 'Composition', 'List', 'Appointment', 'Schedule', 'Slot',
+
+  // Cross-version clinical and workflow coverage
+  'MedicationStatement', 'MedicationAdministration', 'Specimen', 'Consent',
+  'Device', 'DeviceMetric', 'FamilyMemberHistory', 'ClinicalImpression',
+  'Coverage', 'AdverseEvent', 'QuestionnaireResponse', 'Task', 'BodyStructure',
+  'Claim', 'ClaimResponse', 'ImagingStudy', 'ResearchStudy', 'RiskAssessment',
+  'Substance',
 
   // R5-specific new resource types
   'Evidence', 'EvidenceReport', 'EvidenceVariable', 'Citation'

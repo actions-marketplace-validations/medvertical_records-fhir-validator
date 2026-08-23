@@ -1,5 +1,6 @@
 import type { ValidationIssue } from '../types';
 import { createReferenceValidationIssue } from './reference-utils';
+import type { RecursiveValidationResult } from './recursive-reference-validator';
 
 interface ExtractedReference {
   path: string;
@@ -26,7 +27,7 @@ export function getReferenceFieldName(path: string): string {
 }
 
 export function buildRecursiveReferenceIssues(
-  recursiveResult: any,
+  recursiveResult: RecursiveValidationResult,
   timeoutMs: number | undefined,
   resourceType: string,
   referencePathsByValue: Map<string, string[]>,

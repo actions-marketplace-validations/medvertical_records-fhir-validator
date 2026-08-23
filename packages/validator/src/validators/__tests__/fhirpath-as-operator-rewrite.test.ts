@@ -42,14 +42,22 @@ describe('rewriteCollectionTypeOperators — as', () => {
 });
 
 describe('rewriteCollectionTypeOperators — is', () => {
-  it('rewrites a dotted-path `is` into a collection-safe all()', () => {
+  it('rewrites a dotted-path `is` into a collection-safe select()', () => {
     expect(rewriteCollectionTypeOperators('component.value is Quantity'))
-      .toBe('component.value.all($this is Quantity)');
+      .toBe('component.value.select($this is Quantity)');
   });
 
   it('rewrites a bare path `is`', () => {
     expect(rewriteCollectionTypeOperators('value is Quantity'))
-      .toBe('value.all($this is Quantity)');
+      .toBe('value.select($this is Quantity)');
+  });
+
+  // `.all()` would make `is` on EMPTY input vacuously true, flipping
+  // `who.exists(resolve() is Practitioner) implies ...` constraints into
+  // false positives for unresolvable references (US Core provenance-1).
+  it('rewrites a function-call `is` operand so empty input stays empty', () => {
+    expect(rewriteCollectionTypeOperators('who.exists((resolve() is Practitioner) or (resolve() is Device)) implies onBehalfOf.exists()'))
+      .toBe('who.exists((resolve().select($this is Practitioner)) or (resolve().select($this is Device))) implies onBehalfOf.exists()');
   });
 
   it('leaves a $this `is` operand untouched (already singleton context)', () => {

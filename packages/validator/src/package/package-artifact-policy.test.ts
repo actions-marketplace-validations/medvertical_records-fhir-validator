@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isAllowedPackageTarballUrl,
   isSafePackageArchiveEntry,
+  isIgnorablePackageArchiveMetadata,
   isSafePackageArchivePath,
   isSafePackageId,
   isSafePackageVersion,
@@ -19,6 +20,14 @@ describe('package artifact policy', () => {
     expect(isSafePackageId('package/name')).toBe(false);
     expect(isSafePackageId('package#1.0.0')).toBe(false);
     expect(isSafePackageId('package..name')).toBe(false);
+  });
+
+  it('recognizes bounded AppleDouble metadata without allowing arbitrary root files', () => {
+    expect(isIgnorablePackageArchiveMetadata('._package', 'File', 163)).toBe(true);
+    expect(isIgnorablePackageArchiveMetadata('package/._package.json', 'File', 512)).toBe(true);
+    expect(isIgnorablePackageArchiveMetadata('__MACOSX/package/._profile.json', 'File', 512)).toBe(true);
+    expect(isIgnorablePackageArchiveMetadata('profile.json', 'File', 512)).toBe(false);
+    expect(isIgnorablePackageArchiveMetadata('../._package', 'File', 512)).toBe(false);
   });
 
   it('accepts exact package versions and rejects path/control syntax', () => {

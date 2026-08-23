@@ -98,4 +98,14 @@ describe('universalConstraintsValidator', () => {
       path: 'Encounter.subject.reference',
     }));
   });
+
+  it('terminates safely for cyclic object graphs', () => {
+    const resource: Record<string, unknown> = {
+      resourceType: 'Patient',
+      id: 'patient-1',
+    };
+    resource.self = resource;
+
+    expect(universalConstraintsValidator.validate(resource)).toEqual([]);
+  });
 });

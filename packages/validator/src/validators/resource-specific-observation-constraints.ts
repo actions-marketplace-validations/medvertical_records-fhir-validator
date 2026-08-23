@@ -2,15 +2,31 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
 
-export function validateObservationConstraints(resource: any): ValidationIssue[] {
+const OBSERVATION_VALUE_KEYS = [
+    'valueQuantity',
+    'valueCodeableConcept',
+    'valueString',
+    'valueBoolean',
+    'valueInteger',
+    'valueRange',
+    'valueRatio',
+    'valueSampledData',
+    'valueTime',
+    'valueDateTime',
+    'valuePeriod',
+] as const;
+
+export function validateObservationConstraints(resource: unknown): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
+    const observation = asRecord(resource);
+    if (!observation) return issues;
 
     logger.debug('[ResourceConstraints] Validating Observation constraints');
 
-    if (resource.referenceRange && Array.isArray(resource.referenceRange)) {
-        for (let i = 0; i < resource.referenceRange.length; i++) {
-            const rr = resource.referenceRange[i];
-            if (!rr.low && !rr.high && !rr.text) {
+    if (Array.isArray(observation.referenceRange)) {
+        for (let i = 0; i < observation.referenceRange.length; i++) {
+            const range = asRecord(observation.referenceRange[i]);
+            if (range && !range.low && !range.high && !range.text) {
                 issues.push(createValidationIssue({
                     code: 'obs-3-violation',
                     path: `Observation.referenceRange[${i}]`,
@@ -22,8 +38,8 @@ export function validateObservationConstraints(resource: any): ValidationIssue[]
         }
     }
 
-    const hasValue = observationHasValue(resource);
-    if (resource.dataAbsentReason && hasValue) {
+    const hasValue = observationHasValue(observation);
+    if (observation.dataAbsentReason && hasValue) {
         issues.push(createValidationIssue({
             code: 'obs-6-violation',
             path: 'Observation.dataAbsentReason',
@@ -33,11 +49,11 @@ export function validateObservationConstraints(resource: any): ValidationIssue[]
         }));
     }
 
-    if (hasValue && resource.component && Array.isArray(resource.component)) {
-        const obsCodes = getCodingSet(resource.code);
+    if (hasValue && Array.isArray(observation.component)) {
+        const obsCodes = getCodingSet(observation.code);
         if (obsCodes.size > 0) {
-            for (const comp of resource.component) {
-                const compCodes = getCodingSet(comp.code);
+            for (const component of observation.component) {
+                const compCodes = getCodingSet(asRecord(component)?.code);
                 for (const c of compCodes) {
                     if (obsCodes.has(c)) {
                         issues.push(createValidationIssue({
@@ -54,10 +70,10 @@ export function validateObservationConstraints(resource: any): ValidationIssue[]
         }
     }
 
-    if (isVitalSignsObservation(resource) && Array.isArray(resource.component)) {
-        for (let i = 0; i < resource.component.length; i++) {
-            const component = resource.component[i];
-            if (!observationHasValue(component) && !component.dataAbsentReason) {
+    if (isVitalSignsObservation(observation) && Array.isArray(observation.component)) {
+        for (let i = 0; i < observation.component.length; i++) {
+            const component = asRecord(observation.component[i]);
+            if (component && !observationHasValue(component) && !component.dataAbsentReason) {
                 issues.push(createValidationIssue({
                     code: 'invariant-vs-3-violation',
                     path: `Observation.component[${i}]`,
@@ -72,18 +88,18 @@ export function validateObservationConstraints(resource: any): ValidationIssue[]
     return issues;
 }
 
-function observationHasValue(resource: any): boolean {
-    return !!(resource.valueQuantity || resource.valueCodeableConcept ||
-        resource.valueString || resource.valueBoolean || resource.valueInteger ||
-        resource.valueRange || resource.valueRatio || resource.valueSampledData ||
-        resource.valueTime || resource.valueDateTime || resource.valuePeriod);
+function observationHasValue(resource: unknown): boolean {
+    const record = asRecord(resource);
+    return record !== undefined && OBSERVATION_VALUE_KEYS.some(key => Boolean(record[key]));
 }
 
-function getCodingSet(codeableConcept: any): Set<string> {
+function getCodingSet(codeableConcept: unknown): Set<string> {
     const codes = new Set<string>();
-    if (codeableConcept?.coding && Array.isArray(codeableConcept.coding)) {
-        for (const coding of codeableConcept.coding) {
-            if (coding.system && coding.code) {
+    const concept = asRecord(codeableConcept);
+    if (Array.isArray(concept?.coding)) {
+        for (const item of concept.coding) {
+            const coding = asRecord(item);
+            if (typeof coding?.system === 'string' && typeof coding.code === 'string') {
                 codes.add(`${coding.system}|${coding.code}`);
             }
         }
@@ -91,10 +107,13 @@ function getCodingSet(codeableConcept: any): Set<string> {
     return codes;
 }
 
-function isVitalSignsObservation(resource: any): boolean {
-    if (Array.isArray(resource?.category)) {
+function isVitalSignsObservation(resource: Record<string, unknown>): boolean {
+    if (Array.isArray(resource.category)) {
         for (const category of resource.category) {
-            for (const coding of category?.coding || []) {
+            const codings = asRecord(category)?.coding;
+            if (!Array.isArray(codings)) continue;
+            for (const item of codings) {
+                const coding = asRecord(item);
                 if (
                     coding?.system === 'http://terminology.hl7.org/CodeSystem/observation-category' &&
                     coding?.code === 'vital-signs'
@@ -105,7 +124,13 @@ function isVitalSignsObservation(resource: any): boolean {
         }
     }
 
-    return (resource?.meta?.profile || []).some((profile: string) =>
-        typeof profile === 'string' && /vital|oxygen|pulse-ox/i.test(profile)
-    );
+    const profiles = asRecord(resource.meta)?.profile;
+    return Array.isArray(profiles)
+        && profiles.some(profile => typeof profile === 'string' && /vital|oxygen|pulse-ox/i.test(profile));
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
 }

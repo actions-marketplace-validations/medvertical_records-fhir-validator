@@ -55,6 +55,25 @@ describe('StructureDefinitionValidator differential path checks', () => {
     }));
   });
 
+  it('detects root slicing even when a malformed differential does not put the root first', () => {
+    const issues = validator.validate({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.com/Observation',
+      type: 'Observation',
+      differential: {
+        element: [
+          { path: 'Observation.status' },
+          { path: 'Observation', slicing: { rules: 'open', discriminator: [] } },
+        ],
+      },
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'sd-root-slicing-invalid',
+      path: 'StructureDefinition.differential.element[1]',
+    }));
+  });
+
   it('warns when a CodeableConcept pattern declares a system without a code', () => {
     const issues = validator.validate({
       resourceType: 'StructureDefinition',
@@ -74,5 +93,48 @@ describe('StructureDefinitionValidator differential path checks', () => {
       code: 'sd-pattern-coding-missing-code',
       severity: 'warning',
     }));
+  });
+
+  it('attributes snapshot-only pattern findings to the snapshot path', () => {
+    const issues = validator.validate({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.com/Encounter',
+      type: 'Encounter',
+      snapshot: {
+        element: [{
+          id: 'Encounter.type',
+          path: 'Encounter.type',
+          patternCodeableConcept: {
+            coding: [{ system: 'https://example.com/CodeSystem/test' }],
+          },
+        }],
+      },
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'sd-pattern-coding-missing-code',
+      path: 'StructureDefinition.snapshot.element[0].patternCodeableConcept.coding[0].code',
+    }));
+  });
+
+  it('does not duplicate the same pattern finding from differential and snapshot', () => {
+    const element = {
+      id: 'Encounter.type',
+      path: 'Encounter.type',
+      patternCodeableConcept: {
+        coding: [{ system: 'https://example.com/CodeSystem/test', code: '' }],
+      },
+    };
+    const issues = validator.validate({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.com/Encounter',
+      type: 'Encounter',
+      differential: { element: [element] },
+      snapshot: { element: [element] },
+    });
+
+    expect(issues.filter(issue =>
+      issue.code === 'sd-pattern-coding-missing-code'
+    )).toHaveLength(1);
   });
 });

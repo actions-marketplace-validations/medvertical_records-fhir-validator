@@ -31,6 +31,27 @@ describe("validation issue dedupe regressions", () => {
     ]);
   });
 
+  it("treats info and information as the same severity when deduping", () => {
+    const deduped = dedupeIssues([
+      issue({
+        code: "dom-6",
+        severity: "info",
+        path: "Patient.text",
+        resourceType: "Patient",
+        message: "A resource should have narrative for robust management",
+      }),
+      issue({
+        code: "dom-6",
+        severity: "information",
+        path: "Patient.text",
+        resourceType: "Patient",
+        message: "A resource should have narrative for robust management",
+      }),
+    ]);
+
+    expect(deduped).toHaveLength(1);
+  });
+
   it("prefers a contained CodeSystem canonical diagnostic over a generic URI copy", () => {
     const specific = issue({
       aspect: "terminology",

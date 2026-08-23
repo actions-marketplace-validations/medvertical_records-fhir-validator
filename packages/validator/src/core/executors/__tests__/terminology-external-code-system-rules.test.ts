@@ -3,8 +3,20 @@ import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { validateExternalCodeSystems } from '../terminology-external-code-system-rules';
-import { valueSetCache } from '../../../validators/valueset-cache';
+import {
+  validateExternalCodeSystems as validateExternalWithCache,
+  validateLocalCodeSystemCoding,
+} from '../terminology-external-code-system-rules';
+import { ValueSetCache } from '../../../validators/valueset-cache';
+
+const valueSetCache = new ValueSetCache();
+const validateExternalCodeSystems = (
+  value: unknown,
+  targetPath: string,
+  validator: Parameters<typeof validateExternalWithCache>[2],
+  fhirVersion?: 'R4' | 'R5' | 'R6',
+  sourceContext?: Parameters<typeof validateExternalWithCache>[4],
+) => validateExternalWithCache(value, targetPath, validator, fhirVersion, sourceContext, valueSetCache);
 
 describe('terminology external CodeSystem rules', () => {
   const originalPackageCachePath = process.env.FHIR_PACKAGE_CACHE_PATH;
@@ -35,7 +47,7 @@ describe('terminology external CodeSystem rules', () => {
         display: 'Local label',
       },
       'Questionnaire.item.code',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
@@ -53,6 +65,37 @@ describe('terminology external CodeSystem rules', () => {
     });
   });
 
+  it('surfaces unsupported SNOMED national editions as informational evidence', async () => {
+    const valuesetValidator = {
+      validateCodeInCodeSystem: vi.fn().mockResolvedValue({
+        valid: true,
+        reason: 'national-extension-unverified',
+        message: 'The configured terminology server lacks the required national edition',
+      }),
+    };
+
+    const issues = await validateExternalCodeSystems(
+      {
+        system: 'http://snomed.info/sct',
+        code: '35901911000001104',
+      },
+      'MedicationRequest.medicationCodeableConcept.coding[0]',
+      valuesetValidator,
+      'R4',
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      severity: 'information',
+      code: 'terminology-codesystem-unverified',
+      details: {
+        system: 'http://snomed.info/sct',
+        code: '35901911000001104',
+        reason: 'national-extension-unverified',
+      },
+    });
+  });
+
   it('downgrades Questionnaire-local choice codings without system to informational', async () => {
     const valuesetValidator = {
       validateCodeInCodeSystem: vi.fn(),
@@ -64,7 +107,7 @@ describe('terminology external CodeSystem rules', () => {
         display: 'Yes',
       },
       'Questionnaire.item[0].answerOption[0].valueCoding',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
@@ -91,7 +134,7 @@ describe('terminology external CodeSystem rules', () => {
     const issues = await validateExternalCodeSystems(
       { code: 'yes' },
       'Questionnaire.item[0].enableWhen[0].answerCoding',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
@@ -102,6 +145,71 @@ describe('terminology external CodeSystem rules', () => {
       path: 'Questionnaire.item[0].enableWhen[0].answerCoding',
     });
     expect(valuesetValidator.validateCodeInCodeSystem).not.toHaveBeenCalled();
+  });
+
+  it('ignores malformed Coding shapes without misreporting a missing system', async () => {
+    const valuesetValidator = {
+      validateCodeInCodeSystem: vi.fn(),
+    };
+
+    const issues = await validateExternalCodeSystems(
+      [
+        null,
+        42,
+        [],
+        {},
+        { code: { nested: true } },
+        { system: 42, code: 'valid-code' },
+        { system: 'http://loinc.org', code: 42 },
+      ],
+      'Observation.code.coding',
+      valuesetValidator,
+      'R4',
+    );
+
+    expect(issues).toEqual([]);
+    expect(valuesetValidator.validateCodeInCodeSystem).not.toHaveBeenCalled();
+  });
+
+  it('reports an empty system only for a structurally usable Coding', async () => {
+    const valuesetValidator = {
+      validateCodeInCodeSystem: vi.fn(),
+    };
+
+    const issues = await validateExternalCodeSystems(
+      { system: '', code: 'yes', display: 42 },
+      'Questionnaire.item[0].answerOption[0].valueCoding',
+      valuesetValidator,
+      'R4',
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: 'terminology-coding-missing-system',
+      details: {
+        code: 'yes',
+        fieldPath: 'Questionnaire.item[0].answerOption[0].valueCoding',
+      },
+    });
+    expect(issues[0]?.details).not.toHaveProperty('display');
+    expect(valuesetValidator.validateCodeInCodeSystem).not.toHaveBeenCalled();
+  });
+
+  it('keeps malformed local CodeSystem codings away from the local resolver', async () => {
+    const valuesetValidator = {
+      validateCodeInLocalCodeSystemOnly: vi.fn(),
+    };
+
+    await expect(
+      validateLocalCodeSystemCoding(
+        { system: 'http://loinc.org', code: { nested: true } },
+        'Observation.code.coding',
+        valuesetValidator,
+        'R4',
+      ),
+    ).resolves.toEqual([]);
+
+    expect(valuesetValidator.validateCodeInLocalCodeSystemOnly).not.toHaveBeenCalled();
   });
 
   it('does not call external CodeSystem validation for lexically invalid FHIR code values', async () => {
@@ -119,7 +227,7 @@ describe('terminology external CodeSystem rules', () => {
         display: 'Social isolation (finding)',
       },
       'Condition.code.coding',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
@@ -139,18 +247,42 @@ describe('terminology external CodeSystem rules', () => {
         display: 'IBUPROFEN TAB 600MG',
       },
       'MedicationDispense.medicationCodeableConcept.coding',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
-    expect(issues).toContainEqual(expect.objectContaining({
-      code: 'terminology-codesystem-unresolvable',
-      path: 'MedicationDispense.medicationCodeableConcept.coding.system',
-      details: expect.objectContaining({
-        expectedSystemType: 'absolute CodeSystem URI',
-        fixHint: expect.stringContaining("Coding.system 'GPI'"),
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        code: 'terminology-codesystem-unresolvable',
+        path: 'MedicationDispense.medicationCodeableConcept.coding.system',
+        details: expect.objectContaining({
+          expectedSystemType: 'absolute CodeSystem URI',
+          fixHint: expect.stringContaining("Coding.system 'GPI'"),
+        }),
       }),
-    }));
+    );
+  });
+
+  it('does not require application meta.tag namespaces to resolve as CodeSystems', async () => {
+    const valuesetValidator = {
+      validateCodeInCodeSystem: vi.fn().mockResolvedValue({
+        valid: false,
+        reason: 'system-unresolvable',
+      }),
+    };
+
+    const issues = await validateExternalCodeSystems(
+      {
+        system: 'https://records.health/fhir/CodeSystem/dataset',
+        code: 'synthetic-test-data',
+      },
+      'Patient.meta.tag',
+      valuesetValidator,
+      'R4',
+    );
+
+    expect(issues).toEqual([]);
+    expect(valuesetValidator.validateCodeInCodeSystem).not.toHaveBeenCalled();
   });
 
   it('does not report not-found when local CodeSystem validation loads the package definition', async () => {
@@ -174,17 +306,12 @@ describe('terminology external CodeSystem rules', () => {
         code: 'Patient',
       },
       'Composition.section[0].code.coding',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
-    expect(valuesetValidator.validateCodeInCodeSystem).toHaveBeenCalledWith(
-      'Patient',
-      system,
-      undefined,
-      'R4',
-    );
-    expect(issues.filter(issue => issue.code === 'not-found')).toHaveLength(0);
+    expect(valuesetValidator.validateCodeInCodeSystem).toHaveBeenCalledWith('Patient', system, undefined, 'R4');
+    expect(issues.filter((issue) => issue.code === 'not-found')).toHaveLength(0);
   });
 
   it('does not report not-found when the CodeSystem exists in a local FHIR package', async () => {
@@ -215,11 +342,11 @@ describe('terminology external CodeSystem rules', () => {
         code: 'ICD',
       },
       'Composition.section[0].code.coding',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
-    expect(issues.filter(issue => issue.code === 'not-found')).toHaveLength(0);
+    expect(issues.filter((issue) => issue.code === 'not-found')).toHaveLength(0);
   });
 
   it('suggests urn:oid for bare OID Coding.system values', async () => {
@@ -233,16 +360,18 @@ describe('terminology external CodeSystem rules', () => {
         code: 'A',
       },
       'Observation.code.coding',
-      valuesetValidator as any,
+      valuesetValidator,
       'R4',
     );
 
-    expect(issues).toContainEqual(expect.objectContaining({
-      code: 'terminology-codesystem-unresolvable',
-      details: expect.objectContaining({
-        suggestedSystem: 'urn:oid:2.16.840.1.113883.6.88',
-        fixHint: expect.stringContaining('urn:oid:2.16.840.1.113883.6.88'),
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        code: 'terminology-codesystem-unresolvable',
+        details: expect.objectContaining({
+          suggestedSystem: 'urn:oid:2.16.840.1.113883.6.88',
+          fixHint: expect.stringContaining('urn:oid:2.16.840.1.113883.6.88'),
+        }),
       }),
-    }));
+    );
   });
 });

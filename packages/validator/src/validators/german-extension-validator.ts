@@ -28,24 +28,6 @@ const _GENDER_EXTENSION_PATHS = [
 ];
 
 // ============================================================================
-// Types
-// ============================================================================
-
-interface Extension {
-    url: string;
-    valueCode?: string;
-    valueCoding?: { system?: string; code?: string };
-    [key: string]: unknown;
-}
-
-interface PatientResource {
-    resourceType: 'Patient';
-    gender?: 'male' | 'female' | 'other' | 'unknown';
-    _gender?: { extension?: Extension[] };
-    extension?: Extension[];
-}
-
-// ============================================================================
 // German Extension Validator
 // ============================================================================
 
@@ -58,13 +40,13 @@ export class GermanExtensionValidator {
      * @returns Array of validation issues
      */
     validateExtensions(
-        resource: PatientResource,
+        resource: unknown,
         profileUrl: string
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         // Only validate Patient resources for now
-        if (resource.resourceType !== 'Patient') {
+        if (!isObjectRecord(resource) || resource.resourceType !== 'Patient') {
             return issues;
         }
 
@@ -83,7 +65,7 @@ export class GermanExtensionValidator {
      * administrative gender (D = divers, X = unbestimmt).
      */
     private validateGenderExtension(
-        patient: PatientResource,
+        patient: Record<string, unknown>,
         profileUrl: string
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
@@ -121,14 +103,15 @@ export class GermanExtensionValidator {
      * - Resource.extension (root level)
      * - Resource._gender.extension (primitive extension)
      */
-    private hasExtension(resource: PatientResource, extensionUrl: string): boolean {
+    private hasExtension(resource: Record<string, unknown>, extensionUrl: string): boolean {
         // Check root-level extensions
-        if (resource.extension?.some(ext => ext.url === extensionUrl)) {
+        if (hasExtensionUrl(resource.extension, extensionUrl)) {
             return true;
         }
 
         // Check _gender primitive extension (common location for this extension)
-        if (resource._gender?.extension?.some(ext => ext.url === extensionUrl)) {
+        const genderMetadata = isObjectRecord(resource._gender) ? resource._gender : null;
+        if (genderMetadata && hasExtensionUrl(genderMetadata.extension, extensionUrl)) {
             return true;
         }
 
@@ -151,4 +134,14 @@ export class GermanExtensionValidator {
             profileUrl.toLowerCase().includes(pattern)
         );
     }
+}
+
+function hasExtensionUrl(value: unknown, extensionUrl: string): boolean {
+    return Array.isArray(value) && value.some(extension =>
+        isObjectRecord(extension) && extension.url === extensionUrl
+    );
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

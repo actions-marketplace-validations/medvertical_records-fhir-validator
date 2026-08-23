@@ -1,17 +1,8 @@
 import { computeValidationIssueId } from '@records-fhir/validation-types';
 import type { ValidationIssue } from '../types';
-import type { ReferenceResolver } from '../validators/slicing-validator';
 import { BatchValidationAbortedError } from './batch-validator';
 import type { AspectResult, ValidateOneFn } from './multi-aspect-types';
-
-export function combineReferenceResolvers(
-  primary: ReferenceResolver | null,
-  fallback?: ReferenceResolver,
-): ReferenceResolver | null {
-  if (!primary) return fallback ?? null;
-  if (!fallback) return primary;
-  return reference => primary(reference) ?? fallback(reference);
-}
+import { getPrimaryDeclaredProfile } from './declared-profile-utils';
 
 export function attachAppliedProfile(issue: ValidationIssue, appliedProfile: string): ValidationIssue {
   if (issue.profile || !appliedProfile) return issue;
@@ -47,15 +38,11 @@ export async function appendContainedResourceValidationResults(
       if (!candidate || typeof candidate !== 'object') return null;
       const resource = candidate as Record<string, unknown>;
       if (typeof resource.resourceType !== 'string') return null;
-      const declaredProfiles = Array.isArray((resource.meta as { profile?: unknown } | undefined)?.profile)
-        ? ((resource.meta as { profile: unknown[] }).profile)
-          .filter((profile): profile is string => typeof profile === 'string')
-        : [];
       return {
         index,
         resource,
         resourceType: resource.resourceType,
-        profileUrl: declaredProfiles[0]
+        profileUrl: getPrimaryDeclaredProfile(resource)
           ?? `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`,
       };
     })

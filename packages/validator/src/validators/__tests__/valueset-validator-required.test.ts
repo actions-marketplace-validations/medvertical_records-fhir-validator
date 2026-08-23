@@ -1,8 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ValueSetValidator } from '../valueset-validator';
-import { valueSetCache } from '../valueset-cache';
+import { ValueSetValidator as BaseValueSetValidator } from '../valueset-validator';
+import { ValueSetCache } from '../valueset-cache';
 import { getScopedExpansionCacheKey } from '../valueset-server-routing';
 import { DEFAULT_RESOLUTION_CONFIG } from '../valueset-types';
+
+const valueSetCache = new ValueSetCache();
+class ValueSetValidator extends BaseValueSetValidator {
+  constructor() {
+    super(valueSetCache);
+  }
+}
 
 beforeEach(() => {
   valueSetCache.clear();
@@ -178,6 +185,31 @@ describe('ValueSetValidator required primitive bindings', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('accepts the published MII Onkologie CodeSystem predecessor canonical', async () => {
+    const valueSetUrl =
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/ValueSet/mii-vs-systemische-therapie-stellungzurop';
+    const predecessorSystem =
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-therapie-stellungzurop';
+    const currentSystem =
+      'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-onko-therapie-stellungzurop';
+    setExpandedCodes(valueSetUrl, new Set([`${currentSystem}|N`, 'N']));
+
+    const issues = await new ValueSetValidator().validateBinding(
+      {
+        coding: [{
+          system: predecessorSystem,
+          code: 'N',
+          display: 'neoadjuvant',
+        }],
+      },
+      { strength: 'required', valueSet: valueSetUrl },
+      'Procedure.extension.valueCodeableConcept',
+      { fhirVersion: 'R4' },
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
   it('accepts valid R5 Device.name.type codes from versioned package expansion', async () => {
     const validator = new ValueSetValidator();
 
@@ -288,6 +320,44 @@ describe('ValueSetValidator required primitive bindings', () => {
 
     expect(issues).not.toContainEqual(expect.objectContaining({
       code: 'terminology-code-system-version-mismatch',
+    }));
+  });
+
+  it('uses the binding strength for CodeSystem version mismatch severity', async () => {
+    const valueSetUrl = 'http://example.test/ValueSet/versioned-ops-strength';
+    const systemUrl = 'http://fhir.de/CodeSystem/bfarm/ops';
+    valueSetCache.setValueSetFile(valueSetUrl, {
+      resourceType: 'ValueSet',
+      url: valueSetUrl,
+      status: 'active',
+      compose: { include: [{ system: systemUrl, version: '2026' }] },
+    });
+    setExpandedCodes(valueSetUrl, new Set([`${systemUrl}|5-470.0`, '5-470.0']));
+
+    const validate = (strength: 'required' | 'extensible' | 'preferred') =>
+      new ValueSetValidator().validateBinding(
+        {
+          coding: [{
+            system: systemUrl,
+            version: '2020',
+            code: '5-470.0',
+          }],
+        },
+        { strength, valueSet: valueSetUrl },
+        'Procedure.category',
+      );
+
+    await expect(validate('required')).resolves.toContainEqual(expect.objectContaining({
+      code: 'terminology-code-system-version-mismatch',
+      severity: 'error',
+    }));
+    await expect(validate('extensible')).resolves.toContainEqual(expect.objectContaining({
+      code: 'terminology-code-system-version-mismatch',
+      severity: 'warning',
+    }));
+    await expect(validate('preferred')).resolves.toContainEqual(expect.objectContaining({
+      code: 'terminology-code-system-version-mismatch',
+      severity: 'information',
     }));
   });
 

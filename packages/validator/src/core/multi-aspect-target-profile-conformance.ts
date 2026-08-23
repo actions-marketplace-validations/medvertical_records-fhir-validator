@@ -15,12 +15,12 @@ import { createValidationIssue } from '../issues';
  * never produces a warning.
  */
 export async function validateReferenceTargetProfileConformance(params: {
-  resource: any;
+  resource: unknown;
   structureDef: StructureDefinition;
   referenceTargetValidator: ReferenceTargetValidator;
   resolveReference?: ReferenceResolver;
   /** Validate `target` against `profile`; returns the target's own issues. */
-  validateProfile: (target: any, profile: string) => Promise<ValidationIssue[]>;
+  validateProfile: (target: unknown, profile: string) => Promise<ValidationIssue[]>;
 }): Promise<ValidationIssue[]> {
   const { resource, structureDef, referenceTargetValidator, resolveReference, validateProfile } = params;
   if (!resolveReference) return [];
@@ -29,11 +29,19 @@ export async function validateReferenceTargetProfileConformance(params: {
   if (hits.length === 0) return [];
 
   const issues: ValidationIssue[] = [];
-  const resourceType = resource?.resourceType || 'Unknown';
+  const resourceType = isRecord(resource) && typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : 'Unknown';
 
   for (const hit of hits) {
-    const target = resolveReference(hit.reference);
-    if (!target || typeof target.resourceType !== 'string') continue; // unresolvable — fail open
+    let resolvedTarget: unknown;
+    try {
+      resolvedTarget = resolveReference(hit.reference);
+    } catch {
+      continue;
+    }
+    if (!isRecord(resolvedTarget) || typeof resolvedTarget.resourceType !== 'string') continue;
+    const target = resolvedTarget;
 
     const failures: Array<{ profile: string; errorCount: number }> = [];
 
@@ -60,7 +68,9 @@ export async function validateReferenceTargetProfileConformance(params: {
     for (const failure of failures) {
       const { profile, errorCount } = failure;
 
-      const targetLabel = target.id ? `${target.resourceType}/${target.id}` : target.resourceType;
+      const targetLabel = typeof target.id === 'string' && target.id.length > 0
+        ? `${target.resourceType}/${target.id}`
+        : target.resourceType;
       issues.push(createValidationIssue({
         code: 'reference-target-profile-noncompliant',
         path: hit.path,
@@ -85,4 +95,8 @@ export async function validateReferenceTargetProfileConformance(params: {
 function isProfileUnavailable(issue: ValidationIssue): boolean {
   const code = issue.code ?? '';
   return code.includes('profile-not-found') || code === 'internal-error' || code.includes('unsupported');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

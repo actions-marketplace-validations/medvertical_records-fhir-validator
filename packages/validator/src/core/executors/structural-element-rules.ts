@@ -1,7 +1,7 @@
-import type { StructureDefinition } from '../structure-definition-types';
+import type { ElementDefinition, StructureDefinition } from '../structure-definition-types';
 import { extractFixedValue, extractPatternValue, matchesPattern, valuesMatch } from '../../validators/slice-utils';
 
-function elementRuleMatchesValue(elementDef: any, value: any): boolean {
+function elementRuleMatchesValue(elementDef: ElementDefinition, value: unknown): boolean {
   const fixed = extractFixedValue(elementDef);
   if (fixed !== undefined && !valuesMatch(value, fixed)) return false;
 
@@ -12,8 +12,8 @@ function elementRuleMatchesValue(elementDef: any, value: any): boolean {
 }
 
 export function shouldSkipRulesForSiblingSliceTarget(
-  elementDef: any,
-  value: any,
+  elementDef: ElementDefinition,
+  value: unknown,
   structureDef: StructureDefinition,
 ): boolean {
   if (!elementDef.id?.includes(':')) return false;
@@ -29,7 +29,7 @@ export function shouldSkipRulesForSiblingSliceTarget(
   return siblingRuleElements.some(candidate => elementRuleMatchesValue(candidate, value));
 }
 
-export function hasElementDefinitionRules(elementDef: Record<string, unknown>): boolean {
+export function hasElementDefinitionRules(elementDef: ElementDefinition): boolean {
   return Object.keys(elementDef).some((key) =>
     key.startsWith('fixed') ||
     key.startsWith('pattern') ||
@@ -40,7 +40,7 @@ export function hasElementDefinitionRules(elementDef: Record<string, unknown>): 
   );
 }
 
-export function shouldSkipSnapshotElement(elementDef: any, resourceType: string): boolean {
+export function shouldSkipSnapshotElement(elementDef: ElementDefinition, resourceType: string): boolean {
   if (elementDef.sliceName) return true;
   if (typeof elementDef.id === 'string' && elementDef.id.includes(':')) return true;
 

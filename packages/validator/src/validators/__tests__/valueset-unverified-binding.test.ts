@@ -1,10 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ValueSetValidator } from '../valueset-validator';
-import { valueSetCache } from '../valueset-cache';
-
-beforeEach(() => {
-  valueSetCache.clear();
-});
 
 /**
  * Gap P-3: a binding that cannot be expanded locally and is not confirmed by a
@@ -43,6 +38,7 @@ describe('ValueSetValidator unverified bindings (P-3)', () => {
       byReason: {
         'empty-expansion': 1,
         'unsupported-filter': 0,
+        'unenumerable-system-include': 0,
         'unresolvable-snomed-extension-filter': 0,
         'validation-error': 0,
       },
@@ -189,5 +185,48 @@ describe('ValueSetValidator unverified bindings (P-3)', () => {
     } finally {
       internal.resolveCodeBinding = original;
     }
+  });
+
+  it('turns a terminology-server cannot-resolve response into an incomplete warning', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://tx.example/fhir',
+      reportUnverifiedBindings: true,
+      strictUnverifiedRequiredBindings: true,
+      serverDelegation: {
+        expandValueSets: true,
+        validateCodes: true,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+    const apiClient = (validator as unknown as {
+      apiClient: {
+        expandValueSet: (url: string) => Promise<Set<string> | null>;
+        validateCode: () => Promise<boolean>;
+        isValueSetNotResolvable: () => boolean;
+      };
+    }).apiClient;
+    vi.spyOn(apiClient, 'expandValueSet').mockResolvedValue(null);
+    vi.spyOn(apiClient, 'validateCode').mockResolvedValue(true);
+    vi.spyOn(apiClient, 'isValueSetNotResolvable').mockReturnValue(true);
+
+    const issues = await validator.validateBinding(
+      coding,
+      { strength: 'required', valueSet: valueSetUrl },
+      'Observation.code',
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'terminology-binding-unverified',
+        severity: 'warning',
+        details: expect.objectContaining({
+          valueSet: valueSetUrl,
+          validationStatus: 'incomplete',
+        }),
+      }),
+    ]);
   });
 });

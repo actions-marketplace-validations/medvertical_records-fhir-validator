@@ -5,39 +5,39 @@
  * such as data-absent-reason.
  */
 
+import {
+  findChoiceSidecarProperty,
+  findConcreteChoiceProperty,
+} from './fhir-choice-property';
+
 const PRIMITIVE_SIDECAR_VALUE = Symbol.for('records.fhirPrimitiveSidecarValue');
 const PRIMITIVE_SIDECAR_TYPE = Symbol.for('records.fhirPrimitiveSidecarType');
-const primitiveSidecarValues = new WeakSet<object>();
-const primitiveSidecarTypes = new WeakMap<object, string>();
 
 export function isResolvedPrimitiveSidecarValue(value: unknown): boolean {
   return Boolean(
     value &&
     typeof value === 'object' &&
-    (
-      primitiveSidecarValues.has(value) ||
-      (value as Record<PropertyKey, unknown>)[PRIMITIVE_SIDECAR_VALUE] === true
-    ),
+    (value as Record<PropertyKey, unknown>)[PRIMITIVE_SIDECAR_VALUE] === true,
   );
 }
 
 export function getResolvedPrimitiveSidecarType(value: unknown): string | undefined {
   if (!isResolvedPrimitiveSidecarValue(value)) return undefined;
   if (!value || typeof value !== 'object') return undefined;
-  return primitiveSidecarTypes.get(value) ||
-    ((value as Record<PropertyKey, unknown>)[PRIMITIVE_SIDECAR_TYPE] as string | undefined);
+  const markedType = (value as Record<PropertyKey, unknown>)[PRIMITIVE_SIDECAR_TYPE];
+  return typeof markedType === 'string' ? markedType : undefined;
 }
 
-export function getPrimitiveSidecar(container: any, key: string): any | undefined {
-  if (!container || typeof container !== 'object' || Array.isArray(container)) return undefined;
+export function getPrimitiveSidecar(container: unknown, key: string): unknown {
+  if (!isObjectRecord(container)) return undefined;
   if (!key || key.startsWith('_')) return undefined;
 
   const sidecar = container[`_${key}`];
   return buildMeaningfulPrimitiveSidecarValue(sidecar);
 }
 
-export function resolveFhirSegmentValue(container: any, segment: string): any {
-  if (!container || typeof container !== 'object') return undefined;
+export function resolveFhirSegmentValue(container: unknown, segment: string): unknown {
+  if (!isObjectRecord(container)) return undefined;
 
   const direct = container[segment];
   if (direct !== undefined) return direct;
@@ -49,15 +49,11 @@ export function resolveFhirSegmentValue(container: any, segment: string): any {
   return getPrimitiveSidecar(container, segment);
 }
 
-function resolveChoiceSegmentValue(container: any, baseName: string): any {
-  const directChoiceKey = Object.keys(container).find(
-    key => key.startsWith(baseName) && key !== baseName && !key.startsWith('_'),
-  );
+function resolveChoiceSegmentValue(container: Record<string, unknown>, baseName: string): unknown {
+  const directChoiceKey = findConcreteChoiceProperty(container, baseName);
   if (directChoiceKey) return container[directChoiceKey];
 
-  const sidecarChoiceKey = Object.keys(container).find(
-    key => key.startsWith(`_${baseName}`) && key.length > baseName.length + 1,
-  );
+  const sidecarChoiceKey = findChoiceSidecarProperty(container, baseName);
   if (!sidecarChoiceKey) return undefined;
 
   const sidecar = container[sidecarChoiceKey];
@@ -66,13 +62,13 @@ function resolveChoiceSegmentValue(container: any, baseName: string): any {
   return isMeaningfulPrimitiveSidecar(sidecar) ? markPrimitiveSidecarValue(sidecar, primitiveType) : undefined;
 }
 
-function isMeaningfulPrimitiveSidecar(sidecar: any): boolean {
-  if (!sidecar || typeof sidecar !== 'object' || Array.isArray(sidecar)) return false;
+function isMeaningfulPrimitiveSidecar(sidecar: unknown): boolean {
+  if (!isObjectRecord(sidecar)) return false;
   if (typeof sidecar.id === 'string' && sidecar.id.length > 0) return true;
   return Array.isArray(sidecar.extension) && sidecar.extension.length > 0;
 }
 
-function buildMeaningfulPrimitiveSidecarValue(sidecar: any): any | undefined {
+function buildMeaningfulPrimitiveSidecarValue(sidecar: unknown): unknown {
   if (Array.isArray(sidecar)) {
     const meaningfulItems = sidecar
       .filter(isMeaningfulPrimitiveSidecar)
@@ -89,24 +85,33 @@ function primitiveTypeFromChoiceKey(concreteKey: string, baseName: string): stri
   return suffix.charAt(0).toLowerCase() + suffix.slice(1);
 }
 
-function markPrimitiveSidecarValue(sidecar: any, primitiveType?: string): any {
+function markPrimitiveSidecarValue(sidecar: unknown, primitiveType?: string): unknown {
   if (!sidecar || typeof sidecar !== 'object') return sidecar;
-  if (primitiveType) primitiveSidecarTypes.set(sidecar, primitiveType);
-  if (isResolvedPrimitiveSidecarValue(sidecar)) return sidecar;
-  primitiveSidecarValues.add(sidecar);
-  if (!Object.isExtensible(sidecar)) return sidecar;
+  if (
+    isResolvedPrimitiveSidecarValue(sidecar) &&
+    (!primitiveType || getResolvedPrimitiveSidecarType(sidecar) === primitiveType)
+  ) return sidecar;
 
-  Object.defineProperty(sidecar, PRIMITIVE_SIDECAR_VALUE, {
+  // Never mutate the caller's FHIR resource just to carry traversal metadata.
+  // A shallow representation is sufficient: consumers need the sidecar's
+  // `id`/`extension` values and the non-enumerable marker, not object identity.
+  const marked = Array.isArray(sidecar) ? [...sidecar] : { ...sidecar };
+
+  Object.defineProperty(marked, PRIMITIVE_SIDECAR_VALUE, {
     value: true,
     enumerable: false,
     configurable: false,
   });
   if (primitiveType) {
-    Object.defineProperty(sidecar, PRIMITIVE_SIDECAR_TYPE, {
+    Object.defineProperty(marked, PRIMITIVE_SIDECAR_TYPE, {
       value: primitiveType,
       enumerable: false,
       configurable: false,
     });
   }
-  return sidecar;
+  return marked;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

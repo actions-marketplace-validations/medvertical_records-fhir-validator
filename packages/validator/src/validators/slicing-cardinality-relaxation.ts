@@ -3,13 +3,13 @@ import type { SliceDefinition } from './slice-types';
 import { getValueAtPath, matchesPattern } from './slice-utils';
 
 type DiscriminatorMatcher = (
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   discriminator: SlicingDiscriminator,
 ) => boolean;
 
 export function isRelaxedCodingIdentityCardinalityMatch(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   discriminators: SlicingDiscriminator[],
   matchDiscriminator: DiscriminatorMatcher,
@@ -28,7 +28,7 @@ export function isRelaxedCodingIdentityCardinalityMatch(
 }
 
 function isCodingIdentityRelaxedPatternMatch(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   discriminator: SlicingDiscriminator,
 ): boolean {
@@ -42,7 +42,7 @@ function isCodingIdentityRelaxedPatternMatch(
   return codingIdentityMatchesPattern(elementValue, slice.pattern);
 }
 
-function codingIdentityMatchesPattern(elementValue: any, patternValue: any): boolean {
+function codingIdentityMatchesPattern(elementValue: unknown, patternValue: unknown): boolean {
   if (!isRecord(elementValue) || !isRecord(patternValue)) return false;
   if (typeof patternValue.system !== 'string' || typeof patternValue.code !== 'string') {
     return false;
@@ -50,6 +50,6 @@ function codingIdentityMatchesPattern(elementValue: any, patternValue: any): boo
   return elementValue.system === patternValue.system && elementValue.code === patternValue.code;
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

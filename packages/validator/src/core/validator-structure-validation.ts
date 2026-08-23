@@ -1,34 +1,28 @@
 import type { ValidationIssue } from '../types';
 import { logger } from '../logger';
-import { getValueAtPath, createValidationErrorIssue } from './validation-utils';
-import { loadProfileWithSnapshot } from './profile-loader-utils';
-import type { StructureDefinitionLoader } from './structure-definition-loader';
-import type { ProfileCache } from '../cache/profile-cache';
-import type { SnapshotGenerator } from './snapshot-generator';
-import type { StructuralExecutor } from './executors';
+import { createValidationErrorIssue } from './validation-utils';
 import type { QuestionnaireContextRegistry } from './questionnaire-context-registry';
-import {
-  createProfileResourceTypeMismatchIssue,
-  getIncompatibleProfileResourceType,
-} from './profile-resource-type';
 import { withIssuesSchemaVersion } from './issue-schema-version';
+import { getDeclaredProfiles } from './declared-profile-utils';
+import { createSafeValidationFailureMessage } from '../utils/validation-execution-failure';
+import { isFhirResource, type FhirResource } from './fhir-resource';
+import {
+  validateStructureProfile,
+  type StructureProfileValidationDeps,
+} from './structure-profile-validation';
 
-interface ValidateStructureDeps {
-  sdLoader: StructureDefinitionLoader;
-  profileCache: ProfileCache;
-  snapshotGenerator: SnapshotGenerator;
-  structuralExecutor: StructuralExecutor;
+interface ValidateStructureDeps extends StructureProfileValidationDeps {
   questionnaireRegistry: QuestionnaireContextRegistry;
   maxBundleEntryDepth: number;
   validateBundleEntries(
-    bundle: any,
+    bundle: FhirResource,
     fhirVersion: 'R4' | 'R5' | 'R6',
     recursionDepth: number
   ): Promise<ValidationIssue[]>;
 }
 
 export async function validateResourceStructure(
-  resource: any,
+  resource: unknown,
   fhirVersion: 'R4' | 'R5' | 'R6',
   recursionDepth: number,
   deps: ValidateStructureDeps
@@ -37,19 +31,15 @@ export async function validateResourceStructure(
   const issues: ValidationIssue[] = [];
 
   try {
-    if (!resource.resourceType) {
-      return withIssuesSchemaVersion([{
-        id: `records-missing-resourcetype-${Date.now()}`,
-        aspect: 'structural',
-        severity: 'error',
-        code: 'missing-resourcetype',
-        message: 'Resource is missing resourceType field',
-        path: '',
-        timestamp: new Date()
-      }], fhirVersion);
+    if (!isFhirResource(resource)) {
+      return withIssuesSchemaVersion([createValidationErrorIssue(
+        'structural',
+        'missing-resourcetype',
+        'Resource is missing resourceType field',
+      )], fhirVersion);
     }
 
-    const declaredProfiles = resource.meta?.profile || [];
+    const declaredProfiles = getDeclaredProfiles(resource);
     const baseUrl = `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`;
     const profilesToValidate = declaredProfiles.length > 0 ? declaredProfiles : [baseUrl];
 
@@ -65,74 +55,18 @@ export async function validateResourceStructure(
     logger.debug(`[RecordsValidator] Validated structure in ${validationTime}ms (${issues.length} issues)`);
 
     return withIssuesSchemaVersion(issues, fhirVersion);
-  } catch (error) {
-    logger.error('[RecordsValidator] Structure validation error:', error);
+  } catch {
+    logger.error('[RecordsValidator] Structure validation failed');
     return withIssuesSchemaVersion([createValidationErrorIssue(
       'structural',
       'validation-error',
-      `Structure validation failed: ${error instanceof Error ? error.message : String(error)}`
+      createSafeValidationFailureMessage('Structure validation'),
     )], fhirVersion);
   }
 }
 
-async function validateStructureProfile(
-  resource: any,
-  profileUrl: string,
-  fhirVersion: 'R4' | 'R5' | 'R6',
-  deps: ValidateStructureDeps
-): Promise<ValidationIssue[]> {
-  logger.debug(`[RecordsValidator]   - Checking profile: ${profileUrl}`);
-
-  const loadedStructureDef = await loadProfileWithSnapshot(
-    deps.sdLoader,
-    deps.profileCache,
-    deps.snapshotGenerator,
-    profileUrl,
-    fhirVersion
-  );
-
-  if (!loadedStructureDef) {
-    logger.warn(`[RecordsValidator] Failed to load profile: ${profileUrl}`);
-    return [];
-  }
-
-  if (!loadedStructureDef.snapshot?.element) {
-    return [];
-  }
-
-  const incompatibleProfileType = getIncompatibleProfileResourceType(
-    loadedStructureDef,
-    resource.resourceType,
-  );
-  if (incompatibleProfileType) {
-    return [
-      createProfileResourceTypeMismatchIssue(
-        profileUrl,
-        resource.resourceType,
-        incompatibleProfileType,
-      ),
-    ];
-  }
-
-  const requiredFieldIssues = await deps.structuralExecutor.validateRequiredFields(
-    resource,
-    loadedStructureDef,
-    profileUrl,
-    getValueAtPath,
-    fhirVersion
-  );
-  const { validateChoiceTypeProperties } = await import(
-    '../validators/choice-type-property-validator.js'
-  );
-
-  return [
-    ...requiredFieldIssues,
-    ...validateChoiceTypeProperties(resource, loadedStructureDef),
-  ];
-}
-
 async function validatePostStructureRules(
-  resource: any,
+  resource: FhirResource,
   fhirVersion: 'R4' | 'R5' | 'R6',
   recursionDepth: number,
   deps: ValidateStructureDeps
@@ -149,8 +83,7 @@ async function validatePostStructureRules(
   ];
 
   if (resource.resourceType === 'Bundle') {
-    const { bundleValidator } = await import('../validators/bundle-validator.js');
-    issues.push(...await bundleValidator.validateBundle(resource));
+    issues.push(...await deps.structuralExecutor.validateBundle(resource));
 
     if (recursionDepth < deps.maxBundleEntryDepth) {
       issues.push(...await deps.validateBundleEntries(resource, fhirVersion, recursionDepth + 1));

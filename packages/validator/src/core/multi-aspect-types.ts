@@ -4,6 +4,7 @@ import type { StructureDefinition } from './structure-definition-types';
 export interface AspectResult {
   aspect: string;
   issues: ValidationIssue[];
+  evidenceIssues?: ValidationIssue[];
   validationTime: number;
   isValid: boolean;
 }

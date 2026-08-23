@@ -64,7 +64,8 @@ export function buildTerminologyResolutionConfig(settings: ValidationSettings): 
       ...settings.terminologyResolution?.serverDelegation,
     },
     twoPhaseExpansion: settings.terminologyResolution?.twoPhaseExpansion,
-    reportUnverifiedBindings: settings.terminologyResolution?.reportUnverifiedBindings,
-    strictUnverifiedRequiredBindings: settings.terminologyResolution?.strictUnverifiedRequiredBindings,
+    reportUnverifiedBindings: settings.terminologyResolution?.reportUnverifiedBindings ?? true,
+    strictUnverifiedRequiredBindings:
+      settings.terminologyResolution?.strictUnverifiedRequiredBindings ?? true,
   };
 }

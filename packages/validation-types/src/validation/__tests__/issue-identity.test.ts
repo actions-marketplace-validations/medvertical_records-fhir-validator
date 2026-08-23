@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   computeValidationIssueId,
   normalizeCanonicalPath,
+  normalizeMessageText,
+  removeAsciiControlCharacters,
 } from '../index';
 
 describe('validation issue identity', () => {
@@ -17,6 +19,18 @@ describe('validation issue identity', () => {
   it('normalizes FHIR choice placeholders for canonical identity', () => {
     expect(normalizeCanonicalPath('Observation.effective[x]')).toEqual({
       normalized: 'observation.effective',
+      truncated: false,
+    });
+  });
+
+  it('removes ASCII control characters consistently from paths and messages', () => {
+    expect(removeAsciiControlCharacters('A\u0000B\u007fC')).toBe('ABC');
+    expect(normalizeCanonicalPath('\tPatient.\nname\u0000')).toEqual({
+      normalized: 'patient.name',
+      truncated: false,
+    });
+    expect(normalizeMessageText('  Invalid\n\tname\u007f  ')).toEqual({
+      normalized: 'invalid name',
       truncated: false,
     });
   });

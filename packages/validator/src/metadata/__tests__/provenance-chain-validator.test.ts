@@ -74,6 +74,18 @@ describe('validateProvenanceChain', () => {
         expect(uuid).toHaveLength(0);
     });
 
+    it('uses the shared reference policy for contained and conditional references', () => {
+        const issues = validateProvenanceChain({
+            ...VALID_PROVENANCE,
+            target: [
+                { reference: '#embedded' },
+                { reference: 'Patient?identifier=https://example.org|123' },
+            ],
+        });
+
+        expect(issues).toHaveLength(0);
+    });
+
     it('accepts target with identifier instead of reference', () => {
         const issues = validateProvenanceChain({
             ...VALID_PROVENANCE,
@@ -107,6 +119,30 @@ describe('validateProvenanceChain', () => {
             recorded: '2026-04-08',
         });
         expect(dateOnly.map(i => i.code)).toContain('provenance-invalid-recorded');
+    });
+
+    it('rejects calendar-invalid instants and invalid timezone offsets', () => {
+        for (const recorded of [
+            '2026-02-31T10:00:00Z',
+            '2026-04-08T25:00:00Z',
+            '2026-04-08T10:00:00+14:30',
+        ]) {
+            const issues = validateProvenanceChain({
+                ...VALID_PROVENANCE,
+                recorded,
+            });
+            expect(issues.map(i => i.code)).toContain('provenance-invalid-recorded');
+        }
+    });
+
+    it('accepts a FHIR leap second and keeps temporal comparison deterministic', () => {
+        const validLeapSecond = validateProvenanceChain({
+            ...VALID_PROVENANCE,
+            recorded: '2016-12-31T23:59:60Z',
+            occurredDateTime: '2016-12-31T23:59:59Z',
+        });
+        expect(validLeapSecond.map(i => i.code)).not.toContain('provenance-invalid-recorded');
+        expect(validLeapSecond.map(i => i.code)).not.toContain('provenance-recorded-before-event');
     });
 
     it('requires at least one agent with identifiable who', () => {
@@ -173,5 +209,53 @@ describe('validateProvenanceChain', () => {
         expect(issues.map(i => i.code)).toContain(
             'provenance-agent-malformed-reference',
         );
+    });
+
+    it('does not treat malformed or empty identifiers as logical references', () => {
+        const targetIssues = validateProvenanceChain({
+            ...VALID_PROVENANCE,
+            target: [{ identifier: {} }, { identifier: 'patient-1' }],
+        });
+        expect(
+            targetIssues.filter(i => i.code === 'provenance-target-missing-reference'),
+        ).toHaveLength(2);
+
+        const agentIssues = validateProvenanceChain({
+            ...VALID_PROVENANCE,
+            agent: [{ who: { identifier: [] } }, { who: { identifier: false } }],
+        });
+        expect(
+            agentIssues.filter(i => i.code === 'provenance-agent-missing-who'),
+        ).toHaveLength(2);
+    });
+
+    it('handles malformed target, agent, and recorded values without throwing', () => {
+        const issues = validateProvenanceChain({
+            ...VALID_PROVENANCE,
+            target: [null, [], 'Patient/example'],
+            agent: [null, [], 'Practitioner/42'],
+            recorded: Symbol('invalid'),
+        });
+
+        expect(
+            issues.filter(i => i.code === 'provenance-target-invalid'),
+        ).toHaveLength(3);
+        expect(
+            issues.filter(i => i.code === 'provenance-agent-missing-who'),
+        ).toHaveLength(3);
+        expect(issues.map(i => i.code)).toContain('provenance-invalid-recorded');
+    });
+
+    it('creates deterministic IDs and distinguishes findings at different paths', () => {
+        const resource = {
+            ...VALID_PROVENANCE,
+            target: [{}, {}],
+        };
+
+        const first = validateProvenanceChain(resource);
+        const second = validateProvenanceChain(resource);
+
+        expect(first.map(i => i.id)).toEqual(second.map(i => i.id));
+        expect(new Set(first.map(i => i.id)).size).toBe(first.length);
     });
 });

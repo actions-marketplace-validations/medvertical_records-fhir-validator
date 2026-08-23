@@ -5,12 +5,12 @@ import {
 } from './slice-utils';
 
 export function matchResolvedTypeDiscriminator(
-  resolvedElement: any,
+  resolvedElement: unknown,
   slice: SliceDefinition,
   remainder: string,
   allSlices?: SliceDefinition[],
 ): boolean {
-  if (!resolvedElement || typeof resolvedElement !== 'object') return false;
+  if (!isRecord(resolvedElement)) return false;
 
   if (remainder) {
     const ofTypeMatch = remainder.match(/^ofType\(([^)]+)\)$/);
@@ -22,7 +22,8 @@ export function matchResolvedTypeDiscriminator(
 
   const targetProfiles = typeSpecs.flatMap(spec => spec.targetProfile ?? []);
   if (targetProfiles.length > 0) {
-    const profiles = toProfileArray(resolvedElement.meta?.profile);
+    const meta = isRecord(resolvedElement.meta) ? resolvedElement.meta : null;
+    const profiles = toProfileArray(meta?.profile);
     if (profiles.some(profile => profileListContains(targetProfiles, profile))) return true;
 
     const allowedTargetTypes = new Set(targetProfiles.map(profileToResourceType).filter(Boolean));
@@ -40,7 +41,7 @@ export function matchResolvedTypeDiscriminator(
     allowedTypeCodes.includes(resolvedElement.resourceType);
 }
 
-export function matchTypeDiscriminator(element: any, slice: SliceDefinition, path: string): boolean {
+export function matchTypeDiscriminator(element: unknown, slice: SliceDefinition, path: string): boolean {
   const value = getValueAtPath(element, path);
   if (value === null || value === undefined) return false;
 
@@ -69,7 +70,7 @@ export function stripCanonicalVersion(profile: string): string {
   return profile.split('|')[0] ?? profile;
 }
 
-function typeCodeMatchesValue(expectedType: string | undefined, inferredType: string, value: any): boolean {
+export function typeCodeMatchesValue(expectedType: string | undefined, inferredType: string, value: unknown): boolean {
   if (!expectedType) return false;
   if (expectedType === inferredType) return true;
 
@@ -81,7 +82,7 @@ function typeCodeMatchesValue(expectedType: string | undefined, inferredType: st
     return true;
   }
 
-  if (value && typeof value === 'object' && typeof value.resourceType === 'string') {
+  if (isRecord(value) && typeof value.resourceType === 'string') {
     return expectedType === value.resourceType;
   }
 
@@ -91,10 +92,30 @@ function typeCodeMatchesValue(expectedType: string | undefined, inferredType: st
   if (expectedType === 'Coding' && isCodingLike(value)) {
     return true;
   }
+  // Complex datatypes carry no runtime type marker, so closed value[x]
+  // slicings (e.g. eu-lab Observation.value[x]) must recognise them by shape
+  // or every Ratio/Range/SampledData value fails the whole slicing.
+  if (expectedType === 'Ratio' && isShapedLike(value, RATIO_KEYS, ['numerator', 'denominator'])) {
+    return true;
+  }
+  if (expectedType === 'Range' && isShapedLike(value, RANGE_KEYS, ['low', 'high'])) {
+    return true;
+  }
+  if (expectedType === 'SampledData' && isShapedLike(value, SAMPLED_DATA_KEYS, ['origin', 'period', 'dimensions'])) {
+    return true;
+  }
+  // Identifier is only inferable when both system and value are present, but
+  // real instances (e.g. BALP ihe-otherId) legally carry type+value alone —
+  // without shape matching those fail closed valueIdentifier slicings.
+  if (expectedType === 'Identifier' && isIdentifierLike(value)) {
+    return true;
+  }
 
   if (isExtensionOnlyObject(value) && !PRIMITIVE_TYPE_CODES.has(expectedType)) {
     return true;
   }
+
+  if (typeof value === 'number') return numericTypeCodeMatches(expectedType, value);
 
   if (typeof value !== 'string') return false;
   switch (expectedType) {
@@ -116,6 +137,26 @@ function typeCodeMatchesValue(expectedType: string | undefined, inferredType: st
     case 'oid':
     case 'uuid':
       return inferredType === 'string';
+    default:
+      return false;
+  }
+}
+
+// JSON numbers carry no FHIR type marker and inferType can only say
+// integer/decimal, so the integer family (unsignedInt/positiveInt/integer64)
+// must be recognised by value shape — otherwise closed value[x] slicings like
+// PoCD operating-hours valueUnsignedInt are unmatchable.
+function numericTypeCodeMatches(expectedType: string, value: number): boolean {
+  switch (expectedType) {
+    case 'decimal':
+      return true;
+    case 'integer':
+    case 'integer64':
+      return Number.isInteger(value);
+    case 'unsignedInt':
+      return Number.isInteger(value) && value >= 0;
+    case 'positiveInt':
+      return Number.isInteger(value) && value >= 1;
     default:
       return false;
   }
@@ -199,6 +240,17 @@ function isCodingLike(value: unknown): boolean {
   return ['system', 'version', 'code', 'display', 'userSelected'].some(key => key in value);
 }
 
+function isIdentifierLike(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (!keys.every(key => IDENTIFIER_KEYS.has(key))) return false;
+
+  // Identifier.value is a string; a numeric `value` indicates Quantity-shaped
+  // data that must not satisfy an Identifier slice.
+  if (value.value !== undefined && typeof value.value !== 'string') return false;
+  return ['use', 'type', 'system', 'value', 'period', 'assigner'].some(key => value[key] !== undefined);
+}
+
 function isQuantityLike(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const keys = Object.keys(value);
@@ -210,10 +262,29 @@ function isQuantityLike(value: unknown): boolean {
     typeof value.code === 'string';
 }
 
-function isRecord(value: unknown): value is Record<string, any> {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isShapedLike(
+  value: unknown,
+  allowedKeys: Set<string>,
+  identifyingKeys: string[],
+): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (!keys.every(key => allowedKeys.has(key))) return false;
+  return identifyingKeys.some(key => value[key] !== undefined);
 }
 
 const CODEABLE_CONCEPT_KEYS = new Set(['id', 'extension', 'coding', 'text']);
 const CODING_KEYS = new Set(['id', 'extension', 'system', 'version', 'code', 'display', 'userSelected']);
 const QUANTITY_KEYS = new Set(['id', 'extension', 'value', 'comparator', 'unit', 'system', 'code']);
+const IDENTIFIER_KEYS = new Set([
+  'id', 'extension', 'use', '_use', 'type', 'system', '_system', 'value', '_value', 'period', 'assigner',
+]);
+const RATIO_KEYS = new Set(['id', 'extension', 'numerator', 'denominator']);
+const RANGE_KEYS = new Set(['id', 'extension', 'low', 'high']);
+const SAMPLED_DATA_KEYS = new Set([
+  'id', 'extension', 'origin', 'period', 'factor', 'lowerLimit', 'upperLimit', 'dimensions', 'data', '_data',
+]);

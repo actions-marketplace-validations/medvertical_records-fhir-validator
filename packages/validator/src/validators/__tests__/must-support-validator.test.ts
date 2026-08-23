@@ -56,4 +56,56 @@ describe('MustSupportValidator', () => {
       expect.objectContaining({ code: 'profile-mustsupport-missing', path: 'Patient.identifier' }),
     ]));
   });
+
+  it('does not treat empty malformed arrays as encounter reason context', () => {
+    const issues = validator.validateMustSupportElement(
+      'Encounter.reasonCode',
+      'http://example.org/StructureDefinition/encounter',
+      {
+        resourceType: 'Encounter',
+        type: [null, {}],
+        diagnosis: [],
+      },
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'profile-mustsupport-missing',
+        path: 'Encounter.reasonCode',
+      }),
+    ]);
+  });
+
+  it('handles malformed component entries without throwing', () => {
+    const issues = validator.validateMustSupportElement(
+      'Observation.component.value[x]',
+      'http://example.org/StructureDefinition/observation',
+      {
+        resourceType: 'Observation',
+        component: [null, 42, {}],
+      },
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'profile-mustsupport-missing',
+        path: 'Observation.component.value[x]',
+      }),
+    ]);
+  });
+
+  it('reports malformed resources without throwing', () => {
+    const issues = validator.validateMustSupportElement(
+      'Patient.identifier',
+      'http://example.org/StructureDefinition/patient',
+      null,
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'profile-mustsupport-missing',
+        path: 'Patient.identifier',
+      }),
+    ]);
+  });
 });

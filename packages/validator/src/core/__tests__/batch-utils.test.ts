@@ -63,15 +63,19 @@ describe('deduplicateResources', () => {
   });
 
   it('treats objects with different property order as identical', () => {
-    // JSON.stringify preserves insertion order, so {a:1, b:2} !== {b:2, a:1}.
-    // The implementation uses JSON.stringify which IS order-sensitive.
     const r1 = { id: '1', resourceType: 'Patient' };
-    const r2 = { id: '1', resourceType: 'Patient' };
+    const r2 = { resourceType: 'Patient', id: '1' };
 
     const { unique } = deduplicateResources([r1, r2]);
 
-    // Both have same key order → same hash → deduplicated
     expect(unique).toHaveLength(1);
+  });
+
+  it('handles cyclic object graphs without crashing the batch boundary', () => {
+    const resource: Record<string, unknown> = { resourceType: 'Patient', id: '1' };
+    resource.self = resource;
+
+    expect(deduplicateResources([resource]).unique).toEqual([resource]);
   });
 
   it('returns all resources as unique when none are duplicates', () => {
@@ -121,6 +125,19 @@ describe('groupResourcesByProfile', () => {
     expect(groups.size).toBe(2);
     expect(groups.get('http://example.org/Patient')).toHaveLength(1);
     expect(groups.get('http://example.org/OtherPatient')).toHaveLength(1);
+  });
+
+  it('groups by a scalar meta.profile canonical without using its first character', () => {
+    const canonical = 'http://example.org/ScalarPatient';
+    const resource = {
+      resourceType: 'Patient',
+      meta: { profile: canonical },
+    };
+
+    const groups = groupResourcesByProfile([resource]);
+
+    expect(groups.get(canonical)).toEqual([resource]);
+    expect(groups.has(canonical[0])).toBe(false);
   });
 
   it('falls back to base FHIR definition when no meta.profile declared', () => {

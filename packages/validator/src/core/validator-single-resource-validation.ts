@@ -1,159 +1,55 @@
-import type { ValidationIssue, ValidationSettings } from '../types';
-import type { ProfileCache } from '../cache/profile-cache';
-import type { BestPracticeValidator } from '../validators/best-practice-validator';
+import type { ValidationIssue } from '../types';
 import { logger } from '../logger';
-import type { StructureDefinitionLoader } from './structure-definition-loader';
-import type { SnapshotGenerator } from './snapshot-generator';
-import type { QuestionnaireContextRegistry } from './questionnaire-context-registry';
-import {
-  createProfileFallbackIssue,
-  createProfileResourceTypeMismatchIssue,
-  loadProfileOrBase,
-  type FhirClientLike,
-} from './profile-loader-utils';
-import {
-  CustomRuleExecutor,
-  InvariantExecutor,
-  MetadataExecutor,
-  ProfileExecutor,
-  ReferenceExecutor,
-  StructuralExecutor,
-  TerminologyExecutor,
-} from './executors';
-import { createValidationErrorIssue, dedupeResourceTreeIssues } from './validation-utils';
-import { collectSingleResourceValidationIssues } from './single-resource-validation';
-import type { ReferenceResolver } from '../validators/slicing-validator';
+import { createValidationErrorIssue } from './validation-utils';
 import { withIssuesSchemaVersion } from './issue-schema-version';
-import { inferCodeBasedProfiles } from './code-inferred-profiles';
-
-interface RecordsSingleResourceValidationInput {
-  resource: any;
-  profileUrl?: string;
-  fhirVersion: 'R4' | 'R5' | 'R6';
-  settings?: ValidationSettings;
-  fhirClient?: FhirClientLike;
-  referenceResolver?: ReferenceResolver | null;
-  organizationId?: number;
-  serverId?: number;
-}
-
-interface RecordsSingleResourceValidationContext {
-  sdLoader: StructureDefinitionLoader;
-  profileCache: ProfileCache;
-  snapshotGenerator: SnapshotGenerator;
-  structuralExecutor: StructuralExecutor;
-  profileExecutor: ProfileExecutor;
-  terminologyExecutor: TerminologyExecutor;
-  invariantExecutor: InvariantExecutor;
-  customRuleExecutor: CustomRuleExecutor;
-  metadataExecutor: MetadataExecutor;
-  referenceExecutor: ReferenceExecutor;
-  bestPracticeValidator: BestPracticeValidator;
-  questionnaireRegistry?: QuestionnaireContextRegistry;
-  strictMode: boolean;
-  validateBundleEntriesIfNeeded(resource: any, fhirVersion: 'R4' | 'R5' | 'R6'): Promise<ValidationIssue[]>;
-  validateContainedResourcesIfNeeded(resource: any): Promise<ValidationIssue[]>;
-}
+import {
+  createSafeValidationFailureMessage,
+  validationFailureMetadata,
+} from '../utils/validation-execution-failure';
+import {
+  executeRecordsResourceValidation,
+  type RecordsSingleResourceValidationContext,
+  type RecordsSingleResourceValidationInput,
+} from './validator-single-resource-pipeline';
 
 export async function validateRecordsResource(
   input: RecordsSingleResourceValidationInput,
   context: RecordsSingleResourceValidationContext,
 ): Promise<ValidationIssue[]> {
-  const { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver, organizationId, serverId } = input;
+  const {
+    resource,
+    profileUrl,
+    fhirVersion,
+    settings,
+    fhirClient,
+    referenceResolver,
+    organizationId,
+    serverId,
+  } = input;
   const startTime = Date.now();
+  const executionInput: RecordsSingleResourceValidationInput = {
+    resource,
+    profileUrl,
+    fhirVersion,
+    settings,
+    fhirClient,
+    referenceResolver,
+    organizationId,
+    serverId,
+  };
 
   try {
-    const profileSourceContext = { organizationId, serverId, fhirVersion };
-    context.sdLoader.setProfileResolutionContext(profileSourceContext, settings);
-    const declaredProfileUrl =
-      profileUrl ??
-      resource.meta?.profile?.[0] ??
-      inferCodeBasedProfiles(resource)[0] ??
-      `http://hl7.org/fhir/StructureDefinition/${resource.resourceType}`;
-
-    logger.debug(`[RecordsValidator] Validating ${resource.resourceType} against ${declaredProfileUrl}`);
-
-    const loadResult = await loadProfileOrBase(
-      context.sdLoader,
-      context.snapshotGenerator,
-      declaredProfileUrl,
-      resource.resourceType,
-      fhirVersion,
-      context.profileCache,
-      fhirClient,
-      profileSourceContext,
-      settings,
-    );
-    const structureDef = loadResult.structureDef;
-
-    if (!structureDef) {
-      return withIssuesSchemaVersion([createValidationErrorIssue(
-        'profile',
-        'profile-not-found',
-        `Profile ${declaredProfileUrl} not found and base StructureDefinition for ${resource.resourceType} could not be loaded`,
-        { profile: declaredProfileUrl },
-        'meta.profile',
-      )], fhirVersion);
-    }
-
-    const profileFallbackIssue: ValidationIssue | null = loadResult.incompatibleProfileType
-      ? createProfileResourceTypeMismatchIssue(
-        declaredProfileUrl,
-        resource.resourceType,
-        loadResult.incompatibleProfileType,
-      )
-      : loadResult.usedBaseFallback
-        ? createProfileFallbackIssue(declaredProfileUrl, resource.resourceType, context.sdLoader)
-        : null;
-    const contextQuestionnaire = resource.resourceType === 'QuestionnaireResponse'
-      ? context.questionnaireRegistry?.resolveForResponse(resource)
-      : undefined;
-
-    let issues = await collectSingleResourceValidationIssues(
-      {
-        resource,
-        profileUrl: declaredProfileUrl,
-        fhirVersion,
-        structureDef,
-        strictMode: context.strictMode,
-        settings,
-        profileFallbackIssue,
-        contextQuestionnaire,
-        referenceResolver,
-        organizationId,
-      },
-      {
-        structuralExecutor: context.structuralExecutor,
-        profileExecutor: context.profileExecutor,
-        terminologyExecutor: context.terminologyExecutor,
-        invariantExecutor: context.invariantExecutor,
-        customRuleExecutor: context.customRuleExecutor,
-        metadataExecutor: context.metadataExecutor,
-        referenceExecutor: context.referenceExecutor,
-        bestPracticeValidator: context.bestPracticeValidator,
-        validateBundleEntriesIfNeeded: context.validateBundleEntriesIfNeeded,
-      },
-    );
-    issues.push(...await context.validateContainedResourcesIfNeeded(resource));
-    // Contained resources are validated recursively after the parent issue
-    // collection has already been deduplicated. Run the same canonical
-    // deduplication once more at the complete-resource boundary so an issue
-    // reported through both paths is returned exactly once.
-    issues = dedupeResourceTreeIssues(issues);
-
-    const validationTime = Date.now() - startTime;
-    logger.debug(
-      `[RecordsValidator] Validated ${resource.resourceType} in ${validationTime}ms ` +
-      `(${issues.length} issues - extensions, slicing, bindings, constraints checked)`,
-    );
-
+    const issues = await executeRecordsResourceValidation(executionInput, context, startTime);
     return withIssuesSchemaVersion(issues, fhirVersion);
   } catch (error) {
-    logger.error('[RecordsValidator] Validation error:', error);
+    logger.error(
+      '[RecordsValidator] Validation failed',
+      validationFailureMetadata(error),
+    );
     return withIssuesSchemaVersion([createValidationErrorIssue(
       'profile',
       'validation-error',
-      `Validation failed: ${error instanceof Error ? error.message : String(error)}`,
+      createSafeValidationFailureMessage('Validation'),
     )], fhirVersion);
   }
 }

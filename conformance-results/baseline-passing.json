@@ -5,6 +5,16 @@
   "fhirVersion": "R4",
   "overallScore": 100,
   "count": 536,
+  "intentionalRegressions": [
+    {
+      "testName": "ips-nz-pj",
+      "module": "bundle",
+      "file": "ips-nz-pj.json",
+      "expectedStatus": "fail",
+      "reason": "Vendored Java baseline predates designation-aware display matching: it errors on former LOINC 2.77 Long Common Names ('<X> Narrative' document-section forms) and even on 'Vital signs' for 8716-3, which current tx.fhir.org $validate-code accepts. Records accepts tx-verified current and former LOINC designations (see packages/validator/src/core/executors/terminology-display-rules.ts), so the four display errors this baseline expects are intentionally not reproduced.",
+      "introducedAt": "2026-08-22"
+    }
+  ],
   "passing": [
     {
       "testName": "capstmt",

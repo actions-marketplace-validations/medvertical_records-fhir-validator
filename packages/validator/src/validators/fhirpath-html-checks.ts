@@ -1,5 +1,5 @@
 import type { ValidationIssue } from '../types';
-import { validateNarrativeDiv } from './narrative-xhtml-rules';
+import { validateNarrativeDiv, validateXhtmlFragment } from './narrative-xhtml-rules';
 
 export function isHtmlChecksExpression(expression: string | undefined): boolean {
   return /^\s*htmlChecks\(\)\s*$/.test(expression ?? '');
@@ -17,9 +17,15 @@ export function evaluateHtmlChecksConstraint(
   const divValues = collectStringValues(context);
   if (divValues.length === 0) return [];
 
+  // Narrative.div carries the full narrative contract (root div, txt-2);
+  // htmlChecks() on any other string element — e.g. the rendering-xhtml
+  // extension's valueString — validates an xhtml fragment instead.
+  const narrativeContext = pathTargetsNarrativeDiv(path) || contextCarriesNarrativeDiv(context);
   const basePath = narrativeBasePath(path);
   return divValues.flatMap(div =>
-    validateNarrativeDiv(div, basePath, resourceType)
+    (narrativeContext
+      ? validateNarrativeDiv(div, basePath, resourceType)
+      : validateXhtmlFragment(div, path, resourceType))
       .map(issue => ({
         ...issue,
         profile: issue.profile ?? profileUrl,
@@ -53,4 +59,14 @@ function collectStringValues(value: unknown): string[] {
 
 function narrativeBasePath(path: string): string {
   return path.replace(/\.div(?:\[\d+\])?$/i, '');
+}
+
+function pathTargetsNarrativeDiv(path: string): boolean {
+  return /\.div(?:\[\d+\])?$/i.test(path);
+}
+
+function contextCarriesNarrativeDiv(context: unknown): boolean {
+  if (Array.isArray(context)) return context.some(contextCarriesNarrativeDiv);
+  return typeof context === 'object' && context !== null
+    && typeof (context as { div?: unknown }).div === 'string';
 }

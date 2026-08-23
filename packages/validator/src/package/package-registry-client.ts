@@ -12,24 +12,30 @@
 import { logger } from '../logger';
 import { detectPackageForProfile } from './package-profile-detector';
 import {
-  isAllowedPackageTarballUrl,
   packageErrorMetadata,
   packageReferenceMetadata,
   isSafePackageId,
   isSafePackageVersion,
   resolvePackageSizeLimit,
 } from './package-artifact-policy.js';
-import { isPackageManifestFor, readResponseBodyBounded } from './package-registry-response.js';
 import type { PackageInfo, PackageManifest } from './package-registry-types.js';
 import { PackageManifestCache } from './package-manifest-cache.js';
 import { resolvePackageManifestVersion } from './package-manifest-version.js';
+import { downloadPackageArtifact, fetchManifestFromRegistry } from './package-registry-http.js';
 export type { PackageInfo, PackageManifest, PackageVersion } from './package-registry-types.js';
 
 // ============================================================================
 // Types
 // ============================================================================
 
-const MAX_MANIFEST_BYTES = 10 * 1024 * 1024;
+const DEFAULT_REGISTRY_TIMEOUT_MS = 10_000;
+
+function configuredRegistryTimeout(): number {
+  const value = Number(process.env.FHIR_PACKAGE_REGISTRY_TIMEOUT_MS);
+  return Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, 120_000)
+    : DEFAULT_REGISTRY_TIMEOUT_MS;
+}
 
 // ============================================================================
 // Package Registry Client
@@ -40,12 +46,16 @@ export class PackageRegistryClient {
   private simplifierUrl: string = 'https://packages.simplifier.net';
   private timeout: number;
   private manifestCache: PackageManifestCache;
+  private manifestRequests = new Map<string, Promise<PackageManifest | null>>();
+  private manifestCacheRevision = 0;
 
   constructor(
-    timeout: number = 10000,  // Reduced from 30s to 10s to prevent hangs
+    timeout: number = configuredRegistryTimeout(),
     maxCacheEntries: number = 128
   ) {
-    this.timeout = timeout;
+    this.timeout = Number.isSafeInteger(timeout) && timeout > 0
+      ? Math.min(timeout, 120_000)
+      : 10_000;
     this.manifestCache = new PackageManifestCache(maxCacheEntries);
   }
 
@@ -62,45 +72,17 @@ export class PackageRegistryClient {
         logger.info('[PackageRegistry] Using cached manifest', packageReferenceMetadata(packageId));
         return cached;
       }
+      const pending = this.manifestRequests.get(packageId);
+      if (pending) return pending;
 
-      // Determine which registry to try first based on package ID
-      const shouldTrySimplifierFirst = this.shouldUseSimplifier(packageId);
-
-      let manifest: PackageManifest | null = null;
-
-      if (shouldTrySimplifierFirst) {
-        // Try Simplifier first
-        logger.info('[PackageRegistry] Trying Simplifier registry', packageReferenceMetadata(packageId));
-        manifest = await this.fetchFromRegistry(packageId, this.simplifierUrl);
-
-        if (!manifest) {
-          // Fall back to FHIR registry
-          logger.info('[PackageRegistry] Simplifier lookup failed; trying FHIR registry', packageReferenceMetadata(packageId));
-          manifest = await this.fetchFromRegistry(packageId, this.fhirRegistryUrl);
+      const cacheRevision = this.manifestCacheRevision;
+      const request = this.resolvePackageManifest(packageId, cacheRevision).finally(() => {
+        if (this.manifestRequests.get(packageId) === request) {
+          this.manifestRequests.delete(packageId);
         }
-      } else {
-        // Try FHIR registry first
-        logger.info('[PackageRegistry] Trying FHIR registry', packageReferenceMetadata(packageId));
-        manifest = await this.fetchFromRegistry(packageId, this.fhirRegistryUrl);
-
-        if (!manifest) {
-          // Fall back to Simplifier
-          logger.info('[PackageRegistry] FHIR lookup failed; trying Simplifier registry', packageReferenceMetadata(packageId));
-          manifest = await this.fetchFromRegistry(packageId, this.simplifierUrl);
-        }
-      }
-
-      if (manifest) {
-        this.manifestCache.set(packageId, manifest);
-        logger.info('[PackageRegistry] Package manifest resolved', {
-          ...packageReferenceMetadata(packageId),
-          versionCount: Object.keys(manifest.versions).length,
-        });
-      } else {
-        logger.warn('[PackageRegistry] Package not found in any registry', packageReferenceMetadata(packageId));
-      }
-
-      return manifest;
+      });
+      this.manifestRequests.set(packageId, request);
+      return request;
 
     } catch (error: unknown) {
       logger.error('[PackageRegistry] Manifest resolution failed', {
@@ -111,79 +93,49 @@ export class PackageRegistryClient {
     }
   }
 
+  private async resolvePackageManifest(
+    packageId: string,
+    cacheRevision: number,
+  ): Promise<PackageManifest | null> {
+    const simplifierFirst = this.shouldUseSimplifier(packageId);
+    const registries = simplifierFirst
+      ? [this.simplifierUrl, this.fhirRegistryUrl]
+      : [this.fhirRegistryUrl, this.simplifierUrl];
+
+    let manifest: PackageManifest | null = null;
+    for (const registry of registries) {
+      logger.info('[PackageRegistry] Trying package registry', {
+        ...packageReferenceMetadata(packageId),
+        registry: this.registryName(registry),
+      });
+      manifest = await this.fetchFromRegistry(packageId, registry);
+      if (manifest) break;
+    }
+
+    if (!manifest) {
+      logger.warn('[PackageRegistry] Package not found in any registry', packageReferenceMetadata(packageId));
+      return null;
+    }
+    if (this.manifestCacheRevision === cacheRevision) {
+      this.manifestCache.set(packageId, manifest);
+    }
+    logger.info('[PackageRegistry] Package manifest resolved', {
+      ...packageReferenceMetadata(packageId),
+      versionCount: Object.keys(manifest.versions).length,
+    });
+    return structuredClone(manifest);
+  }
+
   /**
    * Fetch from a specific registry URL
    */
   private async fetchFromRegistry(packageId: string, registryUrl: string): Promise<PackageManifest | null> {
-    const startTime = Date.now();
-    const url = `${registryUrl}/${encodeURIComponent(packageId)}`;
-
-    try {
-      logger.info('[PackageRegistry] Fetching package manifest', {
-        ...packageReferenceMetadata(packageId),
-        registry: this.registryName(registryUrl),
-        timeoutMs: this.timeout,
-      });
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-
-      try {
-        const response = await fetch(url, {
-          signal: controller.signal,
-          redirect: 'error',
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'Records-FHIR-Validator/1.0'
-          }
-        });
-
-        const fetchTime = Date.now() - startTime;
-
-        if (!response.ok) {
-          if (response.status === 404) {
-            logger.info('[PackageRegistry] Registry returned package not found', {
-              ...packageReferenceMetadata(packageId),
-              registry: this.registryName(registryUrl),
-              status: 404,
-              durationMs: fetchTime,
-            });
-            return null;
-          }
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const manifestBuffer = await readResponseBodyBounded(response, MAX_MANIFEST_BYTES);
-        if (!manifestBuffer) {
-          logger.warn('[PackageRegistry] Registry manifest exceeds size limit');
-          return null;
-        }
-        const manifest = JSON.parse(manifestBuffer.toString('utf8')) as unknown;
-        if (!isPackageManifestFor(manifest, packageId)) {
-          logger.warn('[PackageRegistry] Registry returned an invalid package manifest');
-          return null;
-        }
-        const totalTime = Date.now() - startTime;
-        logger.info('[PackageRegistry] Package manifest fetched', {
-          ...packageReferenceMetadata(packageId),
-          registry: this.registryName(registryUrl),
-          durationMs: totalTime,
-        });
-        return manifest;
-      } finally {
-        clearTimeout(timeoutId);
-      }
-
-    } catch (error: unknown) {
-      const totalTime = Date.now() - startTime;
-      logger.warn('[PackageRegistry] Package manifest request failed', {
-        ...packageReferenceMetadata(packageId),
-        registry: this.registryName(registryUrl),
-        durationMs: totalTime,
-        ...packageErrorMetadata(error),
-      });
-      return null;
-    }
+    return fetchManifestFromRegistry({
+      packageId,
+      registryUrl,
+      registryName: this.registryName(registryUrl),
+      timeoutMs: this.timeout,
+    });
   }
 
   /**
@@ -271,55 +223,7 @@ export class PackageRegistryClient {
         return null;
       }
 
-      if (!isAllowedPackageTarballUrl(packageInfo.tarballUrl)) {
-        logger.warn('[PackageRegistry] Refusing untrusted package tarball URL', packageReferenceMetadata(packageId, version));
-        return null;
-      }
-
-      logger.info('[PackageRegistry] Downloading package tarball', packageReferenceMetadata(packageId, version));
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeout);
-      try {
-        const response = await fetch(packageInfo.tarballUrl, {
-          signal: controller.signal,
-          redirect: 'error',
-          headers: {
-            'User-Agent': 'Records-FHIR-Validator/1.0'
-          }
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const declaredLength = Number(response.headers.get('content-length'));
-        if (Number.isFinite(declaredLength) && declaredLength > safeMaxBytes) {
-          logger.warn('[PackageRegistry] Package tarball exceeds download limit', {
-            ...packageReferenceMetadata(packageId, version),
-            declaredBytes: declaredLength,
-            maxBytes: safeMaxBytes,
-          });
-          return null;
-        }
-
-        const buffer = await readResponseBodyBounded(response, safeMaxBytes);
-        if (!buffer) {
-          logger.warn('[PackageRegistry] Package tarball exceeded streaming limit', {
-            ...packageReferenceMetadata(packageId, version),
-            maxBytes: safeMaxBytes,
-          });
-          return null;
-        }
-        logger.info('[PackageRegistry] Package tarball downloaded', {
-          ...packageReferenceMetadata(packageId, version),
-          bytes: buffer.length,
-        });
-
-        return buffer;
-      } finally {
-        clearTimeout(timeoutId);
-      }
+      return downloadPackageArtifact({ packageInfo, maxBytes: safeMaxBytes, timeoutMs: this.timeout });
 
     } catch (error: unknown) {
       logger.error('[PackageRegistry] Package tarball download failed', {
@@ -348,7 +252,9 @@ export class PackageRegistryClient {
    * Clear cache
    */
   clearCache(): void {
+    this.manifestCacheRevision++;
     this.manifestCache.clear();
+    this.manifestRequests.clear();
     logger.info('[PackageRegistry] Cache cleared');
   }
 
@@ -364,9 +270,3 @@ export class PackageRegistryClient {
     return this.manifestCache.getStats();
   }
 }
-
-// ============================================================================
-// Singleton Instance
-// ============================================================================
-
-export const packageRegistryClient = new PackageRegistryClient();

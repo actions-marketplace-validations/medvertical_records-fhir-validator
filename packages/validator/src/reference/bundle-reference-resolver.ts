@@ -4,6 +4,7 @@
  */
 
 import { extractResourceType as _extractResourceType, parseReference } from './reference-type-extractor';
+import { isErrorValidationSeverity } from '@records-fhir/validation-types';
 import {
   extractBundleEntries as extractEntriesFromBundle,
   findAllBundleReferences as findBundleReferences,
@@ -27,17 +28,18 @@ import type {
   BundleReferenceResolutionResult,
   BundleReference,
   BundleStatistics,
-  BundleValidationResult
+  BundleValidationResult,
+  FhirResourceRecord,
 } from './bundle-reference-types';
 
 export class BundleReferenceResolver {
-  extractBundleEntries(bundle: any): BundleEntry[] {
+  extractBundleEntries(bundle: unknown): BundleEntry[] {
     return extractEntriesFromBundle(bundle);
   }
 
   resolveBundleReference(
     reference: string,
-    bundle: any
+    bundle: unknown
   ): BundleReferenceResolutionResult {
     const entries = this.extractBundleEntries(bundle);
 
@@ -154,7 +156,7 @@ export class BundleReferenceResolver {
         };
       }
 
-      if (entry.fullUrl && entry.fullUrl.endsWith(`${resourceType}/${resourceId}`)) {
+      if (resource && entry.fullUrl && entry.fullUrl.endsWith(`${resourceType}/${resourceId}`)) {
         return {
           resolved: true,
           resource,
@@ -170,11 +172,11 @@ export class BundleReferenceResolver {
     };
   }
 
-  findAllBundleReferences(bundle: any): BundleReference[] {
+  findAllBundleReferences(bundle: unknown): BundleReference[] {
     return findBundleReferences(bundle);
   }
 
-  validateBundleReferences(bundle: any): BundleValidationResult {
+  validateBundleReferences(bundle: unknown): BundleValidationResult {
     const issues: Array<{
       severity: 'error' | 'warning' | 'info';
       code: string;
@@ -212,30 +214,30 @@ export class BundleReferenceResolver {
     issues.push(...validateBundleFullUrls(entries));
 
     return {
-      isValid: issues.filter(i => i.severity === 'error').length === 0,
+      isValid: !issues.some(i => isErrorValidationSeverity(i.severity)),
       issues,
       totalEntries: entries.length,
       entriesWithIssues: entriesWithIssues.size,
     };
   }
 
-  getAllBundleResources(bundle: any): any[] {
+  getAllBundleResources(bundle: unknown): FhirResourceRecord[] {
     return getAllBundleResources(bundle);
   }
 
-  findEntryByFullUrl(bundle: any, fullUrl: string): BundleEntry | null {
+  findEntryByFullUrl(bundle: unknown, fullUrl: string): BundleEntry | null {
     return findEntryByFullUrl(bundle, fullUrl);
   }
 
-  findEntryByResourceTypeAndId(bundle: any, resourceType: string, resourceId: string): BundleEntry | null {
+  findEntryByResourceTypeAndId(bundle: unknown, resourceType: string, resourceId: string): BundleEntry | null {
     return findEntryByResourceTypeAndId(bundle, resourceType, resourceId);
   }
 
-  buildFullUrlIndex(bundle: any): Map<string, BundleEntry> {
+  buildFullUrlIndex(bundle: unknown): Map<string, BundleEntry> {
     return buildFullUrlIndex(bundle);
   }
 
-  validateBundleReferencesOptimized(bundle: any): BundleValidationResult {
+  validateBundleReferencesOptimized(bundle: unknown): BundleValidationResult {
     const issues: Array<{
       severity: 'error' | 'warning' | 'info';
       code: string;
@@ -249,7 +251,7 @@ export class BundleReferenceResolver {
     const allReferences = this.findAllBundleReferences(bundle);
     const entriesWithIssues = new Set<number>();
 
-    const bundleType: string | undefined = bundle?.type;
+    const bundleType = this.getBundleType(bundle);
     const isClosedBundle = bundleType === 'document' || bundleType === 'message';
 
     for (const { reference, entryIndex, fieldPath } of allReferences) {
@@ -287,39 +289,34 @@ export class BundleReferenceResolver {
     issues.push(...validateBundleFullUrls(entries));
 
     return {
-      isValid: issues.filter(i => i.severity === 'error').length === 0,
+      isValid: !issues.some(i => isErrorValidationSeverity(i.severity)),
       issues,
       totalEntries: entries.length,
       entriesWithIssues: entriesWithIssues.size,
     };
   }
 
-  isTransactionOrBatchBundle(bundle: any): boolean {
+  isTransactionOrBatchBundle(bundle: unknown): boolean {
     return isTransactionOrBatchBundle(bundle);
   }
 
-  getBundleType(bundle: any): string | null {
+  getBundleType(bundle: unknown): string | null {
     return getBundleType(bundle);
   }
 
-  validateBundleStructure(bundle: any): BundleIssue[] {
+  validateBundleStructure(bundle: unknown): BundleIssue[] {
     return validateBundleStructure(bundle);
   }
 
-  getBundleStatistics(bundle: any): BundleStatistics {
+  getBundleStatistics(bundle: unknown): BundleStatistics {
     return getBundleStatistics(bundle);
   }
 }
 
-let bundleResolverInstance: BundleReferenceResolver | null = null;
-
 export function getBundleReferenceResolver(): BundleReferenceResolver {
-  if (!bundleResolverInstance) {
-    bundleResolverInstance = new BundleReferenceResolver();
-  }
-  return bundleResolverInstance;
+  return new BundleReferenceResolver();
 }
 
 export function resetBundleReferenceResolver(): void {
-  bundleResolverInstance = null;
+  // Compatibility no-op: resolver instances are caller-owned.
 }

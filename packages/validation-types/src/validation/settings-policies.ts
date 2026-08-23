@@ -12,8 +12,9 @@ export interface AdvisorRuleMatch {
   message?: string;
   messageRegex?: string | string[];
   aspect?: string | string[];
-  severity?: string;
-  profile?: string;
+  severity?: string | string[];
+  profile?: string | string[];
+  ruleId?: string | string[];
   resourceType?: string | string[];
 }
 
@@ -23,6 +24,15 @@ export interface AdvisorRuleMatch {
 export interface AdvisorRuleTransform {
   severity?: 'error' | 'warning' | 'information' | 'info';
   message?: string;
+}
+
+export interface AdvisorRuleApplication {
+  ruleId: string;
+  action: AdvisorRule['action'];
+  priority: number;
+  reason?: string;
+  before?: string;
+  after?: string;
 }
 
 /**
@@ -36,6 +46,11 @@ export interface AdvisorRule {
   transform?: AdvisorRuleTransform;
   reason?: string;
   enabled?: boolean;
+  /** Higher values win. Equal-priority conflicts remain deterministic by rule id. */
+  priority?: number;
+  expiresAt?: string;
+  origin?: 'builtin' | 'local' | 'pack';
+  sourcePackRef?: string;
 }
 
 export type ProfileApplicationSource =

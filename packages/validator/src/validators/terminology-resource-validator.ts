@@ -38,6 +38,7 @@ import {
 import { validateConceptMapResource } from './conceptmap-resource-validator';
 import { validateValueSetComposeFilters } from './valueset-compose-filter-validator';
 import { validateValueSetExpansion } from './valueset-expansion-validator';
+import { ValueSetCache } from './valueset-cache';
 
 // ============================================================================
 // Constants
@@ -48,23 +49,25 @@ import { validateValueSetExpansion } from './valueset-expansion-validator';
 // ============================================================================
 
 export class TerminologyResourceValidator {
+  constructor(private readonly cache: ValueSetCache = new ValueSetCache()) {}
   /**
    * Validate terminology-specific business rules on a resource.
    * Returns empty array for non-CodeSystem/ValueSet resources.
    */
   validate(
-    resource: any,
+    resource: unknown,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
   ): ValidationIssue[] {
-    if (!resource || typeof resource !== 'object') return [];
+    const resourceRecord = asRecord(resource);
+    if (!resourceRecord) return [];
 
-    switch (resource.resourceType) {
+    switch (resourceRecord.resourceType) {
       case 'CodeSystem':
-        return validateCodeSystemResource(resource, fhirVersion);
+        return validateCodeSystemResource(resourceRecord, fhirVersion, this.cache);
       case 'ValueSet':
-        return this.validateValueSet(resource);
+        return this.validateValueSet(resourceRecord);
       case 'ConceptMap':
-        return validateConceptMapResource(resource);
+        return validateConceptMapResource(resourceRecord, this.cache);
       default:
         return [];
     }
@@ -74,7 +77,7 @@ export class TerminologyResourceValidator {
   // ValueSet
   // ==========================================================================
 
-  private validateValueSet(vs: any): ValidationIssue[] {
+  private validateValueSet(vs: Record<string, unknown>): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
     const url = typeof vs.url === 'string' ? vs.url : '';
 
@@ -100,17 +103,18 @@ export class TerminologyResourceValidator {
     if (Array.isArray(vs.contained)) {
       for (let i = 0; i < vs.contained.length; i++) {
         const contained = vs.contained[i];
-        if (contained?.resourceType === 'CodeSystem') {
+        if (asRecord(contained)?.resourceType === 'CodeSystem') {
           issues.push(...validateContainedCodeSystemResource(contained, i));
         }
       }
     }
 
     // --- compose.include.system must be absolute + filter checks ---
-    if (vs.compose?.include && Array.isArray(vs.compose.include)) {
-      for (let i = 0; i < vs.compose.include.length; i++) {
-        const include = vs.compose.include[i];
-        const system = include?.system;
+    const compose = asRecord(vs.compose);
+    if (Array.isArray(compose?.include)) {
+      for (let i = 0; i < compose.include.length; i++) {
+        const include = compose.include[i];
+        const system = asRecord(include)?.system;
         if (typeof system === 'string' && system.startsWith('#')) {
           issues.push(createValidationIssue({
             code: 'tx-valueset-compose-system-fragment',
@@ -127,28 +131,33 @@ export class TerminologyResourceValidator {
         issues.push(...validateValueSetComposeFilters(
           include,
           `ValueSet.compose.include[${i}]`,
+          this.cache,
         ));
       }
     }
 
     // --- compose.exclude[] filters get the same treatment ---
-    if (vs.compose?.exclude && Array.isArray(vs.compose.exclude)) {
-      for (let i = 0; i < vs.compose.exclude.length; i++) {
+    if (Array.isArray(compose?.exclude)) {
+      for (let i = 0; i < compose.exclude.length; i++) {
         issues.push(...validateValueSetComposeFilters(
-          vs.compose.exclude[i],
+          compose.exclude[i],
           `ValueSet.compose.exclude[${i}]`,
+          this.cache,
         ));
       }
     }
 
     // --- ValueSet.expansion best-practice checks ---
     if (vs.expansion && typeof vs.expansion === 'object') {
-      issues.push(...validateValueSetExpansion(vs.expansion, vs.compose));
+      issues.push(...validateValueSetExpansion(vs.expansion, compose));
     }
 
     return issues;
   }
 }
 
-// Singleton
-export const terminologyResourceValidator = new TerminologyResourceValidator();
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}

@@ -7,10 +7,12 @@ import {
     type ValidationIssue,
     type ValidationAspect,
     type ValidationSeverity,
+    type ValidationIssueTarget,
 } from '@records-fhir/validation-types';
 import { ValidationCodes as _ValidationCodes, getCodeMetadata, resolveCode, type ValidationCode } from './message-catalog';
 import { formatMessage, getHumanReadableMessage } from './message-templates';
 import { normalizeResourceType } from './resource-type-normalizer';
+import { buildBindingViolationDetails } from './binding-violation-details';
 
 export interface CreateIssueParams {
     code: ValidationCode | string;
@@ -23,6 +25,19 @@ export interface CreateIssueParams {
     severityOverride?: ValidationSeverity;
     aspectOverride?: ValidationAspect;
     ruleId?: string;
+    target?: Partial<ValidationIssueTarget>;
+}
+
+const UNSAFE_DETAIL_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function copySafeDetails(
+    target: Record<string, unknown>,
+    source: Record<string, unknown> | undefined,
+): void {
+    if (!source) return;
+    for (const [key, value] of Object.entries(source)) {
+        if (!UNSAFE_DETAIL_KEYS.has(key)) target[key] = value;
+    }
 }
 
 function generateIssueId(params: {
@@ -58,6 +73,7 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
         severityOverride,
         aspectOverride,
         ruleId,
+        target,
     } = params;
     const resourceType = normalizeResourceType(rawResourceType, path);
 
@@ -70,18 +86,45 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
     const message = customMessage || formatMessage(resolvedCode, messageParams);
     const humanReadable = getHumanReadableMessage(resolvedCode, messageParams);
 
-    const issueDetails: Record<string, unknown> = {
-        ...details,
-        fieldPath: path,
-        resourceType,
-        validationType: `${aspect}-validation`,
-    };
+    const issueDetails: Record<string, unknown> = {};
+    copySafeDetails(issueDetails, details);
+    issueDetails.fieldPath = path;
+    issueDetails.resourceType = resourceType;
+    issueDetails.validationType = `${aspect}-validation`;
 
     for (const [key, value] of Object.entries(messageParams)) {
-        if (!(key in issueDetails)) {
+        if (
+            !UNSAFE_DETAIL_KEYS.has(key)
+            && !Object.prototype.hasOwnProperty.call(issueDetails, key)
+        ) {
             issueDetails[key] = value;
         }
     }
+    if (target?.elementId && !('elementId' in issueDetails)) {
+        issueDetails.elementId = target.elementId;
+    }
+    if (target?.extensionUrl && !('extensionUrl' in issueDetails)) {
+        issueDetails.extensionUrl = target.extensionUrl;
+    }
+    if (target?.sliceName && !('sliceName' in issueDetails)) {
+        issueDetails.sliceName = target.sliceName;
+    }
+    const detailString = (key: string): string | undefined =>
+        typeof issueDetails[key] === 'string'
+            ? issueDetails[key] as string
+            : undefined;
+    const issueTarget: ValidationIssueTarget = {
+        path: target?.path ?? path,
+        elementId: target?.elementId ?? detailString('elementId') ?? path,
+        extensionUrl:
+            target?.extensionUrl
+            ?? detailString('extensionUrl')
+            ?? detailString('url'),
+        sliceName:
+            target?.sliceName
+            ?? detailString('sliceName')
+            ?? detailString('slice'),
+    };
 
     return {
         id: generateIssueId({
@@ -108,44 +151,7 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
         schemaVersion: 'R4',
         profile,
         ruleId,
-    };
-}
-
-const CANONICAL_SYSTEM_SUGGESTIONS: Record<string, string> = {
-    'http://terminology.hl7.org/CodeSystem/condition-verstatus':
-        'http://terminology.hl7.org/CodeSystem/condition-ver-status',
-};
-
-const VALUE_SET_BASE_CANONICAL_SYSTEM_SUGGESTIONS: Record<string, Record<string, string>> = {
-    'http://hl7.org/fhir/ValueSet/allergyintolerance-clinical': {
-        'http://terminology.hl7.org/CodeSystem/condition-clinical':
-            'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical',
-    },
-    'http://hl7.org/fhir/ValueSet/allergyintolerance-verification': {
-        'http://terminology.hl7.org/CodeSystem/condition-ver-status':
-            'http://terminology.hl7.org/CodeSystem/allergyintolerance-verification',
-        'http://terminology.hl7.org/CodeSystem/condition-verstatus':
-            'http://terminology.hl7.org/CodeSystem/allergyintolerance-verification',
-    },
-};
-
-function withoutCanonicalVersion(url: string): string {
-    return url.split('|')[0] ?? url;
-}
-
-function buildBindingViolationDetails(system?: string, valueSet?: string): Record<string, unknown> | undefined {
-    if (!system) return undefined;
-
-    const valueSetBase = valueSet ? withoutCanonicalVersion(valueSet) : undefined;
-    const contextualSuggestion = valueSetBase
-        ? VALUE_SET_BASE_CANONICAL_SYSTEM_SUGGESTIONS[valueSetBase]?.[system]
-        : undefined;
-    const suggestedSystem = contextualSuggestion ?? CANONICAL_SYSTEM_SUGGESTIONS[system];
-    if (!suggestedSystem) return undefined;
-
-    return {
-        suggestedSystem,
-        fixHint: `Replace Coding.system '${system}' with '${suggestedSystem}'.`,
+        target: issueTarget,
     };
 }
 
@@ -219,9 +225,44 @@ export function createBindingUnverified(params: {
         resourceType: params.resourceType,
         profile: params.profile,
         severityOverride: params.severityOverride,
+        details: {
+            validationStatus: 'incomplete',
+            reason: 'binding-unverified',
+        },
         messageParams: {
             code: params.code,
             system: params.system,
+            valueSet: params.valueSet,
+            strength: params.strength,
+        },
+    });
+}
+
+/**
+ * Create a visible completeness diagnostic when the bound ValueSet itself
+ * cannot be resolved. This also covers text-only CodeableConcept values: even
+ * without a Coding to test, an unavailable additional binding must not vanish
+ * from the validation result.
+ */
+export function createValueSetUnavailable(params: {
+    strength: 'required' | 'extensible' | 'preferred';
+    valueSet: string;
+    path: string;
+    resourceType: string;
+    profile?: string;
+    severityOverride?: ValidationSeverity;
+}): ValidationIssue {
+    return createValidationIssue({
+        code: 'terminology-valueset-unavailable',
+        path: params.path,
+        resourceType: params.resourceType,
+        profile: params.profile,
+        severityOverride: params.severityOverride,
+        details: {
+            validationStatus: 'incomplete',
+            reason: 'valueset-unavailable',
+        },
+        messageParams: {
             valueSet: params.valueSet,
             strength: params.strength,
         },

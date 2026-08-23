@@ -1,5 +1,6 @@
 import { logger } from '../logger';
 import type { StructureDefinitionLoader } from './structure-definition-loader';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
 export async function checkRecordsValidatorAvailability(
   sdLoader: StructureDefinitionLoader,
@@ -16,7 +17,7 @@ export async function checkRecordsValidatorAvailability(
 
     return hasBaseProfiles;
   } catch (error) {
-    logger.warn('[RecordsValidator] Error during initialization:', error);
+    logger.warn('[RecordsValidator] Error during initialization', validationFailureMetadata(error));
     return false;
   }
 }

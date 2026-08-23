@@ -7,6 +7,9 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { recordsValidator } from '../../index';
 import { getValidationTargets } from '../../business-rules';
 
+const validateR4 = (resource: unknown, profileUrl?: string) =>
+  recordsValidator.validateRequest({ resource, profileUrl, fhirVersion: 'R4' });
+
 const ACTUAL_USER_RESOURCE = {
   resourceType: 'Patient',
   id: '424abf1d-142e-42d0-bf5f-a361174c2ddc',
@@ -33,10 +36,9 @@ describe('mustSupport False Positives - User Resource', () => {
   }, 120000);
 
   it('should not report false positives for existing elements in user resource', async () => {
-    const issues = await recordsValidator.validate(
+    const issues = await validateR4(
       ACTUAL_USER_RESOURCE,
       MII_PATIENT_PROFILE,
-      'R4'
     );
 
     // Extract all mustsupport-missing issues

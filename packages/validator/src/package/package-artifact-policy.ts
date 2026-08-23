@@ -67,6 +67,34 @@ export function isSafePackageArchiveEntry(
       || (Number.isSafeInteger(entrySize) && entrySize >= 0 && entrySize <= MAX_ARCHIVE_ENTRY_BYTES));
 }
 
+/**
+ * Some registry packages created on macOS contain AppleDouble metadata files.
+ * They are not FHIR package content, but can be safely filtered instead of
+ * rejecting the otherwise valid package. Keep the allowance narrow and never
+ * extract these entries.
+ */
+export function isIgnorablePackageArchiveMetadata(
+  entryPath: string,
+  entryType: string | undefined,
+  entrySize: number | undefined,
+): boolean {
+  if (!entryPath || entryPath.includes('\0')) return false;
+  const normalized = entryPath.replaceAll('\\', '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return false;
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments.some(segment => segment === '.' || segment === '..')) return false;
+  const normalizedType = entryType?.toLowerCase();
+  if (normalizedType && normalizedType !== 'file') return false;
+  if (
+    entrySize !== undefined
+    && (!Number.isSafeInteger(entrySize) || entrySize < 0 || entrySize > 1024 * 1024)
+  ) {
+    return false;
+  }
+  const basename = segments.at(-1) ?? '';
+  return basename.startsWith('._') || segments[0] === '__MACOSX';
+}
+
 export function resolvePackageSizeLimit(value?: number): number | null {
   if (value === undefined) return DEFAULT_MAX_PACKAGE_BYTES;
   return Number.isSafeInteger(value) && value > 0 && value <= HARD_MAX_PACKAGE_BYTES

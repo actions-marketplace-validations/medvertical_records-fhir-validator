@@ -15,4 +15,13 @@ describe('validator engine cache capacity', () => {
     process.env.VALIDATOR_PROFILE_CACHE_MAX_ENTRIES = '96';
     expect(resolveRecordsValidatorConfig({}).profileCacheMaxEntries).toBe(96);
   });
+
+  it('prewarms the shared profile source by default', () => {
+    expect(resolveRecordsValidatorConfig({}).prewarmProfileSource).toBe(true);
+  });
+
+  it('allows scoped validators to skip eager profile-source loading', () => {
+    expect(resolveRecordsValidatorConfig({ prewarmProfileSource: false }).prewarmProfileSource)
+      .toBe(false);
+  });
 });

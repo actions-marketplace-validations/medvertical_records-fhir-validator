@@ -18,6 +18,28 @@ function isSafeObjectKey(key: string | undefined): key is string {
   return typeof key === 'string' && key.length > 0 && !UNSAFE_OBJECT_KEYS.has(key);
 }
 
+function parseSlicingDefinition(value: unknown): SlicingDefinition | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const discriminator = Array.isArray(record.discriminator)
+    ? record.discriminator.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const candidate = item as Record<string, unknown>;
+      return typeof candidate.type === 'string' && typeof candidate.path === 'string'
+        ? [{ type: candidate.type, path: candidate.path }]
+        : [];
+    })
+    : [];
+  const rules = record.rules === 'closed' || record.rules === 'openAtEnd'
+    ? record.rules
+    : 'open';
+  return {
+    discriminator,
+    rules,
+    ordered: typeof record.ordered === 'boolean' ? record.ordered : undefined,
+  };
+}
+
 export function populateSchemaElements(
   schema: FHIRSchema,
   childElements: SDElement[],
@@ -40,13 +62,10 @@ export function populateSchemaElements(
 function collectSlicingDefinitions(childElements: SDElement[]): Map<string, SlicingDefinition> {
   const slicingDefs = new Map<string, SlicingDefinition>();
   for (const el of childElements) {
-    if (el.slicing && !el.sliceName) {
+    const slicing = parseSlicingDefinition(el.slicing);
+    if (slicing && !el.sliceName) {
       const relativePath = el.path.split('.').slice(1).join('.');
-      slicingDefs.set(relativePath, {
-        discriminator: (el.slicing as any).discriminator || [],
-        rules: (el.slicing as any).rules || 'open',
-        ordered: (el.slicing as any).ordered,
-      });
+      slicingDefs.set(relativePath, slicing);
     }
   }
   return slicingDefs;
@@ -228,13 +247,8 @@ function convertElementWithSlicing(
   resolveTargetProfile?: TargetProfileTypeResolver,
 ): FHIRSchemaElement {
   const converted = convertElement(el, resolveTargetProfile);
-  if (el.slicing) {
-    converted.slicing = toFHIRSchemaSlicing({
-      discriminator: (el.slicing as any).discriminator || [],
-      rules: (el.slicing as any).rules || 'open',
-      ordered: (el.slicing as any).ordered,
-    });
-  }
+  const slicing = parseSlicingDefinition(el.slicing);
+  if (slicing) converted.slicing = toFHIRSchemaSlicing(slicing);
   return converted;
 }
 

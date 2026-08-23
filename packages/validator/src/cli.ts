@@ -32,7 +32,10 @@ try {
   files = findInputFiles(options);
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err);
-  if (message === 'No JSON files found.' || message === 'No JSON files matched the include/exclude filters.') {
+  if (
+    message === 'No FHIR JSON, XML, or NDJSON files found.'
+    || message === 'No FHIR input files matched the include/exclude filters.'
+  ) {
     console.error(message);
   } else {
     console.error(`Could not read input path: ${message}`);

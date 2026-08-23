@@ -14,10 +14,14 @@
 import fhirpath_r4 from 'fhirpath/fhir-context/r4/index.js';
 import fhirpath_r5 from 'fhirpath/fhir-context/r5/index.js';
 
+export type FhirPathModel = typeof fhirpath_r4;
+
 /**
  * Return the fhirpath.js model context for a given FHIR version.
  */
-export function getFhirPathModel(fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'): any {
+export function getFhirPathModel(
+  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+): FhirPathModel {
   switch (fhirVersion) {
     case 'R5':
       return fhirpath_r5;

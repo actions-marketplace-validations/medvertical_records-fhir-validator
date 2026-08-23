@@ -1,9 +1,29 @@
 import type { AnomalyDetectorConfig, AnomalyFinding } from './anomaly-types';
+import {
+  collectReferences,
+  getPrimaryCode,
+  getResourceId,
+  getResourceType,
+  getString,
+  getSubjectReference,
+  toRecord,
+  type FhirRecord,
+} from './anomaly-resource-utils';
 
-type ResourceEntry = { index: number; resource: any };
+interface ResourceEntry {
+  index: number;
+  resource: FhirRecord;
+}
+
+interface ObservationDuplicateGroup {
+  subject: string;
+  code: string;
+  effective: string;
+  entries: ResourceEntry[];
+}
 
 export function detectMissingFields(
-  resources: any[],
+  resources: unknown[],
   config: AnomalyDetectorConfig,
 ): AnomalyFinding[] {
   const findings: AnomalyFinding[] = [];
@@ -11,36 +31,35 @@ export function detectMissingFields(
 
   for (const [resourceType, group] of byType) {
     if (group.length < config.minBatchSize) continue;
-
     const fieldCounts = new Map<string, number>();
     for (const { resource } of group) {
-      for (const key of Object.keys(resource)) {
-        if (key === 'resourceType' || key === 'id' || key === 'meta' || key === 'text') continue;
-        if (resource[key] === undefined || resource[key] === null) continue;
+      for (const [key, value] of Object.entries(resource)) {
+        if (IGNORED_MISSING_FIELD_KEYS.has(key)) continue;
+        if (value === undefined || value === null) continue;
         fieldCounts.set(key, (fieldCounts.get(key) ?? 0) + 1);
       }
     }
 
     for (const [field, count] of fieldCounts) {
       const ratio = count / group.length;
-      if (ratio < config.missingFieldThreshold || ratio >= 1.0) continue;
-
-      const missing = group.filter(g => {
-        const v = g.resource[field];
-        return v === undefined || v === null;
-      });
+      if (ratio < config.missingFieldThreshold || ratio >= 1) continue;
+      const missing = group.filter(({ resource }) =>
+        resource[field] === undefined || resource[field] === null
+      );
       if (missing.length === 0) continue;
 
-      const pct = Math.round(ratio * 100);
+      const percentage = Math.round(ratio * 100);
       findings.push({
         type: 'missing-field',
         description:
-          `${pct}% of ${resourceType} resources have '${field}', ` +
+          `${percentage}% of ${resourceType} resources have '${field}', ` +
           `but ${missing.length} are missing it. This is likely a ` +
           `data-quality issue rather than intentional omission.`,
         confidence: ratio,
-        affectedIndices: missing.map(m => m.index),
-        affectedIds: missing.map(m => m.resource.id || `[index ${m.index}]`),
+        affectedIndices: missing.map(entry => entry.index),
+        affectedIds: missing.map(entry =>
+          getResourceId(entry.resource, entry.index)
+        ),
         resourceType,
         fieldPath: `${resourceType}.${field}`,
         suggestion:
@@ -52,106 +71,112 @@ export function detectMissingFields(
       });
     }
   }
-
   return findings;
 }
 
-export function detectDuplicates(resources: any[]): AnomalyFinding[] {
-  const findings: AnomalyFinding[] = [];
-  const byType = groupByType(resources);
+export function detectDuplicates(resources: unknown[]): AnomalyFinding[] {
+  return [
+    ...detectDuplicateObservations(resources),
+    ...detectDuplicateLogicalIds(resources),
+  ];
+}
 
-  const observations = byType.get('Observation');
-  if (observations && observations.length >= 2) {
-    const keyMap = new Map<string, ResourceEntry[]>();
+function detectDuplicateObservations(resources: unknown[]): AnomalyFinding[] {
+  const observations = groupByType(resources).get('Observation');
+  if (!observations || observations.length < 2) return [];
 
-    for (const entry of observations) {
-      const r = entry.resource;
-      const subject = r.subject?.reference || '';
-      const code = r.code?.coding?.[0]?.code || r.code?.text || '';
-      const effective = r.effectiveDateTime || r.effectivePeriod?.start || '';
-      if (!subject || !code) continue;
+  const groups = new Map<string, ObservationDuplicateGroup>();
+  for (const entry of observations) {
+    const subject = getSubjectReference(entry.resource);
+    const code = getPrimaryCode(entry.resource);
+    const effective = getObservationEffective(entry.resource) ?? '';
+    if (!subject || !code) continue;
 
-      const key = `${subject}|${code}|${effective}`;
-      if (!keyMap.has(key)) keyMap.set(key, []);
-      keyMap.get(key)!.push(entry);
-    }
-
-    for (const [key, group] of keyMap) {
-      if (group.length < 2) continue;
-      const [subject, code, effective] = key.split('|');
-      findings.push({
-        type: 'duplicate-resource',
-        description:
-          `${group.length} Observations for subject '${subject}' with ` +
-          `code '${code}'${effective ? ` at ${effective}` : ''} — ` +
-          `probable duplicate import.`,
-        confidence: 0.85,
-        affectedIndices: group.map(g => g.index),
-        affectedIds: group.map(g => g.resource.id || `[index ${g.index}]`),
-        resourceType: 'Observation',
-        suggestion:
-          `Review and deduplicate. If these are intentional repeat ` +
-          `measurements, consider using different effectiveDateTime values ` +
-          `or adding a method/device discriminator.`,
-        outlierCount: group.length,
-      });
-    }
+    const key = JSON.stringify([subject, code, effective]);
+    const group = groups.get(key) ?? { subject, code, effective, entries: [] };
+    group.entries.push(entry);
+    groups.set(key, group);
   }
 
-  for (const [resourceType, group] of byType) {
-    const idMap = new Map<string, ResourceEntry[]>();
+  return Array.from(groups.values()).flatMap(group => {
+    if (group.entries.length < 2) return [];
+    return [{
+      type: 'duplicate-resource' as const,
+      description:
+        `${group.entries.length} Observations for subject '${group.subject}' with ` +
+        `code '${group.code}'${group.effective ? ` at ${group.effective}` : ''} — ` +
+        `probable duplicate import.`,
+      confidence: 0.85,
+      affectedIndices: group.entries.map(entry => entry.index),
+      affectedIds: group.entries.map(entry =>
+        getResourceId(entry.resource, entry.index)
+      ),
+      resourceType: 'Observation',
+      suggestion:
+        `Review and deduplicate. If these are intentional repeat measurements, ` +
+        `consider using different effectiveDateTime values or adding a ` +
+        `method/device discriminator.`,
+      outlierCount: group.entries.length,
+    }];
+  });
+}
+
+function detectDuplicateLogicalIds(resources: unknown[]): AnomalyFinding[] {
+  const findings: AnomalyFinding[] = [];
+  for (const [resourceType, group] of groupByType(resources)) {
+    const idGroups = new Map<string, ResourceEntry[]>();
     for (const entry of group) {
-      const id = entry.resource.id;
+      const id = getString(entry.resource.id);
       if (!id) continue;
-      if (!idMap.has(id)) idMap.set(id, []);
-      idMap.get(id)!.push(entry);
+      const entries = idGroups.get(id) ?? [];
+      entries.push(entry);
+      idGroups.set(id, entries);
     }
-    for (const [id, dupes] of idMap) {
-      if (dupes.length < 2) continue;
+
+    for (const [id, duplicates] of idGroups) {
+      if (duplicates.length < 2) continue;
       findings.push({
         type: 'duplicate-resource',
         description:
-          `${dupes.length} ${resourceType} resources share id '${id}' — ` +
+          `${duplicates.length} ${resourceType} resources share id '${id}' — ` +
           `duplicate resources in the same batch.`,
         confidence: 0.95,
-        affectedIndices: dupes.map(d => d.index),
-        affectedIds: dupes.map(() => id),
+        affectedIndices: duplicates.map(entry => entry.index),
+        affectedIds: duplicates.map(() => id),
         resourceType,
         suggestion: `Remove duplicate ${resourceType}/${id} entries from the batch.`,
-        outlierCount: dupes.length,
+        outlierCount: duplicates.length,
       });
     }
   }
-
   return findings;
 }
 
-export function detectOrphanReferences(resources: any[]): AnomalyFinding[] {
-  const findings: AnomalyFinding[] = [];
-
+export function detectOrphanReferences(resources: unknown[]): AnomalyFinding[] {
   const present = new Set<string>();
-  for (const r of resources) {
-    if (r.resourceType && r.id) {
-      present.add(`${r.resourceType}/${r.id}`);
-    }
+  for (const resource of resources) {
+    const resourceType = getResourceType(resource);
+    const id = getString(toRecord(resource)?.id);
+    if (resourceType && id) present.add(`${resourceType}/${id}`);
   }
-  if (present.size === 0) return findings;
+  if (present.size === 0) return [];
 
-  const orphans = new Map<string, number[]>();
-
-  for (let i = 0; i < resources.length; i++) {
-    const refs = collectReferences(resources[i]);
-    for (const ref of refs) {
-      if (/^[A-Z][A-Za-z]+\/[A-Za-z0-9\-.]+$/.test(ref) && !present.has(ref)) {
-        if (!orphans.has(ref)) orphans.set(ref, []);
-        orphans.get(ref)!.push(i);
+  const orphanSources = new Map<string, Set<number>>();
+  for (let index = 0; index < resources.length; index++) {
+    for (const reference of collectReferences(resources[index])) {
+      if (!RELATIVE_REFERENCE_PATTERN.test(reference) || present.has(reference)) {
+        continue;
       }
+      const sources = orphanSources.get(reference) ?? new Set<number>();
+      sources.add(index);
+      orphanSources.set(reference, sources);
     }
   }
 
-  for (const [target, sourceIndices] of orphans) {
+  const findings: AnomalyFinding[] = [];
+  for (const [target, sourceSet] of orphanSources) {
+    const sourceIndices = Array.from(sourceSet);
     if (sourceIndices.length < 2) continue;
-
     findings.push({
       type: 'orphan-reference',
       description:
@@ -159,7 +184,9 @@ export function detectOrphanReferences(resources: any[]): AnomalyFinding[] {
         `which is not present in this batch.`,
       confidence: 0.7,
       affectedIndices: sourceIndices,
-      affectedIds: sourceIndices.map(i => resources[i]?.id || `[index ${i}]`),
+      affectedIds: sourceIndices.map(index =>
+        getResourceId(resources[index], index)
+      ),
       resourceType: target.split('/')[0],
       suggestion:
         `Include '${target}' in the batch, or verify that the ` +
@@ -167,33 +194,32 @@ export function detectOrphanReferences(resources: any[]): AnomalyFinding[] {
       outlierCount: sourceIndices.length,
     });
   }
-
   return findings;
 }
 
-function groupByType(resources: any[]): Map<string, ResourceEntry[]> {
-  const map = new Map<string, ResourceEntry[]>();
-  for (let i = 0; i < resources.length; i++) {
-    const rt = resources[i]?.resourceType;
-    if (!rt) continue;
-    if (!map.has(rt)) map.set(rt, []);
-    map.get(rt)!.push({ index: i, resource: resources[i] });
+function groupByType(resources: unknown[]): Map<string, ResourceEntry[]> {
+  const groups = new Map<string, ResourceEntry[]>();
+  for (let index = 0; index < resources.length; index++) {
+    const resource = toRecord(resources[index]);
+    const resourceType = getResourceType(resource);
+    if (!resource || !resourceType) continue;
+    const entries = groups.get(resourceType) ?? [];
+    entries.push({ index, resource });
+    groups.set(resourceType, entries);
   }
-  return map;
+  return groups;
 }
 
-function collectReferences(obj: any, refs: string[] = []): string[] {
-  if (!obj || typeof obj !== 'object') return refs;
-  if (Array.isArray(obj)) {
-    for (const item of obj) collectReferences(item, refs);
-    return refs;
-  }
-  if (typeof obj.reference === 'string') {
-    refs.push(obj.reference);
-  }
-  for (const key of Object.keys(obj)) {
-    if (key === 'resourceType' || key === 'id') continue;
-    collectReferences(obj[key], refs);
-  }
-  return refs;
+function getObservationEffective(resource: FhirRecord): string | undefined {
+  return getString(resource.effectiveDateTime)
+    ?? getString(toRecord(resource.effectivePeriod)?.start);
 }
+
+const IGNORED_MISSING_FIELD_KEYS = new Set([
+  'resourceType',
+  'id',
+  'meta',
+  'text',
+]);
+
+const RELATIVE_REFERENCE_PATTERN = /^[A-Z][A-Za-z]+\/[A-Za-z0-9\-.]+$/;

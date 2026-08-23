@@ -13,12 +13,17 @@ export type CanonicalResourceType =
   | 'Measure'
   | 'Library'
   | 'ActivityDefinition'
+  | 'ChargeItemDefinition'
+  | 'EventDefinition'
   | 'MessageDefinition'
   | 'CompartmentDefinition'
   | 'GraphDefinition'
   | 'ExampleScenario'
   | 'ObservationDefinition'
-  | 'SpecimenDefinition';
+  | 'SpecimenDefinition'
+  | 'StructureMap'
+  | 'TerminologyCapabilities'
+  | 'TestPlan';
 
 export const CANONICAL_RESOURCE_TYPES = new Set<CanonicalResourceType>([
   'StructureDefinition',
@@ -35,13 +40,24 @@ export const CANONICAL_RESOURCE_TYPES = new Set<CanonicalResourceType>([
   'Measure',
   'Library',
   'ActivityDefinition',
+  'ChargeItemDefinition',
+  'EventDefinition',
   'MessageDefinition',
   'CompartmentDefinition',
   'GraphDefinition',
   'ExampleScenario',
   'ObservationDefinition',
   'SpecimenDefinition',
+  'StructureMap',
+  'TerminologyCapabilities',
+  'TestPlan',
 ]);
+
+export function isCanonicalResourceType(
+  value: string,
+): value is CanonicalResourceType {
+  return CANONICAL_RESOURCE_TYPES.has(value as CanonicalResourceType);
+}
 
 export const CANONICAL_URL_PATTERN = /^https?:\/\/.+/;
 export const CANONICAL_URN_PATTERN = /^urn:[a-z0-9][a-z0-9-]{0,31}:.+/i;

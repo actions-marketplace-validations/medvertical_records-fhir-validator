@@ -1,110 +1,69 @@
-/**
- * Condition Business Rule Validators
- * 
- * Validators for Condition resource business rules.
- */
-
 import type { ValidationIssue } from '@records-fhir/validation-types';
-import { parseISO, isValid, differenceInDays } from 'date-fns';
-import { logger } from '../../logger';
+import { differenceInDays } from 'date-fns';
+import {
+  asRecord,
+  createBusinessRuleIssue,
+  displayValue,
+  getPresentProperty,
+  getResourceType,
+  parseFhirDateTime,
+  type UnknownRecord,
+} from './validator-utils';
 
-/**
- * Parse FHIR datetime string to Date
- * Handles partial dates (YYYY, YYYY-MM, YYYY-MM-DD) and full datetimes
- */
-function parseFhirDateTime(dateStr: string): Date | null {
-  if (!dateStr) return null;
+const ONSET_DATE_RULE = 'condition-onset-date-validation';
 
-  // Try parsing as ISO first (handles full datetimes)
-  let date = parseISO(dateStr);
-  if (isValid(date)) return date;
+export async function validateConditionOnsetDate(
+  input: unknown,
+  fallbackResourceType: string,
+): Promise<ValidationIssue[]> {
+  const resource = asRecord(input);
+  if (!resource) return [];
 
-  // Try parsing partial dates
-  if (/^\d{4}$/.test(dateStr)) {
-    date = new Date(parseInt(dateStr, 10), 0, 1);
-  } else if (/^\d{4}-\d{2}$/.test(dateStr)) {
-    const [year, month] = dateStr.split('-').map(Number);
-    date = new Date(year, month - 1, 1);
-  } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    date = new Date(year, month - 1, day);
+  const candidate = getOnsetDateCandidate(resource);
+  if (!candidate) return [];
+
+  const resourceType = getResourceType(resource, fallbackResourceType);
+  const onsetDateTime = parseFhirDateTime(candidate.value);
+  if (!onsetDateTime) {
+    return [createBusinessRuleIssue({
+      code: 'invalid-onset-date',
+      path: candidate.path,
+      resourceType,
+      ruleId: ONSET_DATE_RULE,
+      severity: 'error',
+      messageParams: { date: displayValue(candidate.value) },
+      details: { actualValue: candidate.value },
+    })];
   }
 
-  return isValid(date) ? date : null;
+  const daysDiff = differenceInDays(new Date(), onsetDateTime);
+  return daysDiff < -1
+    ? [createBusinessRuleIssue({
+      code: 'future-onset-date',
+      path: candidate.path,
+      resourceType,
+      ruleId: ONSET_DATE_RULE,
+      severity: 'warning',
+      messageParams: { date: candidate.value },
+      details: { actualValue: candidate.value, daysInFuture: Math.abs(daysDiff) },
+    })]
+    : [];
 }
 
-export async function validateConditionOnsetDate(resource: any, resourceType: string): Promise<ValidationIssue[]> {
-  const issues: ValidationIssue[] = [];
-
-  const onsetDate = resource.onsetDateTime || resource.onsetPeriod?.start;
-  if (!onsetDate) {
-    return issues; // No onset date to validate
-  }
-
-  try {
-    const onsetDateTime = parseFhirDateTime(onsetDate);
-
-    if (!onsetDateTime) {
-      issues.push({
-        id: `condition-invalid-onset-date-${Date.now()}`,
-        aspect: 'invariant',
-        severity: 'error',
-        code: 'invalid-onset-date',
-        message: `Invalid onset date format: ${onsetDate}`,
-        path: resource.onsetDateTime ? 'onsetDateTime' : 'onsetPeriod.start',
-        humanReadable: 'The condition onset date format is invalid',
-        details: {
-          fieldPath: resource.onsetDateTime ? 'onsetDateTime' : 'onsetPeriod.start',
-          actualValue: onsetDate,
-          resourceType: resourceType,
-          validationType: 'condition-onset-date-validation'
-        },
-        validationMethod: 'condition-onset-date-validation',
-        timestamp: new Date().toISOString(),
-        resourceType: resourceType,
-        schemaVersion: 'R4'
-      });
-      return issues;
-    }
-
-    const now = new Date();
-    const daysDiff = differenceInDays(now, onsetDateTime);
-
-    // Check for future onset dates
-    if (daysDiff < -1) { // Allow 1 day in future for rounding
-      issues.push({
-        id: `condition-future-onset-date-${Date.now()}`,
-        aspect: 'invariant',
-        severity: 'warning',
-        code: 'future-onset-date',
-        message: `Condition onset date is in the future: ${onsetDate}`,
-        path: resource.onsetDateTime ? 'onsetDateTime' : 'onsetPeriod.start',
-        humanReadable: 'The condition onset date is in the future',
-        details: {
-          fieldPath: resource.onsetDateTime ? 'onsetDateTime' : 'onsetPeriod.start',
-          actualValue: onsetDate,
-          daysInFuture: Math.abs(daysDiff),
-          resourceType: resourceType,
-          validationType: 'condition-onset-date-validation'
-        },
-        validationMethod: 'condition-onset-date-validation',
-        timestamp: new Date().toISOString(),
-        resourceType: resourceType,
-        schemaVersion: 'R4'
-      });
-    }
-  } catch (error: unknown) {
-    logger.error('[ConditionValidators] Condition onset date validation failed:', error);
-  }
-
-  return issues;
+export async function validateConditionStatusDateConsistency(
+  _resource: unknown,
+  _resourceType: string,
+): Promise<ValidationIssue[]> {
+  return [];
 }
 
-export async function validateConditionStatusDateConsistency(_resource: any, _resourceType: string): Promise<ValidationIssue[]> {
-  const issues: ValidationIssue[] = [];
+function getOnsetDateCandidate(
+  resource: UnknownRecord,
+): { value: unknown; path: string } | null {
+  const dateTime = getPresentProperty(resource, 'onsetDateTime');
+  if (dateTime !== undefined) return { value: dateTime, path: 'onsetDateTime' };
 
-  // This is a placeholder for more complex status-date consistency rules
-
-  return issues;
+  const period = asRecord(resource.onsetPeriod);
+  const start = period ? getPresentProperty(period, 'start') : undefined;
+  return start !== undefined ? { value: start, path: 'onsetPeriod.start' } : null;
 }
-

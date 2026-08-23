@@ -17,8 +17,6 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { RecordsValidator } from '../../core/validator-engine';
-import { getCombinedFHIRPathCacheStats, clearFHIRPathCache } from '../constraint-validator';
-import { clearSDFHIRPathCache } from '../sd-fhirpath-executor';
 
 // The corpus lives in the commercial Records monorepo, outside this OSS
 // package. When the package is extracted on its own (e.g. inside the
@@ -64,8 +62,7 @@ describe.skipIf(!HAS_CORPUS)('FHIRPath Cache Benchmark', () => {
 
     it('should measure cache hit rates on first pass (cold start)', async () => {
         // Clear both caches for a clean baseline
-        clearFHIRPathCache();
-        clearSDFHIRPathCache();
+        validator.clearFHIRPathCaches();
 
         const start = performance.now();
         let validated = 0;
@@ -76,7 +73,7 @@ describe.skipIf(!HAS_CORPUS)('FHIRPath Cache Benchmark', () => {
         }
 
         const elapsed = performance.now() - start;
-        const stats = getCombinedFHIRPathCacheStats();
+        const stats = validator.getFHIRPathCacheStats();
 
         console.log('\n=== FHIRPath Cache — First Pass (Cold) ===');
         console.log(`Fixtures validated: ${validated}`);
@@ -93,7 +90,7 @@ describe.skipIf(!HAS_CORPUS)('FHIRPath Cache Benchmark', () => {
 
     it('should measure cache hit rates on second pass (warm)', async () => {
         // Do NOT clear caches — measure benefit of warm cache
-        const statsBefore = getCombinedFHIRPathCacheStats();
+        const statsBefore = validator.getFHIRPathCacheStats();
 
         const start = performance.now();
 
@@ -102,7 +99,7 @@ describe.skipIf(!HAS_CORPUS)('FHIRPath Cache Benchmark', () => {
         }
 
         const elapsed = performance.now() - start;
-        const statsAfter = getCombinedFHIRPathCacheStats();
+        const statsAfter = validator.getFHIRPathCacheStats();
 
         // Compute delta (hits/misses added in this pass only)
         const deltaHits = statsAfter.combined.hits - statsBefore.combined.hits;
@@ -126,8 +123,7 @@ describe.skipIf(!HAS_CORPUS)('FHIRPath Cache Benchmark', () => {
 
     it('should measure per-resource-type breakdown', async () => {
         // Clear and run one more pass, grouping by resourceType
-        clearFHIRPathCache();
-        clearSDFHIRPathCache();
+        validator.clearFHIRPathCaches();
 
         const byType = new Map<string, { count: number; timeMs: number }>();
 
@@ -143,7 +139,7 @@ describe.skipIf(!HAS_CORPUS)('FHIRPath Cache Benchmark', () => {
             byType.set(rt, entry);
         }
 
-        const stats = getCombinedFHIRPathCacheStats();
+        const stats = validator.getFHIRPathCacheStats();
 
         console.log('\n=== Per-ResourceType Validation Timing ===');
         const sorted = [...byType.entries()].sort((a, b) => b[1].count - a[1].count);

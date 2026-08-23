@@ -662,7 +662,8 @@ describe("dedupeIssues", () => {
         severity: "warning",
         path: "ValueSet",
         resourceType: "ValueSet",
-        message: "Constraint failed: vsd-0",
+        message:
+          "Constraint failed: vsd-0: 'Name should be usable as an identifier for the module by machine processing applications such as code generation'",
       }),
       issue({
         aspect: "profile",
@@ -672,7 +673,8 @@ describe("dedupeIssues", () => {
         resourceType: "ValueSet",
         ruleId: "vsd-0",
         details: { constraintKey: "vsd-0" },
-        message: "Name should be usable as an identifier",
+        message:
+          "Name should be usable as an identifier for the module by machine processing applications such as code generation",
       }),
     ]);
 

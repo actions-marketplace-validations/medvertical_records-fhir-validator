@@ -1,4 +1,14 @@
-export type GetValueAtPath = (resource: any, path: string) => any;
+import {
+  findChoiceSidecarProperty,
+  findConcreteChoiceProperty,
+} from '../core/fhir-choice-property';
+import { isRecord } from '../core/fhir-resource';
+import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
+
+export type GetValueAtPath<TResource> = (
+  resource: TResource,
+  path: string,
+) => unknown;
 
 /**
  * Get extension arrays grouped by parent element instance.
@@ -7,14 +17,14 @@ export type GetValueAtPath = (resource: any, path: string) => any;
  * returns one group per coverage item. Cardinality constraints apply per
  * group, not globally across the flattened array.
  */
-export function getExtensionGroupsByParent(
-  resource: any,
+export function getExtensionGroupsByParent<TResource>(
+  resource: TResource,
   elementPath: string,
-  getValueAtPath: GetValueAtPath,
-): any[][] {
+  getValueAtPath: GetValueAtPath<TResource>,
+): unknown[][] {
   const lastDot = elementPath.lastIndexOf('.');
   if (lastDot <= 0) {
-    const rawValue = getValueAtPath(resource, elementPath);
+    const rawValue = readValueAtPath(resource, elementPath, getValueAtPath);
     return [Array.isArray(rawValue) ? rawValue : rawValue != null ? [rawValue] : []];
   }
 
@@ -24,14 +34,14 @@ export function getExtensionGroupsByParent(
   const primitiveSidecarGroups = getPrimitiveExtensionGroups(resource, parentPath, leafKey);
   if (primitiveSidecarGroups) return primitiveSidecarGroups;
 
-  const parentRaw = getValueAtPath(resource, parentPath);
+  const parentRaw = readValueAtPath(resource, parentPath, getValueAtPath);
   if (parentRaw == null) return [];
 
   const parents = Array.isArray(parentRaw) ? parentRaw : [parentRaw];
-  const groups: any[][] = [];
+  const groups: unknown[][] = [];
 
   for (const parent of parents) {
-    if (parent == null || typeof parent !== 'object') continue;
+    if (!isRecord(parent)) continue;
     const exts = parent[leafKey];
     if (Array.isArray(exts)) {
       groups.push(exts);
@@ -43,7 +53,7 @@ export function getExtensionGroupsByParent(
   }
 
   if (groups.length === 0) {
-    const rawValue = getValueAtPath(resource, elementPath);
+    const rawValue = readValueAtPath(resource, elementPath, getValueAtPath);
     return [Array.isArray(rawValue) ? rawValue : rawValue != null ? [rawValue] : []];
   }
 
@@ -51,10 +61,10 @@ export function getExtensionGroupsByParent(
 }
 
 function getPrimitiveExtensionGroups(
-  resource: any,
+  resource: unknown,
   parentPath: string,
   leafKey: string
-): any[][] | null {
+): unknown[][] | null {
   if (leafKey !== 'extension' && leafKey !== 'modifierExtension') return null;
 
   const parentLastDot = parentPath.lastIndexOf('.');
@@ -65,18 +75,22 @@ function getPrimitiveExtensionGroups(
   if (!primitiveKey || primitiveKey.startsWith('_')) return null;
 
   const containers = getValuesAtPath(resource, containerPath);
-  const groups: any[][] = [];
+  const groups: unknown[][] = [];
   let foundPrimitiveParent = false;
 
   for (const container of containers) {
-    if (container == null || typeof container !== 'object' || Array.isArray(container)) continue;
-    if (!(primitiveKey in container)) continue;
+    if (!isRecord(container)) continue;
+    const actualPrimitiveKey = resolvePrimitiveKey(container, primitiveKey);
+    if (!actualPrimitiveKey) continue;
 
-    const primitiveValue = container[primitiveKey];
-    if (!isPrimitiveElementValue(primitiveValue)) continue;
-
+    const primitiveValue = container[actualPrimitiveKey];
+    const sidecar = container[`_${actualPrimitiveKey}`];
+    if (
+      primitiveValue !== undefined &&
+      !isPrimitiveElementValue(primitiveValue)
+    ) continue;
+    if (primitiveValue === undefined && sidecar === undefined) continue;
     foundPrimitiveParent = true;
-    const sidecar = container[`_${primitiveKey}`];
 
     if (Array.isArray(primitiveValue)) {
       for (let i = 0; i < primitiveValue.length; i++) {
@@ -91,7 +105,7 @@ function getPrimitiveExtensionGroups(
   return foundPrimitiveParent ? groups : null;
 }
 
-function isPrimitiveElementValue(value: any): boolean {
+function isPrimitiveElementValue(value: unknown): boolean {
   if (Array.isArray(value)) {
     return value.every(item => item == null || typeof item !== 'object');
   }
@@ -99,37 +113,76 @@ function isPrimitiveElementValue(value: any): boolean {
   return value == null || typeof value !== 'object';
 }
 
-function getExtensionGroupFromSidecar(sidecar: any, leafKey: string): any[] {
-  if (sidecar == null || typeof sidecar !== 'object') return [];
+function getExtensionGroupFromSidecar(sidecar: unknown, leafKey: string): unknown[] {
+  if (!isRecord(sidecar)) return [];
   const exts = sidecar[leafKey];
   if (Array.isArray(exts)) return exts;
   return exts != null ? [exts] : [];
 }
 
-function getValuesAtPath(resource: any, path: string): any[] {
+function getValuesAtPath(resource: unknown, path: string): unknown[] {
   if (!path) return [resource];
+  const resourceType = isRecord(resource) && typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : undefined;
   const segments = path
     .split('.')
     .filter(Boolean)
-    .filter((segment, index) => !(index === 0 && segment === resource?.resourceType));
+    .filter((segment, index) => !(index === 0 && segment === resourceType));
+  const visitedArrays = new WeakMap<object, Set<number>>();
 
-  const walk = (value: any, index: number): any[] => {
+  const walk = (value: unknown, index: number): unknown[] => {
     if (value == null) return [];
     if (index >= segments.length) return Array.isArray(value) ? value : [value];
-    if (Array.isArray(value)) return value.flatMap(item => walk(item, index));
-
-    if (typeof value !== 'object') return [];
-    const segment = segments[index];
-    let next = value[segment];
-
-    if (next === undefined && segment.endsWith('[x]')) {
-      const prefix = segment.slice(0, -3);
-      const actualKey = Object.keys(value).find(k => k.startsWith(prefix) && k !== segment);
-      if (actualKey) next = value[actualKey];
+    if (Array.isArray(value)) {
+      if (wasVisitedAtIndex(value, index, visitedArrays)) return [];
+      return value.flatMap(item => walk(item, index));
     }
 
+    if (!isRecord(value)) return [];
+    const segment = segments[index];
+    const next = resolveFhirSegmentValue(value, segment);
     return walk(next, index + 1);
   };
 
   return walk(resource, 0);
+}
+
+function resolvePrimitiveKey(
+  container: Record<string, unknown>,
+  primitiveKey: string,
+): string | null {
+  if (!primitiveKey.endsWith('[x]')) {
+    return primitiveKey in container || `_${primitiveKey}` in container
+      ? primitiveKey
+      : null;
+  }
+  const base = primitiveKey.slice(0, -3);
+  return findConcreteChoiceProperty(container, base)
+    ?? findChoiceSidecarProperty(container, base)?.slice(1)
+    ?? null;
+}
+
+function readValueAtPath<TResource>(
+  resource: TResource,
+  path: string,
+  getValueAtPath: GetValueAtPath<TResource>,
+): unknown {
+  try {
+    return getValueAtPath(resource, path);
+  } catch {
+    return undefined;
+  }
+}
+
+function wasVisitedAtIndex(
+  value: object,
+  index: number,
+  visited: WeakMap<object, Set<number>>,
+): boolean {
+  const indices = visited.get(value);
+  if (indices?.has(index)) return true;
+  if (indices) indices.add(index);
+  else visited.set(value, new Set([index]));
+  return false;
 }

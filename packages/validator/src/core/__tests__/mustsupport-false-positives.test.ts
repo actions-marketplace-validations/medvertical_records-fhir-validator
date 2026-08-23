@@ -9,6 +9,9 @@ import { logger as log } from '../../logger';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { recordsValidator } from '../../index';
 
+const validateR4 = (resource: unknown, profileUrl?: string) =>
+  recordsValidator.validateRequest({ resource, profileUrl, fhirVersion: 'R4' });
+
 const TEST_PATIENT = {
   resourceType: 'Patient',
   id: '424abf1d-142e-42d0-bf5f-a361174c2ddc',
@@ -35,10 +38,9 @@ describe('mustSupport False Positives', () => {
   }, 120000);
 
   it('should not report false positives for existing elements', async () => {
-    const issues = await recordsValidator.validate(
+    const issues = await validateR4(
       TEST_PATIENT,
       MII_PATIENT_PROFILE,
-      'R4'
     );
 
     // Elements that exist should NOT be reported as mustsupport-missing
@@ -97,10 +99,9 @@ describe('mustSupport False Positives', () => {
       // Missing: identifier, gender, address, link (mustSupport in MII)
     };
 
-    const issues = await recordsValidator.validate(
+    const issues = await validateR4(
       testPatientMissingMustSupport,
       MII_PATIENT_PROFILE,
-      'R4'
     );
 
     // Should report missing mustSupport elements that are actually missing
@@ -119,7 +120,6 @@ describe('mustSupport False Positives', () => {
     expect(genderMissing).toBeDefined();
   }, 120000);
 });
-
 
 
 

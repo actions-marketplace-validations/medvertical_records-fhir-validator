@@ -123,4 +123,14 @@ describe('validateReferenceTargetProfileConformance (gap P-2)', () => {
     const issues = await run({ resolve: undefined, validateProfile: async () => err() });
     expect(issues).toHaveLength(0);
   });
+
+  it('fails open when the injected resolver throws', async () => {
+    const issues = await run({
+      resolve: () => {
+        throw new Error('resolver unavailable');
+      },
+      validateProfile: async () => err(),
+    });
+    expect(issues).toHaveLength(0);
+  });
 });

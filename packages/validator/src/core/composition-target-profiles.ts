@@ -33,7 +33,7 @@ function collectTargetProfiles(
   const profiles = new Set<string>();
   for (const element of elements) {
     if (!predicate(element)) continue;
-    const types = (element as any).type;
+    const types = element.type;
     if (!Array.isArray(types)) continue;
     for (const type of types) {
       const targetProfiles = Array.isArray(type?.targetProfile) ? type.targetProfile : [];

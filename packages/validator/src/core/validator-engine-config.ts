@@ -18,6 +18,8 @@ export interface RecordsValidatorConfig {
   allowedPackages?: string[];
   packageVersionPins?: Record<string, string>;
   profileCacheMaxEntries?: number;
+  /** Skip eager database profile loading for short-lived scoped validators. */
+  prewarmProfileSource?: boolean;
 }
 
 const DEFAULT_PROFILE_CACHE_MAX_ENTRIES = 192;
@@ -44,6 +46,7 @@ export function resolveRecordsValidatorConfig(config: RecordsValidatorConfig): R
       process.env.VALIDATOR_PROFILE_CACHE_MAX_ENTRIES,
       DEFAULT_PROFILE_CACHE_MAX_ENTRIES,
     ),
+    prewarmProfileSource: config.prewarmProfileSource !== false,
     bundledProfilesPath: config.bundledProfilesPath !== undefined
       ? config.bundledProfilesPath
       : process.env.RECORDS_BUNDLED_PROFILES_PATH,

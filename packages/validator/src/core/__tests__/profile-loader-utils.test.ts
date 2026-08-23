@@ -6,12 +6,13 @@
  * and snapshot generation when a profile only ships a differential.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   loadProfileWithSnapshot,
   loadProfileForValidation,
 } from '../profile-loader-utils';
 import type { StructureDefinition } from '../structure-definition-types';
+import { setProfileSource } from '../../persistence';
 
 // ============================================================================
 // Helpers
@@ -272,7 +273,10 @@ describe('loadProfileForValidation', () => {
 
   beforeEach(() => {
     mocks = makeMocks();
+    setProfileSource({});
   });
+
+  afterEach(() => setProfileSource({}));
 
   it('returns cached SD on cache hit', async () => {
     const sd = makeSD();
@@ -318,6 +322,53 @@ describe('loadProfileForValidation', () => {
     expect(result).toBeNull();
   });
 
+  it('retries an exact tenant profile through the scoped host resolver', async () => {
+    const profile = makeSD({ fhirVersion: '4.0.1' } as any);
+    const resolveProfile = vi.fn().mockResolvedValue(profile);
+    setProfileSource({ resolveProfile });
+    mocks.sdLoader.loadProfile.mockResolvedValue(null);
+
+    const result = await loadProfileForValidation(
+      mocks.sdLoader as any,
+      mocks.snapshotGenerator as any,
+      PROFILE_URL,
+      FHIR_VERSION,
+      mocks.profileCache as any,
+      undefined,
+      { organizationId: 17, serverId: 23, fhirVersion: FHIR_VERSION },
+      { profileSources: { simplifier: false, packageRegistry: true } } as any,
+    );
+
+    expect(result).toBe(profile);
+    expect(resolveProfile).toHaveBeenCalledWith(
+      PROFILE_URL,
+      undefined,
+      { profileSources: { simplifier: false, packageRegistry: true } },
+      { organizationId: 17, serverId: 23, fhirVersion: FHIR_VERSION },
+    );
+  });
+
+  it('rejects a tenant fallback profile from another FHIR release', async () => {
+    setProfileSource({
+      resolveProfile: vi.fn().mockResolvedValue(
+        makeSD({ fhirVersion: '5.0.0' } as any),
+      ),
+    });
+    mocks.sdLoader.loadProfile.mockResolvedValue(null);
+
+    const result = await loadProfileForValidation(
+      mocks.sdLoader as any,
+      mocks.snapshotGenerator as any,
+      PROFILE_URL,
+      FHIR_VERSION,
+      undefined,
+      undefined,
+      { organizationId: 17, serverId: 23, fhirVersion: FHIR_VERSION },
+    );
+
+    expect(result).toBeNull();
+  });
+
   it('generates snapshot for differential-only profile and returns null on failure', async () => {
     const sdWithDiff = makeSD({
       snapshot: undefined,
@@ -336,6 +387,32 @@ describe('loadProfileForValidation', () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it('materializes a snapshot without mutating a frozen profile cache entry', async () => {
+    const frozenDifferential = Object.freeze(makeSD({
+      snapshot: undefined,
+      differential: { element: [{ id: 'Patient', path: 'Patient' }] },
+    } as any));
+    const generatedElements = [
+      { id: 'Patient', path: 'Patient' },
+      { id: 'Patient.identifier', path: 'Patient.identifier' },
+    ];
+    mocks.sdLoader.loadProfile.mockResolvedValue(frozenDifferential);
+    mocks.snapshotGenerator.generateSnapshot.mockResolvedValue(generatedElements as any);
+
+    const result = await loadProfileForValidation(
+      mocks.sdLoader as any,
+      mocks.snapshotGenerator as any,
+      PROFILE_URL,
+      FHIR_VERSION,
+      mocks.profileCache as any,
+    );
+
+    expect(result).not.toBe(frozenDifferential);
+    expect(result?.snapshot?.element).toEqual(generatedElements);
+    expect(frozenDifferential.snapshot).toBeUndefined();
+    expect(mocks.profileCache.set).toHaveBeenCalledWith(CACHE_KEY, result);
   });
 
   it('ignores FHIR client as a profile source during validation loading', async () => {

@@ -143,9 +143,24 @@ interface CodingLike {
   code?: unknown;
 }
 
+export interface CodeInferredProfileMatch {
+  profileUrl: string;
+  system: CodingSystem;
+  code: string;
+}
+
 /** Return the single FHIR-implied Observation profile, if any. */
 export function inferCodeBasedProfiles(resource: unknown): string[] {
-  if (!isRecord(resource) || resource.resourceType !== 'Observation') return [];
+  const match = matchCodeInferredProfile(resource);
+  return match ? [match.profileUrl] : [];
+}
+
+/**
+ * Like {@link inferCodeBasedProfiles}, but keeps the triggering coding so
+ * callers can attribute downstream findings to the implied profile.
+ */
+export function matchCodeInferredProfile(resource: unknown): CodeInferredProfileMatch | null {
+  if (!isRecord(resource) || resource.resourceType !== 'Observation') return null;
 
   const observation = resource as ObservationLike;
   const codings = Array.isArray(observation.code?.coding)
@@ -153,13 +168,14 @@ export function inferCodeBasedProfiles(resource: unknown): string[] {
     : [];
 
   for (const rule of OBSERVATION_CODE_PROFILE_RULES) {
-    if (codings.some(coding => coding.system === rule.system &&
-      typeof coding.code === 'string' && rule.codes.has(coding.code))) {
-      return [rule.profileUrl];
+    const triggeringCoding = codings.find(coding => coding.system === rule.system &&
+      typeof coding.code === 'string' && rule.codes.has(coding.code));
+    if (typeof triggeringCoding?.code === 'string') {
+      return { profileUrl: rule.profileUrl, system: rule.system, code: triggeringCoding.code };
     }
   }
 
-  return [];
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

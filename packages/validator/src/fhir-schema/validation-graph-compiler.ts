@@ -31,7 +31,7 @@ function compileElements(
   return Object.entries(elements).map(([name, element]) => {
     const path = `${parentPath}.${name}`;
     const schemaPath = `${parentSchemaPath}.${name}`;
-    const node = compileElement(schema, name, path, schemaPath, element, depth);
+    const node = compileElement(schema, name, path, schemaPath, element);
 
     const children: ValidationGraphNode[] = [];
     if (element.elements) {
@@ -58,7 +58,6 @@ function compileElement(
   path: string,
   schemaPath: string,
   element: FHIRSchemaElement,
-  depth: number,
 ): ValidationGraphNode {
   return {
     path,

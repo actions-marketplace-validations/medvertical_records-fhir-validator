@@ -1,26 +1,46 @@
 import type { SubsumptionOutcome } from './terminology-api-types';
+import {
+  getNestedString,
+  getOperationOutcomeIssueValues,
+  getParametersEntries,
+  isTerminologyResponseRecord,
+} from './terminology-response-utils';
 
-export function validateCodeSucceeded(parameters: any): boolean {
-  if (parameters?.resourceType !== 'Parameters' || !Array.isArray(parameters.parameter)) {
-    return false;
-  }
-  const resultParam = parameters.parameter.find((p: any) => p.name === 'result');
+const SUBSUMPTION_OUTCOMES = new Set<SubsumptionOutcome>([
+  'subsumes',
+  'subsumed-by',
+  'equivalent',
+  'not-subsumed',
+  'unknown',
+]);
+
+export function validateCodeSucceeded(parameters: unknown): boolean {
+  const entries = getParametersEntries(parameters);
+  if (!entries) return false;
+  const resultParam = entries.find(parameter => parameter.name === 'result');
   return resultParam?.valueBoolean === true;
 }
 
-export function extractSubsumptionOutcome(parameters: any): SubsumptionOutcome | undefined {
-  if (parameters?.resourceType !== 'Parameters' || !Array.isArray(parameters.parameter)) {
-    return undefined;
-  }
-  const outcomeParam = parameters.parameter.find((p: any) => p.name === 'outcome');
-  return outcomeParam?.valueCode as SubsumptionOutcome | undefined;
+export function extractSubsumptionOutcome(parameters: unknown): SubsumptionOutcome | undefined {
+  const entries = getParametersEntries(parameters);
+  if (!entries) return undefined;
+  const outcomeParam = entries.find(parameter => parameter.name === 'outcome');
+  const outcome = outcomeParam?.valueCode;
+  return typeof outcome === 'string' && SUBSUMPTION_OUTCOMES.has(outcome as SubsumptionOutcome)
+    ? outcome as SubsumptionOutcome
+    : undefined;
 }
 
-export function operationOutcomeCannotResolveBinding(outcome: any): boolean {
-  return outcome?.resourceType === 'OperationOutcome' &&
-    Array.isArray(outcome.issue) &&
-    outcome.issue.some((issue: any) =>
-      issue?.code === 'not-found' ||
-      /could not be (?:found|resolved)|unable to (?:find|resolve)|not.*resolved/i.test(issue?.details?.text ?? '')
-    );
+export function operationOutcomeCannotResolveBinding(outcome: unknown): boolean {
+  const issues = getOperationOutcomeIssueValues(outcome);
+  if (!issues) return false;
+  return issues.some(issue =>
+    isTerminologyResponseRecord(issue) &&
+    (
+      issue.code === 'not-found' ||
+      /could not be (?:found|resolved)|unable to (?:find|resolve)|not.*resolved/i.test(
+        getNestedString(issue, 'details', 'text') ?? '',
+      )
+    )
+  );
 }

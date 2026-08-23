@@ -79,6 +79,24 @@ describe('buildTerminologyResolutionConfig', () => {
       cacheResults: true,
       cacheTTLSeconds: 3600,
     });
+    expect(config.reportUnverifiedBindings).toBe(true);
+    expect(config.strictUnverifiedRequiredBindings).toBe(true);
+  });
+
+  it('honors an explicit opt-out from unverified binding diagnostics', () => {
+    const settings = {
+      terminologyServers: [],
+      terminologyResolution: {
+        strategy: 'local-only',
+        reportUnverifiedBindings: false,
+        strictUnverifiedRequiredBindings: false,
+      },
+    } as unknown as ValidationSettings;
+
+    const config = buildTerminologyResolutionConfig(settings);
+
+    expect(config.reportUnverifiedBindings).toBe(false);
+    expect(config.strictUnverifiedRequiredBindings).toBe(false);
   });
 
   it('selects the first enabled closed terminology server as primary', () => {

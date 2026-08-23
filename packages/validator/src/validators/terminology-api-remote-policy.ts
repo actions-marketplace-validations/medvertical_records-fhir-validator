@@ -1,6 +1,7 @@
 import { logger } from '../logger';
 import type { CircuitBreaker } from '../terminology';
 import type { TerminologyResolutionConfig } from './valueset-types';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 
 export const DEFAULT_VALUESET_EXPAND_TIMEOUT_MS = 10000;
 export const DEFAULT_REMOTE_TERMINOLOGY_TIMEOUT_MS = 5000;
@@ -46,6 +47,19 @@ export function getMaxRemoteCodeSystemValidations(config: TerminologyResolutionC
   );
 }
 
+export function getMaxConcurrentRemoteTerminologyRequests(
+  config: TerminologyResolutionConfig,
+): number {
+  const configured = Number(
+    config.serverDelegation?.maxConcurrentRequests
+      ?? process.env.RECORDS_VALIDATOR_TERMINOLOGY_CONCURRENCY
+      ?? 8,
+  );
+  return Number.isFinite(configured)
+    ? Math.max(1, Math.min(64, Math.floor(configured)))
+    : 8;
+}
+
 export function recordTerminologyResponse(
   circuitBreaker: CircuitBreaker,
   config: TerminologyResolutionConfig,
@@ -56,10 +70,12 @@ export function recordTerminologyResponse(
   const durationMs = Date.now() - startedAt;
   const slowThresholdMs = getSlowResponseThresholdMs(config);
   if (slowThresholdMs > 0 && durationMs >= slowThresholdMs) {
-    logger.warn(
-      `[TerminologyApiClient] ${operation} on ${serverUrl} took ${durationMs}ms ` +
-      `(threshold ${slowThresholdMs}ms); recording slow-response circuit failure`,
-    );
+    logger.warn('[TerminologyApiClient] Slow terminology response; recording circuit failure', {
+      ...terminologyTargetMetadata(serverUrl),
+      operation,
+      durationMs,
+      slowThresholdMs,
+    });
     circuitBreaker.recordFailure();
     return;
   }

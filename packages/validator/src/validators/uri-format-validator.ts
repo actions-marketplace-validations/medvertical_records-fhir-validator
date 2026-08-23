@@ -15,6 +15,10 @@ const RELATIVE_URI_PATHS = new Set([
     'parameter.value[x]', // ValueSet.expansion.parameter.valueUri is a primitive uri and can be relative
     'request.url',   // Bundle.entry.request.url — relative request target
     'response.location', // Bundle.entry.response.location
+    'item.definition', // Questionnaire(Response).item.definition carries ElementDefinition ids such as Patient.birthDate; Java accepts them
+    'agent.policy', // AuditEvent.agent.policy is a plain uri; SAML/XACML policy ids are relative references Java accepts
+    'content.path', // ArtifactAssessment.content.path holds element-path tokens such as 'status'; Java accepts them
+    'component.path', // ArtifactAssessment.content.component recurses content, so nested paths end in component.path
 ]);
 
 const RELATIVE_URI_EXACT_PATHS = new Set([
@@ -69,12 +73,7 @@ function allowsRelativeUri(path: string): boolean {
     if (RELATIVE_URI_EXACT_PATHS.has(stripped)) return true;
     if (isFhirTypeCodePath(stripped)) return true;
     if (isCodingSystemPath(stripped)) return true;
-    // operationdefinition-allowed-type is a uri-valued extension whose
-    // values are FHIR type names such as `Reference` and `Questionnaire`.
-    if (
-        stripped.startsWith('OperationDefinition.parameter.') &&
-        stripped.endsWith('.extension.value[x]')
-    ) return true;
+    if (isExtensionValueUriPath(stripped)) return true;
 
     const segments = stripped.split('.');
     if (segments.length >= 2) {
@@ -186,6 +185,18 @@ function isCodingSystemPath(strippedPath: string): boolean {
         // report that the system cannot be resolved.
         parent === 'tag' ||
         parent === 'security';
+}
+
+/**
+ * Extension.value[x] of type `uri` is a plain RFC 3986 URI reference, which
+ * may be relative (e.g. PDex mTLS endpoint `standard` values). The Java
+ * validator restricts its absolute-URI rule to canonical/system-like slots,
+ * so flagging relative extension values would diverge from it. Canonical
+ * extension values (`valueCanonical`) keep the absolute requirement.
+ */
+function isExtensionValueUriPath(strippedPath: string): boolean {
+    const debracketed = strippedPath.replace(/\[url=(?:'[^']*'|"[^"]*")\]/g, '');
+    return /(?:^|\.)(?:extension|modifierExtension)\.(?:valueUri|value\[x\])$/.test(debracketed);
 }
 
 function isCanonicalReferencePath(path: string): boolean {

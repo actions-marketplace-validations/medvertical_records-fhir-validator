@@ -3,10 +3,14 @@ import type { FhirVersion } from './valueset-expansion-cache-key';
 import type {
   CodeSystem,
   ValueSet,
+  ValueSetExpansionContains,
   ValueSetComposeExclude,
   ValueSetComposeInclude,
 } from './valueset-types';
 import type { ValueSetPackageLoader } from './valueset-package-loader';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
+import { codeSystemCanonicalCandidates } from './code-system-canonical-aliases';
+import { BoundedLruCache } from '../cache/bounded-lru-cache';
 
 export type TwoPhaseExpansionCoverage = 'complete' | 'partial' | 'none';
 
@@ -31,13 +35,25 @@ interface CachedExpansion {
 }
 
 export class TwoPhaseTerminologyExpansion {
-  private cache = new Map<string, CachedExpansion>();
+  private readonly cache: BoundedLruCache<string, CachedExpansion>;
+  private readonly pending = new Map<string, Promise<CachedExpansion>>();
+  private readonly maxCachedCodesPerExpansion: number;
+  private cacheRevision = 0;
   private static readonly MAX_COMPOSITION_DEPTH = 20;
 
-  constructor(private packageLoader: ValueSetPackageLoader) {}
+  constructor(
+    private packageLoader: ValueSetPackageLoader,
+    maxCacheEntries = 256,
+    maxCachedCodesPerExpansion = 100_000,
+  ) {
+    this.cache = new BoundedLruCache(maxCacheEntries);
+    this.maxCachedCodesPerExpansion = normalizePositiveInteger(maxCachedCodesPerExpansion, 100_000);
+  }
 
   clear(): void {
+    this.cacheRevision++;
     this.cache.clear();
+    this.pending.clear();
   }
 
   async lookup(
@@ -60,8 +76,11 @@ export class TwoPhaseTerminologyExpansion {
       };
     }
 
-    const fullCode = system ? `${system}|${code}` : code;
-    const hit = expansion.codes.has(fullCode) || expansion.codes.has(code);
+    const fullCodes = system
+      ? codeSystemCanonicalCandidates(system).map(candidate => `${candidate}|${code}`)
+      : [code];
+    const hit = fullCodes.some(fullCode => expansion.codes.has(fullCode))
+      || expansion.codes.has(code);
     return {
       status: hit ? 'hit' : 'miss',
       coverage: expansion.coverage,
@@ -76,16 +95,48 @@ export class TwoPhaseTerminologyExpansion {
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
+    const pending = this.pending.get(cacheKey);
+    if (pending) return pending;
+
+    const cacheRevision = this.cacheRevision;
+    const request = this.buildAndCacheExpansion(
+      cacheKey,
+      valueSetUrl,
+      fhirVersion,
+      cacheRevision,
+    ).finally(() => {
+      if (this.pending.get(cacheKey) === request) this.pending.delete(cacheKey);
+    });
+    this.pending.set(cacheKey, request);
+    return request;
+  }
+
+  private async buildAndCacheExpansion(
+    cacheKey: string,
+    valueSetUrl: string,
+    fhirVersion: FhirVersion | undefined,
+    cacheRevision: number,
+  ): Promise<CachedExpansion> {
     const valueSet = await this.packageLoader.loadValueSetResource(valueSetUrl, fhirVersion);
     const built = valueSet
       ? await this.buildExpansion(valueSet, new Set(), 0, fhirVersion)
       : { codes: new Set<string>(), coverage: 'none' as const, source: 'none' as const };
 
-    this.cache.set(cacheKey, built);
+    if (
+      this.cacheRevision === cacheRevision
+      && built.codes.size <= this.maxCachedCodesPerExpansion
+    ) {
+      this.cache.set(cacheKey, built);
+    }
     if (built.coverage !== 'none') {
       logger.debug(
-        `[TwoPhaseTerminology] Built ${built.coverage} local expansion for ${valueSetUrl} ` +
-        `(${built.codes.size} codes, source=${built.source})`,
+        '[TwoPhaseTerminology] Built local expansion',
+        {
+          ...terminologyTargetMetadata(valueSetUrl),
+          coverage: built.coverage,
+          codeCount: built.codes.size,
+          source: built.source,
+        },
       );
     }
     return built;
@@ -134,7 +185,7 @@ export class TwoPhaseTerminologyExpansion {
 
   private collectExpansionCodes(valueSet: ValueSet): Set<string> {
     const codes = new Set<string>();
-    const visit = (entries: Array<{ system?: string; code?: string; contains?: any[] }>): void => {
+    const visit = (entries: ValueSetExpansionContains[]): void => {
       for (const entry of entries) {
         if (entry.code) {
           if (entry.system) codes.add(`${entry.system}|${entry.code}`);
@@ -202,6 +253,12 @@ export class TwoPhaseTerminologyExpansion {
 
     return { codes, coverage, source: codes.size > 0 ? 'compose' : 'none' };
   }
+}
+
+function normalizePositiveInteger(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.trunc(value))
+    : fallback;
 }
 
 function combineCoverage(

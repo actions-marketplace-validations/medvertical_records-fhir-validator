@@ -3,6 +3,10 @@
  */
 
 import { getPrimitiveSidecar, resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
+import {
+  findChoiceSidecarProperty,
+  findConcreteChoiceProperty,
+} from '../core/fhir-choice-property';
 
 /**
  * Validation target for a specific path in a resource.
@@ -10,7 +14,7 @@ import { getPrimitiveSidecar, resolveFhirSegmentValue } from '../core/fhir-primi
  */
 export interface ValidationTarget {
   /** Value at the target path */
-  value: any;
+  value: unknown;
 
   /** Full path including array indices (e.g., "Patient.identifier[0].system") */
   fullPath: string;
@@ -28,25 +32,15 @@ export interface ValidationTarget {
 /**
  * Check if the value at a given path is an array.
  */
-export function isArrayAtPath(resource: any, path: string): boolean {
+export function isArrayAtPath(resource: unknown, path: string): boolean {
   const parts = path.split('.');
-  if (parts[0] === resource?.resourceType) {
+  const resourceType = isRecord(resource) && typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : undefined;
+  if (parts[0] === resourceType) {
     parts.shift();
   }
-
-  let current: any = resource;
-  for (const part of parts) {
-    if (current == null) return false;
-    if (Array.isArray(current)) {
-      current = current[0];
-      if (current == null) return false;
-    }
-
-    const value = resolveFhirSegmentValue(current, part);
-    current = value;
-  }
-
-  return Array.isArray(current);
+  return pathResolvesToArray(resource, parts, 0, new WeakMap());
 }
 
 /**
@@ -67,20 +61,16 @@ export function expandPathWithArrayIndex(
  * Get all validation targets for a path, expanding arrays.
  */
 export function getValidationTargets(
-  resource: any,
+  resource: unknown,
   path: string
 ): ValidationTarget[] {
-  if (!resource || typeof resource !== 'object') {
+  if (!isRecord(resource)) {
     return [];
   }
 
   const parts = path.split('.');
   const startIndex = parts[0] === resource.resourceType ? 1 : 0;
-  let targets: Array<{
-    current: any;
-    pathSoFar: string[];
-    resourceTypePart: string;
-  }> = [{
+  let targets: TraversalTarget[] = [{
     current: resource,
     pathSoFar: [],
     resourceTypePart: parts[0] === resource.resourceType ? parts[0] : ''
@@ -94,10 +84,10 @@ export function getValidationTargets(
 }
 
 function resolveNextSegmentTargets(
-  targets: Array<{ current: any; pathSoFar: string[]; resourceTypePart: string }>,
+  targets: TraversalTarget[],
   segment: string,
   hasRemainingPath: boolean,
-): Array<{ current: any; pathSoFar: string[]; resourceTypePart: string }> {
+): TraversalTarget[] {
   const newTargets: typeof targets = [];
 
   for (const target of targets) {
@@ -130,13 +120,24 @@ function resolveNextSegmentTargets(
 }
 
 function resolveSegmentTargets(
-  currentValue: any,
+  currentValue: unknown,
   segment: string,
   hasRemainingPath: boolean,
-): Array<{ value: any; pathSegment: string }> {
-  if (segment.endsWith('[x]') && currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue)) {
+): Array<{ value: unknown; pathSegment: string }> {
+  const indexedSegment = /^(.+)\[(\d+)\]$/.exec(segment);
+  if (indexedSegment && isRecord(currentValue)) {
+    const [, property, rawIndex] = indexedSegment;
+    const collection = resolveFhirSegmentValue(currentValue, property);
+    const index = Number(rawIndex);
+    return [{
+      value: Array.isArray(collection) ? collection[index] : undefined,
+      pathSegment: `${property}[${index}]`,
+    }];
+  }
+
+  if (segment.endsWith('[x]') && isRecord(currentValue)) {
     const baseName = segment.slice(0, -3);
-    const directChoiceKey = Object.keys(currentValue).find(key => isConcreteChoiceKey(key, baseName));
+    const directChoiceKey = findConcreteChoiceProperty(currentValue, baseName);
     if (directChoiceKey) {
       const sidecar = hasRemainingPath
         ? getPrimitiveSidecar(currentValue, directChoiceKey)
@@ -147,9 +148,7 @@ function resolveSegmentTargets(
       }];
     }
 
-    const sidecarChoiceKey = Object.keys(currentValue).find(
-      key => key.startsWith('_') && isConcreteChoiceKey(key.slice(1), baseName),
-    );
+    const sidecarChoiceKey = findChoiceSidecarProperty(currentValue, baseName);
     if (sidecarChoiceKey) {
       return [{
         value: resolveFhirSegmentValue(currentValue, segment),
@@ -160,9 +159,7 @@ function resolveSegmentTargets(
 
   if (
     hasRemainingPath &&
-    currentValue &&
-    typeof currentValue === 'object' &&
-    !Array.isArray(currentValue) &&
+    isRecord(currentValue) &&
     isPrimitiveValueOrPrimitiveArray(currentValue[segment])
   ) {
     const sidecar = getPrimitiveSidecar(currentValue, segment);
@@ -178,21 +175,11 @@ function isPrimitiveValueOrPrimitiveArray(value: unknown): boolean {
   return Array.isArray(value) ? value.every(isPrimitive) : isPrimitive(value);
 }
 
-function isConcreteChoiceKey(key: string, baseName: string): boolean {
-  return key.startsWith(baseName) &&
-    key.length > baseName.length &&
-    key[baseName.length] === key[baseName.length].toUpperCase();
-}
-
-function resolveSegmentValue(currentValue: any, segment: string): any {
+function resolveSegmentValue(currentValue: unknown, segment: string): unknown {
   return resolveFhirSegmentValue(currentValue, segment);
 }
 
-function convertToValidationTarget(target: {
-  current: any;
-  pathSoFar: string[];
-  resourceTypePart: string;
-}): ValidationTarget {
+function convertToValidationTarget(target: TraversalTarget): ValidationTarget {
   const relativePath = target.pathSoFar.join('.');
   const fullPath = target.resourceTypePart && relativePath
     ? `${target.resourceTypePart}.${relativePath}`
@@ -210,6 +197,51 @@ function convertToValidationTarget(target: {
     isArrayElement: target.pathSoFar.some(segment => /\[\d+\]/.test(segment)),
     arrayIndex: getLastArrayIndex(target.pathSoFar)
   };
+}
+
+interface TraversalTarget {
+  current: unknown;
+  pathSoFar: string[];
+  resourceTypePart: string;
+}
+
+function pathResolvesToArray(
+  current: unknown,
+  segments: string[],
+  index: number,
+  visitedArrays: WeakMap<object, Set<number>>,
+): boolean {
+  if (index >= segments.length) return Array.isArray(current);
+  if (current === undefined || current === null) return false;
+  if (Array.isArray(current)) {
+    if (wasVisitedAtIndex(current, index, visitedArrays)) return false;
+    return current.some(item =>
+      pathResolvesToArray(item, segments, index, visitedArrays)
+    );
+  }
+  if (!isRecord(current)) return false;
+  return pathResolvesToArray(
+    resolveFhirSegmentValue(current, segments[index]),
+    segments,
+    index + 1,
+    visitedArrays,
+  );
+}
+
+function wasVisitedAtIndex(
+  value: object,
+  index: number,
+  visited: WeakMap<object, Set<number>>,
+): boolean {
+  const indices = visited.get(value);
+  if (indices?.has(index)) return true;
+  if (indices) indices.add(index);
+  else visited.set(value, new Set([index]));
+  return false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function getLastArrayIndex(pathSegments: string[]): number | undefined {

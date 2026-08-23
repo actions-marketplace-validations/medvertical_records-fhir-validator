@@ -16,22 +16,30 @@ import { createValidationIssue } from '../issues';
 import { validateNarrativeDiv } from './narrative-xhtml-rules';
 
 /**
- * Extract every `id="…"` attribute value from an xhtml fragment. Used by
- * the textLink-extension check to verify that a `htmlid` sub-extension
- * actually points at an anchor in the rendered narrative.
+ * Extract every fragment-link target from an xhtml fragment: `id="…"`
+ * attribute values plus legacy `<a name="…">` anchors. The IG-publisher's
+ * generated narratives anchor contained resources and questionnaire options
+ * with `<a name>` (e.g. `hc<resourceId>/<containedId>`, `opt-item.<linkId>`),
+ * and the HL7 validator resolves local hyperlinks against both anchor forms.
+ * Also used by the textLink-extension check to verify that a `htmlid`
+ * sub-extension actually points at an anchor in the rendered narrative.
  */
-function extractHtmlIds(div: string): Set<string> {
-    const ids = new Set<string>();
-    if (typeof div !== 'string' || div.length === 0) return ids;
-    // Match `id="..."` and `id='...'` (case-insensitive). Conservatively
-    // ignore any id attribute whose value is empty.
-    const re = /\bid\s*=\s*(["'])([^"']*)\1/gi;
-    let match: RegExpExecArray | null;
-    while ((match = re.exec(div)) !== null) {
-        const value = match[2];
-        if (value.length > 0) ids.add(value);
+function extractAnchorTargets(div: string): Set<string> {
+    const targets = new Set<string>();
+    if (typeof div !== 'string' || div.length === 0) return targets;
+    const scannable = div
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+    const tagPattern = /<(?!\/|!|\?)[A-Za-z][A-Za-z0-9:.-]*\b[^>]*>/g;
+    for (const tag of scannable.match(tagPattern) ?? []) {
+        const idMatch = tag.match(/\bid\s*=\s*(["'])([^"']+)\1/i);
+        if (idMatch?.[2]) targets.add(idMatch[2]);
+        if (!/^<a\b/i.test(tag)) continue;
+        // `[^\w-]` guard keeps attribute lookalikes such as data-name out.
+        const nameMatch = tag.match(/[^\w-]name\s*=\s*(["'])([^"']+)\1/i);
+        if (nameMatch?.[2]) targets.add(nameMatch[2]);
     }
-    return ids;
+    return targets;
 }
 
 // ============================================================================
@@ -42,11 +50,10 @@ export class NarrativeValidator {
     /**
      * Validate narrative content of a resource
      */
-    // eslint-disable-next-line max-lines-per-function -- this method is the entry point that orchestrates status / div / language / textLink / Composition.section recursion; splitting the steps would scatter the narrative pipeline.
-    validateNarrative(resource: any, resourceType: string): ValidationIssue[] {
+    validateNarrative(resource: unknown, resourceType: string): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
-        if (!resource.text) {
+        if (!isRecord(resource) || !isRecord(resource.text)) {
             return issues; // No narrative to validate (existence is checked elsewhere)
         }
 
@@ -54,7 +61,11 @@ export class NarrativeValidator {
         const basePath = `${resourceType}.text`;
 
         // Validate status
-        if (status && !['generated', 'extensions', 'additional', 'empty'].includes(status)) {
+        if (
+            typeof status === 'string' &&
+            status.length > 0 &&
+            !['generated', 'extensions', 'additional', 'empty'].includes(status)
+        ) {
             issues.push(createValidationIssue({
                 code: 'narrative-invalid-status',
                 path: `${basePath}.status`,
@@ -64,13 +75,15 @@ export class NarrativeValidator {
         }
 
         // Validate div
-        if (div) {
+        if (typeof div === 'string' && div.length > 0) {
             issues.push(...validateNarrativeDiv(div, basePath, resourceType));
+            issues.push(...validateLocalNarrativeHyperlinks(div, `${basePath}.div`, resourceType));
 
             // Language tag check: if the resource has .language, the div
             // should have matching lang AND xml:lang attributes (FHIR rule,
             // see https://www.w3.org/TR/i18n-html-tech-lang/#langvalues)
-            if (resource.language && typeof div === 'string') {
+            if (typeof resource.language === 'string' && resource.language.length > 0) {
+                const resourceLanguage = resource.language;
                 // `\blang` also matches the `lang` suffix in `xml:lang`.
                 // Require an actual attribute boundary so xml:lang alone does
                 // not incorrectly satisfy the separate HTML lang requirement.
@@ -108,18 +121,26 @@ export class NarrativeValidator {
                             severityOverride: 'warning',
                         }));
                     }
-                    // Check language mismatch
-                    if (hasLang && langMatch[1] && langMatch[1] !== resource.language) {
+                    const languages = [langMatch?.[1], xmlLangMatch?.[1]]
+                        .filter((language): language is string => typeof language === 'string');
+                    const hasMismatch = languages.some(language =>
+                        language.toLocaleLowerCase() !== resourceLanguage.toLocaleLowerCase()
+                    );
+                    if (hasMismatch) {
                         issues.push(createValidationIssue({
                             code: 'narrative-lang-mismatch',
                             path: resourceType,
                             resourceType,
-                            customMessage: `Resource has a language (${resource.language}), and the XHTML has a language (${langMatch[1]}), but they differ `,
+                            customMessage:
+                                `Resource has language '${resourceLanguage}', but the XHTML language ` +
+                                `attributes (${languages.join(', ')}) differ`,
                             severityOverride: 'warning',
                         }));
                     }
                 }
             }
+        } else if (div !== undefined && div !== null && typeof div !== 'string') {
+            issues.push(...validateNarrativeDiv(div, basePath, resourceType));
         } else if (status !== 'empty') {
             // div is required unless status is 'empty'
             issues.push(createValidationIssue({
@@ -135,7 +156,7 @@ export class NarrativeValidator {
         // emits three diagnostics per broken textLink — one each for the
         // missing html anchor, the unresolved data target, and the bad
         // URL value. See ips-link baseline.
-        const textExtensions: any[] = Array.isArray(resource.text?.extension)
+        const textExtensions: unknown[] = Array.isArray(resource.text.extension)
             ? resource.text.extension
             : [];
         if (textExtensions.length > 0) {
@@ -153,7 +174,10 @@ export class NarrativeValidator {
         // Composition.section[0].text.div).
         if (resourceType === 'Composition' && Array.isArray(resource.section)) {
             issues.push(...this.validateCompositionSectionNarratives(
-                resource, resource.section, `${resourceType}.section`,
+                resource,
+                resource.section,
+                `${resourceType}.section`,
+                new WeakSet<object>(),
             ));
         }
 
@@ -166,38 +190,47 @@ export class NarrativeValidator {
      * `section` BackboneElements.
      */
     private validateCompositionSectionNarratives(
-        rootResource: any,
-        sections: any[],
+        rootResource: Record<string, unknown>,
+        sections: unknown[],
         basePath: string,
+        ancestors: WeakSet<object>,
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
         for (let i = 0; i < sections.length; i++) {
             const section = sections[i];
-            if (!section || typeof section !== 'object') continue;
+            if (!isRecord(section) || ancestors.has(section)) continue;
+            ancestors.add(section);
 
-            const sectionPath = `${basePath}[${i}]`;
-            const text = section.text;
-            if (text && typeof text === 'object') {
-                const textPath = `${sectionPath}.text`;
-                if (typeof text.div === 'string') {
-                    issues.push(...validateNarrativeDiv(text.div, textPath, 'Composition'));
+            try {
+                const sectionPath = `${basePath}[${i}]`;
+                const text = section.text;
+                if (isRecord(text)) {
+                    const textPath = `${sectionPath}.text`;
+                    if (text.div !== undefined && text.div !== null) {
+                        issues.push(...validateNarrativeDiv(text.div, textPath, 'Composition'));
+                    }
+                    const sectionTextExt: unknown[] = Array.isArray(text.extension) ? text.extension : [];
+                    if (sectionTextExt.length > 0) {
+                        issues.push(...this.validateTextLinkExtensions(
+                            rootResource,
+                            textPath,
+                            'Composition',
+                            sectionTextExt,
+                            typeof text.div === 'string' ? text.div : '',
+                        ));
+                    }
                 }
-                const sectionTextExt: any[] = Array.isArray(text.extension) ? text.extension : [];
-                if (sectionTextExt.length > 0) {
-                    issues.push(...this.validateTextLinkExtensions(
+
+                if (Array.isArray(section.section)) {
+                    issues.push(...this.validateCompositionSectionNarratives(
                         rootResource,
-                        textPath,
-                        'Composition',
-                        sectionTextExt,
-                        typeof text.div === 'string' ? text.div : '',
+                        section.section,
+                        `${sectionPath}.section`,
+                        ancestors,
                     ));
                 }
-            }
-
-            if (Array.isArray(section.section)) {
-                issues.push(...this.validateCompositionSectionNarratives(
-                    rootResource, section.section, `${sectionPath}.section`,
-                ));
+            } finally {
+                ancestors.delete(section);
             }
         }
         return issues;
@@ -208,32 +241,36 @@ export class NarrativeValidator {
      * `textLink` URL. Each instance must carry sub-extensions `htmlid`
      * (string) and `data` (uri); the htmlid value should appear as an
      * `id="…"` attribute in the rendered xhtml, and the data uri (when it
-     * starts with `#`) should resolve to a contained resource id.
+     * starts with `#`) should resolve to an id in that same xhtml.
      */
     private validateTextLinkExtensions(
-        resource: any,
+        resource: Record<string, unknown>,
         basePath: string,
         resourceType: string,
-        textExtensions: any[],
+        textExtensions: unknown[],
         div: string,
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
-        const htmlIds = extractHtmlIds(div);
-        const containedIds = new Set<string>();
-        if (Array.isArray(resource.contained)) {
-            for (const c of resource.contained) {
-                if (c && typeof c.id === 'string') containedIds.add(c.id);
-            }
-        }
+        const htmlIds = extractAnchorTargets(div);
         const TEXTLINK_URL = 'http://hl7.org/fhir/StructureDefinition/textLink';
 
         for (let i = 0; i < textExtensions.length; i++) {
             const ext = textExtensions[i];
-            if (ext?.url !== TEXTLINK_URL) continue;
-            const subs: any[] = Array.isArray(ext.extension) ? ext.extension : [];
-            const htmlid = subs.find((s: any) => s?.url === 'htmlid')?.valueString;
-            const dataIdx = subs.findIndex((s: any) => s?.url === 'data');
-            const dataUri = dataIdx >= 0 ? subs[dataIdx]?.valueUri : undefined;
+            if (!isRecord(ext) || ext.url !== TEXTLINK_URL) continue;
+            const subs: unknown[] = Array.isArray(ext.extension) ? ext.extension : [];
+            const htmlidExtension = subs.find(sub =>
+                isRecord(sub) && sub.url === 'htmlid'
+            );
+            const htmlid = isRecord(htmlidExtension)
+                ? htmlidExtension.valueString
+                : undefined;
+            const dataIdx = subs.findIndex(sub =>
+                isRecord(sub) && sub.url === 'data'
+            );
+            const dataExtension = dataIdx >= 0 ? subs[dataIdx] : undefined;
+            const dataUri = isRecord(dataExtension)
+                ? dataExtension.valueUri
+                : undefined;
 
             if (typeof htmlid === 'string' && htmlid.length > 0 && !htmlIds.has(htmlid)) {
                 issues.push(createValidationIssue({
@@ -247,7 +284,7 @@ export class NarrativeValidator {
 
             if (typeof dataUri === 'string' && dataUri.startsWith('#')) {
                 const targetId = dataUri.substring(1);
-                if (targetId.length > 0 && !containedIds.has(targetId)) {
+                if (targetId.length > 0 && !htmlIds.has(targetId)) {
                     issues.push(createValidationIssue({
                         code: 'narrative-textlink-target-not-found',
                         path: basePath,
@@ -273,5 +310,36 @@ export class NarrativeValidator {
 
 }
 
-// Singleton instance
-export const narrativeValidator = new NarrativeValidator();
+function validateLocalNarrativeHyperlinks(
+    div: string,
+    path: string,
+    resourceType: string,
+): ValidationIssue[] {
+    const anchorTargets = extractAnchorTargets(div);
+    const issues: ValidationIssue[] = [];
+    const scannable = div
+        .replace(/<!--[\s\S]*?-->/g, '')
+        .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+    const anchorPattern = /<a\b[^>]*\bhref\s*=\s*(["'])#([^"']+)\1[^>]*>([\s\S]*?)<\/a\s*>/gi;
+
+    for (const match of scannable.matchAll(anchorPattern)) {
+        const targetId = match[2];
+        if (!targetId || anchorTargets.has(targetId)) continue;
+        const label = match[3].replace(/<[^>]*>/g, '').trim();
+        issues.push(createValidationIssue({
+            code: 'narrative-hyperlink-target-not-found',
+            path,
+            resourceType,
+            customMessage:
+                `Hyperlink '#${targetId}'${label ? ` for '${label}'` : ''} does not resolve`,
+            severityOverride: 'error',
+            details: { targetId, label },
+        }));
+    }
+
+    return issues;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

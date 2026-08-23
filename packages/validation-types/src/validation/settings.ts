@@ -19,6 +19,7 @@ export type {
 
 export type {
   AdvisorRule,
+  AdvisorRuleApplication,
   AdvisorRuleMatch,
   AdvisorRuleTransform,
   ImposedProfilePolicy,

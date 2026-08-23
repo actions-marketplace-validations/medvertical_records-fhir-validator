@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isRelevantPackage, loadFromLocalCache } from '../sd-loader-filesystem';
+import { PackageProfileIndexCache } from '../sd-loader-package-profile-index';
 
 describe('sd-loader-filesystem', () => {
   const tempDirs: string[] = [];
@@ -10,6 +11,76 @@ describe('sd-loader-filesystem', () => {
   afterEach(async () => {
     await Promise.all(tempDirs.map(dir => rm(dir, { recursive: true, force: true })));
     tempDirs.length = 0;
+  });
+
+  it('honors package version pins when the same canonical exists in multiple package versions', async () => {
+    const source = await mkdtemp(path.join(tmpdir(), 'sd-loader-source-'));
+    tempDirs.push(source);
+    const profileUrl = 'http://example.org/fhir/StructureDefinition/pinned-profile';
+    await writeStructureDefinition(
+      source,
+      'example.fhir#1.0.0',
+      'StructureDefinition-pinned-v1.json',
+      profileUrl,
+      '1.0.0',
+    );
+    await writeStructureDefinition(
+      source,
+      'example.fhir#2.0.0',
+      'StructureDefinition-pinned-v2.json',
+      profileUrl,
+      '2.0.0',
+    );
+
+    await expect(loadFromLocalCache(
+      profileUrl,
+      [source],
+      'R4',
+      { 'example.fhir': '1.0.0' },
+    )).resolves.toMatchObject({ version: '1.0.0' });
+  });
+
+  it('does not fall back to an unpinned package version when the pin is absent locally', async () => {
+    const source = await mkdtemp(path.join(tmpdir(), 'sd-loader-source-'));
+    tempDirs.push(source);
+    const profileUrl = 'http://example.org/fhir/StructureDefinition/pinned-profile';
+    await writeStructureDefinition(
+      source,
+      'example.fhir#2.0.0',
+      'StructureDefinition-pinned-v2.json',
+      profileUrl,
+      '2.0.0',
+    );
+
+    await expect(loadFromLocalCache(
+      profileUrl,
+      [source],
+      'R4',
+      { 'example.fhir': '1.0.0' },
+    )).resolves.toBeNull();
+  });
+
+  it('uses a package index to skip files that cannot match the requested canonical', async () => {
+    const source = await mkdtemp(path.join(tmpdir(), 'sd-loader-index-'));
+    tempDirs.push(source);
+    const packageDir = path.join(source, 'example.fhir#1.0.0', 'package');
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(path.join(packageDir, '.index.json'), JSON.stringify({
+      files: [{
+        resourceType: 'StructureDefinition',
+        url: 'http://example.org/fhir/StructureDefinition/indexed-profile',
+      }],
+    }));
+    await writeFile(
+      path.join(packageDir, 'StructureDefinition-unindexed-profile.json'),
+      '{ invalid json that must not be read',
+    );
+
+    await expect(loadFromLocalCache(
+      'http://example.org/fhir/StructureDefinition/missing-profile',
+      [source],
+      'R4',
+    )).resolves.toBeNull();
   });
 
   async function writeProfile(source: string, packageName: string, version: string): Promise<void> {
@@ -77,6 +148,34 @@ describe('sd-loader-filesystem', () => {
     );
 
     expect(sd?.version).toBe('8.0.0-ballot');
+  });
+
+  it('resolves the explicitly selected R6 ballot core for unversioned base canonicals', async () => {
+    const source = await mkdtemp(path.join(tmpdir(), 'sd-loader-r6-'));
+    tempDirs.push(source);
+    const packageDir = path.join(source, 'hl7.fhir.r6.core#6.0.0-ballot4', 'package');
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(
+      path.join(packageDir, 'StructureDefinition-Patient.json'),
+      JSON.stringify({
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/Patient',
+        version: '6.0.0-ballot4',
+        fhirVersion: '6.0.0-ballot4',
+        type: 'Patient',
+      }),
+    );
+
+    await expect(loadFromLocalCache(
+      'http://hl7.org/fhir/StructureDefinition/Patient',
+      [source],
+      'R6',
+    )).resolves.toMatchObject({ version: '6.0.0-ballot4' });
+    await expect(loadFromLocalCache(
+      'http://hl7.org/fhir/StructureDefinition/Patient',
+      [source],
+      'R4',
+    )).resolves.toBeNull();
   });
 
   it('resolves unversioned canonicals to the latest stable local StructureDefinition version', async () => {
@@ -390,12 +489,13 @@ describe('sd-loader-filesystem', () => {
     )).toBe(true);
   });
 
-  it('indexes a local package once and reuses it for subsequent profile loads', async () => {
+  it('invalidates a local package index when profiles are added or removed', async () => {
     const source = await mkdtemp(path.join(tmpdir(), 'sd-loader-'));
     tempDirs.push(source);
 
     const packageDir = path.join(source, 'kbv.ita.eau#1.1.0', 'package');
     await mkdir(packageDir, { recursive: true });
+    const indexCache = new PackageProfileIndexCache();
     await writeFile(
       path.join(packageDir, 'StructureDefinition-KBV_PR_EAU_Bundle.json'),
       JSON.stringify({
@@ -406,6 +506,14 @@ describe('sd-loader-filesystem', () => {
         type: 'Bundle',
       }),
     );
+    await expect(loadFromLocalCache(
+      'https://fhir.kbv.de/StructureDefinition/KBV_PR_EAU_Bundle|1.1.0',
+      [source],
+      'R4',
+      {},
+      indexCache,
+    )).resolves.toMatchObject({ type: 'Bundle' });
+
     const compositionPath = path.join(packageDir, 'StructureDefinition-KBV_PR_EAU_Composition.json');
     await writeFile(
       compositionPath,
@@ -419,16 +527,20 @@ describe('sd-loader-filesystem', () => {
     );
 
     await expect(loadFromLocalCache(
-      'https://fhir.kbv.de/StructureDefinition/KBV_PR_EAU_Bundle|1.1.0',
+      'https://fhir.kbv.de/StructureDefinition/KBV_PR_EAU_Composition|1.1.0',
       [source],
       'R4',
-    )).resolves.toMatchObject({ type: 'Bundle' });
+      {},
+      indexCache,
+    )).resolves.toMatchObject({ type: 'Composition' });
 
     await rm(compositionPath);
     await expect(loadFromLocalCache(
       'https://fhir.kbv.de/StructureDefinition/KBV_PR_EAU_Composition|1.1.0',
       [source],
       'R4',
-    )).resolves.toMatchObject({ type: 'Composition' });
+      {},
+      indexCache,
+    )).resolves.toBeNull();
   });
 });

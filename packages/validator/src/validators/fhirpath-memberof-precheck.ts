@@ -1,8 +1,14 @@
 import { ValueSetPackageLoader } from './valueset-package-loader';
-import { getOrCompileFHIRPathExpression } from './constraint-expression-cache';
-import { memberOfFunction } from './fhirpath-custom-functions';
+import {
+  ConstraintExpressionCache,
+  type SynchronousFHIRPathExpressionCache,
+} from './constraint-expression-cache';
+import { createMemberOfFunction } from './fhirpath-custom-functions';
+import { ValueSetCache } from './valueset-cache';
 
 type FhirVersion = 'R4' | 'R5' | 'R6';
+type ObjectRecord = Record<string, unknown>;
+type ValueSetLoader = Pick<ValueSetPackageLoader, 'loadValueSet'>;
 
 export type MemberOfPrecheckResult = boolean | null;
 
@@ -30,10 +36,11 @@ const TRAILING_MEMBER_OF_PATTERN = /^(.*)\.memberOf\(\s*'([^']+)'\s*\)\s*$/s;
  */
 export async function evaluateSimpleMemberOfExists(
   expression: string,
-  resource: any,
+  resource: unknown,
   resourceType: string,
-  loader: ValueSetPackageLoader,
+  loader: ValueSetLoader,
   fhirVersion: FhirVersion = 'R4',
+  deferUnavailableTerminology = false,
 ): Promise<MemberOfPrecheckResult> {
   const match = expression.match(MEMBER_OF_EXISTS_PATTERN) ?? expression.match(VALUE_SET_IN_EXISTS_PATTERN);
   if (!match) return null;
@@ -41,13 +48,26 @@ export async function evaluateSimpleMemberOfExists(
   const rawPath = stripResourcePrefix(match[1], resourceType);
   const valueSetUrl = match[2];
   const codes = await loader.loadValueSet(valueSetUrl, fhirVersion);
-  if (!codes || codes.length === 0) return true;
+  if (!codes || codes.length === 0) return deferUnavailableTerminology ? null : true;
 
   const acceptedCodes = new Set(codes);
   const values = getValuesAtPath(resource, rawPath);
   if (values.length === 0) return false;
 
   return values.some(value => valueMatchesAcceptedCode(value, acceptedCodes));
+}
+
+/**
+ * Some published IGs use `code in '.../ValueSet/...'` as shorthand even
+ * though standard FHIRPath `in` is collection membership, not terminology
+ * membership. Preserve that established compatibility shape while routing it
+ * through the same scoped async memberOf resolver on a cold cache.
+ */
+export function rewriteLegacyValueSetInExists(expression: string): string {
+  const match = expression.match(VALUE_SET_IN_EXISTS_PATTERN);
+  return match
+    ? `where(${match[1]}.memberOf('${match[2]}')).exists()`
+    : expression;
 }
 
 /**
@@ -71,8 +91,10 @@ export async function evaluateSimpleMemberOfExists(
  */
 export function evaluateTrailingMemberOf(
   expression: string,
-  resource: any,
+  resource: unknown,
   fhirVersion: FhirVersion = 'R4',
+  cache: ValueSetCache = new ValueSetCache(),
+  expressionCache: SynchronousFHIRPathExpressionCache = new ConstraintExpressionCache(),
 ): MemberOfPrecheckResult {
   const match = expression.match(TRAILING_MEMBER_OF_PATTERN);
   if (!match) return null;
@@ -81,9 +103,10 @@ export function evaluateTrailingMemberOf(
   const valueSetUrl = match[2];
   if (!prefixExpression) return null;
 
-  let selectedValues: any[];
+  let selectedValues: unknown[];
   try {
-    const compiled = getOrCompileFHIRPathExpression(prefixExpression, fhirVersion);
+    const compiled = expressionCache.getOrCompile(prefixExpression, fhirVersion);
+    if (!compiled) return null;
     const result = compiled(resource, { resource, rootResource: resource }, { traceFn: () => {} });
     selectedValues = Array.isArray(result) ? result : result == null ? [] : [result];
   } catch {
@@ -97,7 +120,7 @@ export function evaluateTrailingMemberOf(
 
   let sawDeterminate = false;
   for (const value of selectedValues) {
-    const outcome = memberOfFunction.fn([value], [valueSetUrl]);
+    const outcome = createMemberOfFunction(cache).fn([value], [valueSetUrl]);
     // memberOfFunction returns [] when membership is undeterminable.
     if (!Array.isArray(outcome) || outcome.length === 0) continue;
     sawDeterminate = true;
@@ -122,7 +145,8 @@ export function evaluateTrailingMemberOf(
  */
 export function evaluateOptionalMemberOfUnion(
   expression: string,
-  context: any,
+  context: unknown,
+  cache: ValueSetCache = new ValueSetCache(),
 ): MemberOfPrecheckResult {
   const parsed = parseOptionalMemberOfUnion(expression);
   if (!parsed) return null;
@@ -135,7 +159,7 @@ export function evaluateOptionalMemberOfUnion(
     let matchedAnyValueSet = false;
 
     for (const valueSetUrl of parsed.valueSetUrls) {
-      const outcome = memberOfFunction.fn([value], [valueSetUrl]);
+      const outcome = createMemberOfFunction(cache).fn([value], [valueSetUrl]);
       if (!Array.isArray(outcome) || outcome.length === 0) continue;
       sawDeterminateMembership = true;
       if (outcome[0] === true) {
@@ -185,10 +209,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function getValuesAtPath(resource: any, path: string): any[] {
+function getValuesAtPath(resource: unknown, path: string): unknown[] {
   if (!path) return [resource];
 
-  let values: any[] = [resource];
+  let values: unknown[] = [resource];
   for (const segment of path.split('.')) {
     values = values.flatMap(value => getChildValues(value, segment));
     if (values.length === 0) break;
@@ -196,44 +220,64 @@ function getValuesAtPath(resource: any, path: string): any[] {
   return values;
 }
 
-function getChildValues(value: any, segment: string): any[] {
-  if (Array.isArray(value)) {
-    return value.flatMap(item => getChildValues(item, segment));
-  }
-  if (!value || typeof value !== 'object') return [];
-
+function getChildValues(value: unknown, segment: string): unknown[] {
   const indexMatch = segment.match(/^(.+)\[(\d+)\]$/);
-  if (indexMatch) {
-    const child = value[indexMatch[1]];
-    const index = Number(indexMatch[2]);
-    return Array.isArray(child) && child[index] !== undefined ? [child[index]] : [];
+  const children: unknown[] = [];
+  const pending: unknown[] = [value];
+  const visitedArrays = new WeakSet<unknown[]>();
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (Array.isArray(current)) {
+      if (visitedArrays.has(current)) continue;
+      visitedArrays.add(current);
+      for (let index = current.length - 1; index >= 0; index -= 1) {
+        pending.push(current[index]);
+      }
+      continue;
+    }
+    if (!isObjectRecord(current)) continue;
+
+    if (indexMatch) {
+      const child = current[indexMatch[1]];
+      const index = Number(indexMatch[2]);
+      if (Array.isArray(child) && child[index] !== undefined) children.push(child[index]);
+      continue;
+    }
+
+    const child = current[segment];
+    if (child === undefined || child === null) continue;
+    if (Array.isArray(child)) children.push(...child);
+    else children.push(child);
   }
 
-  const child = value[segment];
-  if (child === undefined || child === null) return [];
-  return Array.isArray(child) ? child : [child];
+  return children;
 }
 
-function valueMatchesAcceptedCode(value: any, acceptedCodes: Set<string>): boolean {
+function valueMatchesAcceptedCode(value: unknown, acceptedCodes: Set<string>): boolean {
   if (typeof value === 'string') return acceptedCodes.has(value);
-  if (!value || typeof value !== 'object') return false;
+  if (!isObjectRecord(value)) return false;
 
   if (typeof value.code === 'string') {
     return codingMatchesAcceptedCode(value, acceptedCodes);
   }
 
   if (Array.isArray(value.coding)) {
-    return value.coding.some((coding: any) => codingMatchesAcceptedCode(coding, acceptedCodes));
+    return value.coding.some(coding => codingMatchesAcceptedCode(coding, acceptedCodes));
   }
 
   return false;
 }
 
-function codingMatchesAcceptedCode(coding: any, acceptedCodes: Set<string>): boolean {
-  if (!coding || typeof coding.code !== 'string') return false;
+function codingMatchesAcceptedCode(coding: unknown, acceptedCodes: Set<string>): boolean {
+  if (!isObjectRecord(coding) || typeof coding.code !== 'string') return false;
   const bareCode = coding.code;
   const systemCode = typeof coding.system === 'string'
     ? `${coding.system}|${coding.code}`
     : null;
   return acceptedCodes.has(bareCode) || (systemCode !== null && acceptedCodes.has(systemCode));
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

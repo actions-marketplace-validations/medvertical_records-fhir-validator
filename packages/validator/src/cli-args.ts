@@ -13,17 +13,19 @@ Options:
   --format <format>         text or json. Default: text.
   --output <file>           Write validation output to a file instead of stdout.
   --summary-only            Print only aggregate counts; omit per-issue output.
-  --include <glob>          Include matching JSON files. Repeatable. Default: **/*.json.
-  --exclude <glob>          Exclude matching JSON files. Repeatable.
+  --include <glob>          Include matching FHIR inputs. Repeatable.
+                            Default: **/*.json, **/*.xml, **/*.ndjson.
+  --exclude <glob>          Exclude matching FHIR inputs. Repeatable.
   -h, --help                Show this help.
 
 Exit codes:
   0  Validation completed and did not meet the fail threshold.
   1  Validation completed and met --fail-on threshold.
-  2  Invalid CLI input, unreadable paths, no matched JSON files, or output write failure.
+  2  Invalid CLI input, unreadable paths, no matched FHIR inputs, or output write failure.
 
 Examples:
   npx -p @records-fhir/validator records-fhir-validator ./patient.json
+  npx -p @records-fhir/validator records-fhir-validator ./patient.xml
   npx -p @records-fhir/validator records-fhir-validator ./fixtures --fail-on=warning
   npx -p @records-fhir/validator records-fhir-validator ./fixtures --format=json --output validation-report.json`;
 }

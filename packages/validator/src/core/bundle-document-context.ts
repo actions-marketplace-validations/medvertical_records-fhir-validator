@@ -2,18 +2,14 @@ import type { ValidationIssue } from '../types';
 import type { StructureDefinition } from './structure-definition-types';
 import { createValidationIssue } from '../issues';
 import {
-  childMatchesBundleEntrySliceCandidate,
-  getBundleEntrySliceDefinitions,
-} from './bundle-entry-slice-definitions';
+  buildBundleEntrySliceConformanceIssues,
+  bundleEntryResourcePrefix,
+} from './bundle-entry-slice-conformance';
 import { getCompositionEntryTargetProfiles } from './composition-target-profiles';
+import { getDeclaredProfiles } from './declared-profile-utils';
+import type { BundleDocumentContextChildResult } from './bundle-document-context-types';
 
-export interface BundleDocumentContextChildResult {
-  index: number;
-  entryResource: Record<string, unknown>;
-  resourceType: string;
-  issues: ValidationIssue[];
-  structureDef?: StructureDefinition;
-}
+export type { BundleDocumentContextChildResult } from './bundle-document-context-types';
 
 const TARGET_PROFILE_BLOCKING_ASPECTS = new Set([
   'structural',
@@ -48,7 +44,7 @@ export function buildBundleDocumentContextIssues(
   const issues: ValidationIssue[] = [
     ...buildBundleEntrySliceConformanceIssues(bundle, childResults, bundleStructureDef),
   ];
-  if ((bundle as any).type !== 'document') return dedupeDocumentContextIssues(issues);
+  if (bundle.type !== 'document') return dedupeDocumentContextIssues(issues);
 
   let hasCompositionTargetProfileFailure = false;
 
@@ -160,58 +156,6 @@ function formatBundleTargetLabel(resourceType: string, id: unknown): string {
   return typeof id === 'string' && id.length > 0 ? `${resourceType}/${id}` : resourceType;
 }
 
-function buildBundleEntrySliceConformanceIssues(
-  bundle: Record<string, unknown>,
-  childResults: BundleDocumentContextChildResult[],
-  bundleStructureDef: StructureDefinition | undefined,
-): ValidationIssue[] {
-  const slices = getBundleEntrySliceDefinitions(bundleStructureDef)
-    .filter(slice => slice.min > 0);
-  if (slices.length === 0) return [];
-
-  const issues: ValidationIssue[] = [];
-  const bundleProfile = getDeclaredProfiles(bundle)[0];
-
-  for (const slice of slices) {
-    const candidates = childResults.filter(child => childMatchesBundleEntrySliceCandidate(child, slice));
-    if (candidates.length === 0) continue;
-
-    const blockedCandidates = candidates
-      .map(child => ({
-        child,
-        blockingIssues: getTargetProfileBlockingIssues(child.issues),
-      }))
-      .filter(candidate => candidate.blockingIssues.length > 0);
-
-    const cleanMatchCount = candidates.length - blockedCandidates.length;
-    if (cleanMatchCount >= slice.min) continue;
-
-    for (const { child, blockingIssues } of blockedCandidates) {
-      issues.push(createValidationIssue({
-        code: 'profile-constraint-violation',
-        path: bundleEntryResourcePrefix(child.index, child.entryResource, child.resourceType),
-        resourceType: 'Bundle',
-        profile: bundleProfile,
-        customMessage: `Bundle.entry:${slice.sliceName} candidate ${child.resourceType}/${String(child.entryResource.id ?? '?')} failed conformance to ${slice.profiles.join(', ') || slice.resourceTypes.join(', ')}`,
-        ruleId: 'bundle-entry-slice-profile-match-failed',
-        severityOverride: 'error',
-        aspectOverride: 'profile',
-        details: {
-          sliceName: slice.sliceName,
-          targetProfiles: slice.profiles,
-          targetResourceTypes: slice.resourceTypes,
-          candidateEntryIndex: child.index,
-          candidateResourceType: child.resourceType,
-          candidateResourceId: child.entryResource.id,
-          causeIssueCodes: [...new Set(blockingIssues.map(issue => issue.code))],
-        },
-      }));
-    }
-  }
-
-  return issues;
-}
-
 function visitCompositionSections(
   sections: unknown[],
   pathPrefix: string,
@@ -264,13 +208,6 @@ function dedupeDocumentContextIssues(issues: ValidationIssue[]): ValidationIssue
   }
 
   return out;
-}
-
-function getDeclaredProfiles(resource: Record<string, unknown>): string[] {
-  const profiles = (resource.meta as any)?.profile;
-  return Array.isArray(profiles)
-    ? profiles.filter((profile: unknown): profile is string => typeof profile === 'string')
-    : [];
 }
 
 function buildBundleCompositionSliceIssues(
@@ -339,29 +276,16 @@ function getBundleCompositionSliceSources(
 function getImposedProfiles(
   structureDef: StructureDefinition | undefined,
 ): string[] {
-  const extensions = Array.isArray((structureDef as any)?.extension)
-    ? (structureDef as any).extension
-    : [];
+  const extensions = structureDef?.extension ?? [];
   return extensions
-    .filter((extension: any) =>
-      extension?.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-imposeProfile' &&
-      typeof extension?.valueCanonical === 'string'
+    .filter((extension) =>
+      extension.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-imposeProfile' &&
+      typeof extension.valueCanonical === 'string'
     )
-    .map((extension: any) => extension.valueCanonical);
+    .map((extension) => extension.valueCanonical as string);
 }
 
 function getKnownImposedBundleProfiles(profile: string | undefined): string[] {
   if (!profile) return [];
   return KNOWN_IMPOSED_BUNDLE_PROFILES[profile.split('|')[0]] ?? [];
-}
-
-function bundleEntryResourcePrefix(
-  entryIndex: number,
-  entryResource: Record<string, unknown>,
-  resourceType: string,
-): string {
-  const rtId = typeof entryResource.id === 'string'
-    ? `${resourceType}/${entryResource.id}`
-    : resourceType;
-  return `Bundle.entry[${entryIndex}].resource/*${rtId}*/`;
 }

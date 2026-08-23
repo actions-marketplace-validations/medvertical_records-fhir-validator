@@ -147,7 +147,11 @@ for (const file of files) {
 
   let issues;
   try {
-    issues = await recordsValidator.validate(resource, profileUrl, FHIR_VERSION);
+    issues = await recordsValidator.validateRequest({
+      resource,
+      profileUrl,
+      fhirVersion: FHIR_VERSION,
+    });
   } catch (err) {
     console.error(`::error file=${file}::Validator threw: ${err.message}`);
     aggregated.push({ file, error: `validator error: ${err.message}`, issues: [] });

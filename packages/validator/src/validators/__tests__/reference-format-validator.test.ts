@@ -68,14 +68,62 @@ describe('ReferenceFormatValidator', () => {
         });
 
         describe('invalid reference formats', () => {
-            it('should reject plain text that is not a valid reference', () => {
-                const issues = validator.validateReferenceString('not-a-valid-reference', 'subject', 'Observation');
-                expect(issues).toHaveLength(1);
-                expect(issues[0].code).toBe('reference-invalid-format');
+            it('accepts opaque single-segment tokens as relative references', () => {
+                // RFC 3986 relative URLs; the HL7 validator accepts them
+                // (UK Core examples reference plain ids like
+                // 'UKCore-Observation-Group-FullBloodCount-Example').
+                const issues = validator.validateReferenceString(
+                    'UKCore-Observation-Group-FullBloodCount-Example',
+                    'result',
+                    'DiagnosticReport'
+                );
+                expect(issues).toHaveLength(0);
             });
 
-            it('should reject references without resource type', () => {
+            it('accepts bare numeric ids as opaque relative references', () => {
                 const issues = validator.validateReferenceString('123', 'subject', 'Observation');
+                expect(issues).toHaveLength(0);
+            });
+
+            it('rejects bare tokens inside a Bundle entry resource (Java parity)', () => {
+                // Inside a bundle a relative reference must be
+                // [ResourceName]/[id] to resolve against entry fullUrls —
+                // the HL7 validator errors here (bundle-ea-testcase baseline).
+                const issues = validator.validateReferenceString(
+                    'denom-EXM104',
+                    'Bundle.entry[0].resource.entry[0].item',
+                    'Bundle'
+                );
+                expect(issues).toHaveLength(1);
+                expect(issues[0]).toEqual(expect.objectContaining({
+                    code: 'reference-invalid-bundle-relative',
+                    severity: 'error',
+                    path: 'Bundle.entry[0].resource.entry[0].item.reference',
+                }));
+                expect(issues[0].message).toContain('Relative URLs must be of the format [ResourceName]/[id]');
+            });
+
+            it('rejects bare tokens in a bundle nested through contained resources', () => {
+                const issues = validator.validateReferenceString(
+                    'denom-EXM104',
+                    'Bundle.entry[1].resource.contained[0].entry[0].resource.entry[0].item',
+                    'Bundle'
+                );
+                expect(issues).toHaveLength(1);
+                expect(issues[0].code).toBe('reference-invalid-bundle-relative');
+            });
+
+            it('still accepts Type/id references inside a Bundle entry resource', () => {
+                const issues = validator.validateReferenceString(
+                    'Patient/denom-EXM104',
+                    'Bundle.entry[0].resource.entry[0].item',
+                    'Bundle'
+                );
+                expect(issues).toHaveLength(0);
+            });
+
+            it('should reject tokens containing characters invalid in a URL segment', () => {
+                const issues = validator.validateReferenceString('not a valid reference', 'subject', 'Observation');
                 expect(issues).toHaveLength(1);
                 expect(issues[0].code).toBe('reference-invalid-format');
             });
@@ -133,6 +181,16 @@ describe('ReferenceFormatValidator', () => {
                 expect(issues.some(i => i.code === 'reference-type-unknown')).toBe(false);
             });
 
+            it('accepts the FHIR R4 RequestGroup resource type', () => {
+                const issues = validator.validateReferenceString(
+                    'RequestGroup/request-group-1',
+                    'CarePlan.activity[0].reference',
+                    'CarePlan',
+                );
+
+                expect(issues.some(i => i.code === 'reference-type-unknown')).toBe(false);
+            });
+
             it('accepts R5 relative references used by medication and definition resources', () => {
                 const references = [
                     'MedicinalProductDefinition/mp-1',
@@ -168,7 +226,7 @@ describe('ReferenceFormatValidator', () => {
 
             it('should handle null/undefined', () => {
                 const issues1 = validator.validateReferenceString(null as any, 'subject', 'Observation');
-                const issues2 = validator.validateReferenceString(undefined as any, 'subject', 'Observation');
+                const issues2 = validator.validateReferenceString(undefined, 'subject', 'Observation');
                 expect(issues1).toHaveLength(0);
                 expect(issues2).toHaveLength(0);
             });
@@ -185,10 +243,10 @@ describe('ReferenceFormatValidator', () => {
             const resource = {
                 resourceType: 'Observation',
                 id: 'test-1',
-                subject: { reference: 'not-valid' },
+                subject: { reference: 'not a valid reference' },
                 encounter: { reference: 'Encounter/123' },
                 performer: [
-                    { reference: 'also-not-valid' },
+                    { reference: 'practitioner/456/extra' },
                     { reference: 'Practitioner/456' }
                 ]
             };
@@ -206,7 +264,7 @@ describe('ReferenceFormatValidator', () => {
                 id: 'test-2',
                 stage: [{
                     assessment: [
-                        { reference: 'invalid-ref' }
+                        { reference: 'invalid ref' }
                     ]
                 }]
             };
@@ -232,7 +290,7 @@ describe('ReferenceFormatValidator', () => {
                     }],
                 }],
                 subjectReference: {
-                    reference: 'not-valid',
+                    reference: 'not valid',
                 },
             };
 
@@ -257,6 +315,16 @@ describe('ReferenceFormatValidator', () => {
 
             const issues = validator.validateAllReferences(resource);
             expect(issues).toHaveLength(0);
+        });
+
+        it('does not recurse forever on cyclic in-memory resources', () => {
+            const resource: Record<string, unknown> = {
+                resourceType: 'Patient',
+                managingOrganization: { reference: 'Organization/1' },
+            };
+            resource.self = resource;
+
+            expect(validator.validateAllReferences(resource)).toEqual([]);
         });
     });
 });

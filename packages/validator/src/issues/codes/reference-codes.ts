@@ -30,6 +30,11 @@ export const ReferenceCodes = {
         severity: 'error',
         description: 'Invalid reference format',
     },
+    'reference-invalid-bundle-relative': {
+        aspect: 'reference',
+        severity: 'error',
+        description: 'Relative reference inside a Bundle entry is not in [ResourceName]/[id] format',
+    },
     'reference-type-mismatch': {
         aspect: 'reference',
         severity: 'error',

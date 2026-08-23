@@ -143,6 +143,35 @@ describe('StructuralExecutor', () => {
       expect(Array.isArray(issues)).toBe(true);
     });
 
+    it('loads the explicitly requested profile when no definition is supplied', async () => {
+      const requestedProfile = 'http://example.com/StructureDefinition/RequestedPatient';
+      const fallbackProfile = 'http://example.com/StructureDefinition/FallbackPatient';
+      const loader = {
+        loadProfile: vi.fn().mockResolvedValue(null),
+        getBaseResourceType: vi.fn(),
+      } as any;
+      const executorWithLoader = new StructuralExecutor(loader);
+
+      await executorWithLoader.validate(mockContext.resource, {
+        ...mockContext,
+        structureDef: undefined,
+        profileUrl: requestedProfile,
+        profiles: [fallbackProfile],
+      });
+
+      expect(loader.loadProfile).toHaveBeenCalledWith(requestedProfile, 'R4');
+    });
+
+    it('returns a validation issue for a non-object resource boundary value', async () => {
+      const issues = await executor.validate([], mockContext);
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('validation-error');
+      expect(issues[0].message).toBe(
+        'Structural validation could not be completed because the validator encountered an operational error.',
+      );
+    });
+
     it('should validate cardinality constraints', async () => {
       const mockIssues: ValidationIssue[] = [{
         id: 'cardinality-error-1',
@@ -155,7 +184,7 @@ describe('StructuralExecutor', () => {
       }];
 
       const executorWithMock = new StructuralExecutor(mockSdLoader);
-      const cardinalityValidator = (executorWithMock as any).cardinalityValidator;
+      const cardinalityValidator = (executorWithMock as any).validators.cardinality;
       // conditional mock
       cardinalityValidator.validate = vi.fn().mockImplementation((val, def, path) => {
         if (path === 'Patient.name') return mockIssues;
@@ -178,7 +207,7 @@ describe('StructuralExecutor', () => {
       }];
 
       const executorWithMock = new StructuralExecutor(mockSdLoader);
-      const typeValidator = (executorWithMock as any).typeValidator;
+      const typeValidator = (executorWithMock as any).validators.type;
       // conditional mock
       typeValidator.validate = vi.fn().mockImplementation(async (val, type, path) => {
         // Only return error for gender, and simulate that validate IS called for gender in this test scenario
@@ -220,7 +249,7 @@ describe('StructuralExecutor', () => {
       }];
 
       const executorWithMock = new StructuralExecutor(mockSdLoader);
-      const elementRulesValidator = (executorWithMock as any).elementRulesValidator;
+      const elementRulesValidator = (executorWithMock as any).validators.elementRules;
       elementRulesValidator.validate = vi.fn().mockImplementation((val, def, path) => {
         if (path === 'Patient.id') return mockIssues;
         return [];
@@ -239,7 +268,7 @@ describe('StructuralExecutor', () => {
       };
 
       const executorWithMock = new StructuralExecutor(mockSdLoader);
-      const typeValidator = (executorWithMock as any).typeValidator;
+      const typeValidator = (executorWithMock as any).validators.type;
       const validateSpy = vi.fn().mockResolvedValue([]);
       typeValidator.validate = validateSpy;
 
@@ -262,8 +291,10 @@ describe('StructuralExecutor', () => {
       expect(issues[0].aspect).toBe('structural');
       expect(issues[0].severity).toBe('error');
       expect(issues[0].code).toBe('validation-error');
-      expect(issues[0].message).toContain('Structural validation failed');
-      expect(issues[0].message).toContain('Test error');
+      expect(issues[0].message).toBe(
+        'Structural validation could not be completed because the validator encountered an operational error.',
+      );
+      expect(issues[0].message).not.toContain('Test error');
     });
 
     it('should handle non-Error exceptions', async () => {
@@ -274,7 +305,10 @@ describe('StructuralExecutor', () => {
       const issues = await executor.validate(mockContext);
 
       expect(issues).toHaveLength(1);
-      expect(issues[0].message).toContain('String error');
+      expect(issues[0].message).toBe(
+        'Structural validation could not be completed because the validator encountered an operational error.',
+      );
+      expect(issues[0].message).not.toContain('String error');
     });
 
     it('should aggregate issues from multiple validators', async () => {
@@ -309,9 +343,9 @@ describe('StructuralExecutor', () => {
       }];
 
       const executorWithMock = new StructuralExecutor(mockSdLoader);
-      (executorWithMock as any).cardinalityValidator.validate = vi.fn().mockReturnValue(cardinalityIssues);
-      (executorWithMock as any).typeValidator.validate = vi.fn().mockResolvedValue(typeIssues);
-      (executorWithMock as any).elementRulesValidator.validate = vi.fn().mockReturnValue(ruleIssues);
+      (executorWithMock as any).validators.cardinality.validate = vi.fn().mockReturnValue(cardinalityIssues);
+      (executorWithMock as any).validators.type.validate = vi.fn().mockResolvedValue(typeIssues);
+      (executorWithMock as any).validators.elementRules.validate = vi.fn().mockReturnValue(ruleIssues);
 
       const issues = await executorWithMock.validate(mockContext);
 
@@ -386,11 +420,14 @@ describe('StructuralExecutor', () => {
         mockContext.getValueAtPath
       );
 
-      expect(issues).toHaveLength(1);
-      expect(issues[0].aspect).toBe('structural');
-      expect(issues[0].severity).toBe('error');
-      expect(issues[0].code).toBe('validation-error');
-      expect(issues[0].message).toContain('Required fields validation failed');
+      expect(issues).toHaveLength(2);
+      expect(issues.every(issue => issue.aspect === 'structural')).toBe(true);
+      expect(issues.every(issue => issue.severity === 'error')).toBe(true);
+      expect(issues.every(issue => issue.code === 'validation-error')).toBe(true);
+      expect(issues.every(issue =>
+        issue.message ===
+          'Required fields validation could not be completed because the validator encountered an operational error.'
+      )).toBe(true);
     });
 
     it('should include profile URL in required field issues', async () => {
@@ -488,7 +525,7 @@ describe('StructuralExecutor', () => {
 
       expect(issues).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          code: 'invalid',
+          code: 'structural-contained-id-missing',
           path: 'Patient.contained[0]/*Patient/null*/',
           severity: 'error',
         })

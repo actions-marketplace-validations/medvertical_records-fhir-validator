@@ -122,12 +122,12 @@ describe('PackageRegistryClient package detection', () => {
     ).resolves.toBe('hl7.fhir.au.ereq');
   });
 
-  it('maps HL7 Europe EPS canonicals to the R4 package id', async () => {
+  it('maps HL7 Europe EPS canonicals to the published ballot package id', async () => {
     const client = new PackageRegistryClient();
 
     await expect(
       client.detectPackageForProfile('http://hl7.eu/fhir/eps/StructureDefinition/bundle-eu-eps'),
-    ).resolves.toBe('hl7.fhir.eu.eps.r4');
+    ).resolves.toBe('hl7.fhir.eu.eps');
   });
 
   it('maps HL7 Europe base canonicals to the EU base package id', async () => {
@@ -140,6 +140,39 @@ describe('PackageRegistryClient package detection', () => {
 });
 
 describe('PackageRegistryClient manifest cache', () => {
+  it('shares concurrent requests for the same package manifest', async () => {
+    let releaseRequest!: () => void;
+    const gate = new Promise<void>(resolve => {
+      releaseRequest = resolve;
+    });
+    const fetchMock = vi.fn(async () => {
+      await gate;
+      return new Response(JSON.stringify({
+        name: 'example.fhir',
+        'dist-tags': { latest: '1.0.0' },
+        versions: {
+          '1.0.0': {
+            name: 'example.fhir',
+            version: '1.0.0',
+            dist: { tarball: 'https://packages.fhir.org/example.fhir/1.0.0' },
+          },
+        },
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PackageRegistryClient();
+
+    const first = client.fetchPackageManifest('example.fhir');
+    const second = client.fetchPackageManifest('example.fhir');
+    releaseRequest();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ name: 'example.fhir' }),
+      expect.objectContaining({ name: 'example.fhir' }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('bounds manifest cache size and refreshes recently used entries', async () => {
     const fetchMock = vi.fn(async (url: string) => {
       const packageId = url.split('/').pop() || 'unknown';
@@ -179,6 +212,41 @@ describe('PackageRegistryClient manifest cache', () => {
     await client.fetchPackageManifest('package-b');
 
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not repopulate a cleared cache from an older manifest request', async () => {
+    let releaseRequest!: () => void;
+    const gate = new Promise<void>(resolve => {
+      releaseRequest = resolve;
+    });
+    const fetchMock = vi.fn(async () => {
+      await gate;
+      return new Response(JSON.stringify({
+        name: 'example.fhir',
+        'dist-tags': { latest: '1.0.0' },
+        versions: {
+          '1.0.0': {
+            name: 'example.fhir',
+            version: '1.0.0',
+            dist: { tarball: 'https://packages.fhir.org/example.fhir/1.0.0' },
+          },
+        },
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new PackageRegistryClient();
+
+    const staleRequest = client.fetchPackageManifest('example.fhir');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    client.clearCache();
+    releaseRequest();
+    await expect(staleRequest).resolves.toEqual(
+      expect.objectContaining({ name: 'example.fhir' }),
+    );
+    expect(client.getCacheStats().size).toBe(0);
+
+    await client.fetchPackageManifest('example.fhir');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

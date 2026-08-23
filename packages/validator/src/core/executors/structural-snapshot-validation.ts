@@ -10,18 +10,26 @@ import type { ReferenceTargetValidator } from '../../validators/reference-target
 import type { BundleValidator } from '../../validators/bundle-validator';
 import type { QuestionnaireValidator } from '../../validators/questionnaire-validator';
 import { getValidationTargets, shouldValidateRequired } from '../../business-rules';
-import { logger } from '../../logger';
-import { expandContentReferenceElements } from '../content-reference-elements';
-import { getDirectValue, isValueEmpty } from './structural-executor-helpers';
+import {
+  ContentReferenceElementsCache,
+  expandContentReferenceElements,
+} from '../content-reference-elements';
 import {
   hasElementDefinitionRules,
   shouldSkipRulesForSiblingSliceTarget,
   shouldSkipSnapshotElement,
 } from './structural-element-rules';
 import { shouldSuppressServerManagedMetadataIssue } from '../server-managed-metadata-issue-filter';
+import {
+  elementActuallyExists,
+  groupTargetsByContext,
+  retargetIssuePath,
+} from './structural-snapshot-targets';
 
 type FhirVersion = 'R4' | 'R5' | 'R6';
 type ValidationTarget = ReturnType<typeof getValidationTargets>[number];
+type FhirResource = Record<string, unknown>;
+type ValueAtPath = (resource: FhirResource, path: string) => unknown;
 
 interface StructuralSnapshotDeps {
   cardinalityValidator: CardinalityValidator;
@@ -33,8 +41,9 @@ interface StructuralSnapshotDeps {
   referenceTargetValidator: ReferenceTargetValidator;
   bundleValidator: BundleValidator;
   questionnaireValidator: QuestionnaireValidator;
+  contentReferenceElementsCache?: ContentReferenceElementsCache;
   detectUnknownElements(
-    resource: any,
+    resource: FhirResource,
     structureDef: StructureDefinition,
     resourceType: string,
     fhirVersion: FhirVersion,
@@ -42,14 +51,14 @@ interface StructuralSnapshotDeps {
 }
 
 interface StructuralSnapshotParams {
-  resource: any;
+  resource: FhirResource;
   structureDef: StructureDefinition;
   effectiveProfileUrl?: string;
-  getValueAtPath: (resource: any, path: string) => any;
+  getValueAtPath: ValueAtPath;
   fhirVersion: FhirVersion;
   deps: StructuralSnapshotDeps;
   /** Resolves contained / bundle-entry references for reference-target typing. */
-  resolveReference?: (reference: string) => any;
+  resolveReference?: (reference: string) => unknown;
 }
 
 interface SnapshotElementParams extends StructuralSnapshotParams {
@@ -59,11 +68,17 @@ interface SnapshotElementParams extends StructuralSnapshotParams {
 export async function validateStructuralSnapshot(params: StructuralSnapshotParams): Promise<ValidationIssue[]> {
   const { resource, structureDef, effectiveProfileUrl, getValueAtPath, fhirVersion, deps, resolveReference } = params;
   const issues: ValidationIssue[] = [];
-  const snapshotElements = expandContentReferenceElements(structureDef.snapshot?.element ?? []);
+  const snapshotElements = expandContentReferenceElements(
+    structureDef.snapshot?.element ?? [],
+    deps.contentReferenceElementsCache,
+  );
+  const resourceType = typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : 'Unknown';
 
   for (const elementDef of snapshotElements) {
-    if (elementDef.path === resource.resourceType) continue;
-    if (shouldSkipSnapshotElement(elementDef, resource.resourceType)) continue;
+    if (elementDef.path === resourceType) continue;
+    if (shouldSkipSnapshotElement(elementDef, resourceType)) continue;
 
     issues.push(...await validateSnapshotElement({
       resource,
@@ -77,17 +92,17 @@ export async function validateStructuralSnapshot(params: StructuralSnapshotParam
   }
 
   issues.push(...await validateMissedMustSupportElements(resource, structureDef, effectiveProfileUrl, getValueAtPath, deps, issues));
-  issues.push(...await deps.detectUnknownElements(resource, structureDef, resource.resourceType, fhirVersion));
-  issues.push(...deps.referenceFormatValidator.validateAllReferences(resource, resource.resourceType));
+  issues.push(...await deps.detectUnknownElements(resource, structureDef, resourceType, fhirVersion));
+  issues.push(...deps.referenceFormatValidator.validateAllReferences(resource, resourceType));
   issues.push(...deps.referenceTargetValidator.validate(resource, structureDef, resolveReference));
 
-  if (resource.resourceType === 'Bundle') {
+  if (resourceType === 'Bundle') {
     issues.push(...await deps.bundleValidator.validateBundle(resource));
   }
 
-  if (resource.resourceType === 'Questionnaire') {
+  if (resourceType === 'Questionnaire') {
     issues.push(...deps.questionnaireValidator.validateQuestionnaire(resource, 'Questionnaire', fhirVersion));
-  } else if (resource.resourceType === 'QuestionnaireResponse') {
+  } else if (resourceType === 'QuestionnaireResponse') {
     issues.push(...deps.questionnaireValidator.validateQuestionnaireResponse(resource));
   }
 
@@ -97,13 +112,6 @@ export async function validateStructuralSnapshot(params: StructuralSnapshotParam
 async function validateSnapshotElement(params: SnapshotElementParams): Promise<ValidationIssue[]> {
   const { resource, elementDef } = params;
   const validationTargets = getValidationTargets(resource, elementDef.path);
-
-  if (elementDef.path.includes('name')) {
-    logger.debug(`[StructuralExecutor] Processing ${elementDef.path}, targets: ${validationTargets.length}`);
-    validationTargets.forEach(target => {
-      logger.debug(`[StructuralExecutor]   Target: ${target.fullPath}, value exists: ${target.value !== undefined && target.value !== null}`);
-    });
-  }
 
   if (validationTargets.length === 0) {
     return validateElementWithoutTargets(params);
@@ -163,7 +171,9 @@ async function validateElementTargets(
     const count = group.filter(t => t.value !== undefined && t.value !== null).length;
     const validationPath = first.fullPath || elementDef.path;
     const cardinalityIssues = deps.cardinalityValidator.validate(
-      new Array(count).fill(null),
+      // CardinalityValidator only observes Array.length here. Keep the array
+      // sparse so large repeating elements do not allocate a second payload.
+      new Array(count),
       elementDef,
       validationPath,
       effectiveProfileUrl,
@@ -207,7 +217,7 @@ async function validateSingleTarget(params: SnapshotElementParams, target: Valid
     !shouldValidate &&
     targetHasValue &&
     elementDef.path.includes('[x]') &&
-    hasElementDefinitionRules(elementDef as unknown as Record<string, unknown>);
+    hasElementDefinitionRules(elementDef);
 
   if (shouldApplyChoiceElementRules) {
     if (shouldSkipRulesForSiblingSliceTarget(elementDef, target.value, structureDef)) return [];
@@ -216,10 +226,6 @@ async function validateSingleTarget(params: SnapshotElementParams, target: Valid
 
   if (!shouldValidate || !targetHasValue) {
     return [];
-  }
-
-  if (target.fullPath.includes('coding') && target.fullPath.includes('system')) {
-    logger.debug(`[StructuralExecutor Debug] Validating type for ${target.fullPath}, value: ${target.value}`);
   }
 
   const skipSiblingSliceRules = shouldSkipRulesForSiblingSliceTarget(elementDef, target.value, structureDef);
@@ -236,7 +242,7 @@ async function validateSingleTarget(params: SnapshotElementParams, target: Valid
 }
 
 async function validateExistingValue(params: {
-  value: any;
+  value: unknown;
   elementDef: ElementDefinition;
   path: string;
   effectiveProfileUrl?: string;
@@ -265,7 +271,7 @@ async function validateExistingValue(params: {
   return issues;
 }
 
-function shouldValidateResolvedTarget(resource: any, target: ValidationTarget): boolean {
+function shouldValidateResolvedTarget(resource: FhirResource, target: ValidationTarget): boolean {
   if (target.contextPath && target.contextPath !== resource.resourceType) {
     return true;
   }
@@ -273,63 +279,11 @@ function shouldValidateResolvedTarget(resource: any, target: ValidationTarget): 
   return shouldValidateRequired(resource, target.fullPath);
 }
 
-function retargetIssuePath(issue: ValidationIssue, sourcePath: string, targetPath: string): ValidationIssue {
-  const replacePath = (value: unknown): unknown =>
-    typeof value === 'string' ? value.split(sourcePath).join(targetPath) : value;
-
-  const details = issue.details && typeof issue.details === 'object'
-    ? Object.fromEntries(
-      Object.entries(issue.details).map(([key, value]) => [key, replacePath(value)])
-    )
-    : issue.details;
-
-  return {
-    ...issue,
-    path: targetPath,
-    message: replacePath(issue.message) as string,
-    humanReadable: replacePath(issue.humanReadable) as string | undefined,
-    details,
-  };
-}
-
-function groupTargetsByContext(validationTargets: ValidationTarget[]): Map<string, ValidationTarget[]> {
-  const targetsByContext = new Map<string, ValidationTarget[]>();
-  for (const target of validationTargets) {
-    const key = target.contextPath || '';
-    const group = targetsByContext.get(key) || [];
-    group.push(target);
-    targetsByContext.set(key, group);
-  }
-  return targetsByContext;
-}
-
-function elementActuallyExists(
-  resource: any,
-  path: string,
-  getValueAtPath: (resource: any, path: string) => any,
-): boolean {
-  const validationTargets = getValidationTargets(resource, path);
-  if (validationTargets.some(target => !isValueEmpty(target.value))) {
-    return true;
-  }
-
-  const directValue = getDirectValue(resource, path);
-  if (!isValueEmpty(directValue)) {
-    return true;
-  }
-
-  try {
-    return !isValueEmpty(getValueAtPath(resource, path));
-  } catch {
-    return false;
-  }
-}
-
 async function validateMissedMustSupportElements(
-  resource: any,
+  resource: FhirResource,
   structureDef: StructureDefinition,
   effectiveProfileUrl: string | undefined,
-  getValueAtPath: (resource: any, path: string) => any,
+  getValueAtPath: ValueAtPath,
   deps: StructuralSnapshotDeps,
   existingIssues: ValidationIssue[],
 ): Promise<ValidationIssue[]> {

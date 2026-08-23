@@ -6,6 +6,7 @@
  */
 
 import type { ValidationIssue } from '../types';
+import { createValidationIssue } from '../issues';
 
 // ============================================================================
 // Utility Functions
@@ -14,13 +15,14 @@ import type { ValidationIssue } from '../types';
 /**
  * Get field value from resource using dot notation path
  */
-export function getFieldValue(resource: any, fieldPath: string): any {
+export function getFieldValue(resource: unknown, fieldPath: string): unknown {
   const parts = fieldPath.split('.');
-  let value = resource;
+  let value: unknown = resource;
   
   for (const part of parts) {
-    if (value === null || value === undefined) return undefined;
-    value = value[part];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    value = record[part];
   }
   
   return value;
@@ -29,7 +31,7 @@ export function getFieldValue(resource: any, fieldPath: string): any {
 /**
  * Parse error location from field path
  */
-export function parseErrorLocation(fieldPath: string): any {
+export function parseErrorLocation(fieldPath: string): { line: string; column: number } {
   const parts = fieldPath.split('.');
   return {
     line: parts.join('.'),
@@ -46,23 +48,24 @@ export function createReferenceValidationIssue(params: {
   message: string;
   humanReadable: string;
   path?: string;
-  details?: any;
+  details?: Record<string, unknown>;
   resourceType?: string;
   schemaVersion?: string;
 }): ValidationIssue {
-  return {
-    id: `reference-${params.code}-${Date.now()}`,
-    aspect: 'references',
-    severity: params.severity,
+  const issue = createValidationIssue({
     code: params.code,
-    message: params.message,
-    path: params.path || '',
+    path: params.path ?? '',
+    resourceType: params.resourceType ?? 'Unknown',
+    severityOverride: params.severity,
+    aspectOverride: 'reference',
+    customMessage: params.message,
+    details: params.details,
+  });
+  return {
+    ...issue,
     humanReadable: params.humanReadable,
-    details: params.details || {},
     validationMethod: 'reference-validation',
-    timestamp: new Date().toISOString(),
-    resourceType: params.resourceType || 'Unknown',
-    schemaVersion: params.schemaVersion || 'R4'
+    schemaVersion: params.schemaVersion ?? 'R4',
   };
 }
 
@@ -91,4 +94,3 @@ export function getTargetResourceTypes(
   );
   return definition?.targetTypes;
 }
-

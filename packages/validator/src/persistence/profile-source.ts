@@ -1,0 +1,102 @@
+import type { StructureDefinition } from '../core/structure-definition-types';
+import type { ValidationSettings } from '../types';
+
+/** A transferable result for warming the validator's in-memory profile cache. */
+export interface ProfileResolutionEntry {
+    canonicalUrl: string;
+    profile: StructureDefinition;
+    version?: string;
+    source?: string;
+}
+
+/** Request-local package scope supplied by the embedding application. */
+export interface ProfileSourceContext {
+    organizationId?: number;
+    serverId?: number;
+    fhirVersion?: 'R4' | 'R5' | 'R6';
+}
+
+/**
+ * Optional profile capabilities supplied by a host application.
+ *
+ * Methods remain optional so standalone and filesystem-only embedders can
+ * install only the capabilities they own. Engine callers treat an absent
+ * method as unavailable, never as evidence that a tenant-scoped lookup may
+ * fall through to a shared source.
+ */
+export interface ProfileSource {
+    /**
+     * Directories containing IG-package subdirectories (`<name>#<version>/`).
+     * Declaring them lets terminology resolution search the same host-owned
+     * package stores as profile resolution, without a separate config path.
+     */
+    packageDirectories?: string[];
+
+    findByUrl?(
+        url: string,
+        fhirVersion?: 'R4' | 'R5' | 'R6',
+        context?: ProfileSourceContext,
+    ): Promise<StructureDefinition | null>;
+
+    resolveProfile?(
+        url: string,
+        version: string | undefined,
+        settings: ValidationSettings | undefined,
+        context?: ProfileSourceContext,
+    ): Promise<StructureDefinition | null>;
+
+    loadAllForWarmup?(): Promise<Map<string, ProfileResolutionEntry>>;
+
+    warmupRecent?(
+        setProfile: (cacheKey: string, sd: StructureDefinition) => void,
+        getProfile: (cacheKey: string) => StructureDefinition | null | undefined,
+        limit?: number,
+        context?: ProfileSourceContext,
+    ): Promise<{ warmedUp: number; timeMs: number }>;
+
+    fetchExternalProfile?(url: string): Promise<StructureDefinition | null>;
+
+    findPackageForProfile?(
+        url: string,
+    ): Promise<{ packageId: string; confidenceScore?: number } | null>;
+
+    findCanonicalResource?(
+        url: string,
+        resourceType: string,
+        version: string | undefined,
+        context?: ProfileSourceContext,
+    ): Promise<Record<string, unknown> | null>;
+
+    /** True only when the resolved CodeSystem contains assertable code membership. */
+    hasCodeSystem?(
+        url: string,
+        version: string | undefined,
+        context?: ProfileSourceContext,
+    ): Promise<boolean>;
+}
+
+const NOOP_PROFILE_SOURCE: ProfileSource = {};
+
+let activeProfileSource: ProfileSource = NOOP_PROFILE_SOURCE;
+let activeProfileSourceRevision = 0;
+
+/** Replace the host profile capabilities for subsequently created work. */
+export function setProfileSource(source: ProfileSource): void {
+    activeProfileSource = source;
+    activeProfileSourceRevision++;
+}
+
+export function getProfileSource(): ProfileSource {
+    return activeProfileSource;
+}
+
+/** Host package stores declared on the active source; empty when none. */
+export function getProfileSourcePackageDirectories(): string[] {
+    const directories = activeProfileSource.packageDirectories;
+    return directories ? [...directories] : [];
+}
+
+/** Cache discriminator that changes whenever the host replaces its source. */
+export function getProfileSourceRevision(): number {
+    return activeProfileSourceRevision;
+}

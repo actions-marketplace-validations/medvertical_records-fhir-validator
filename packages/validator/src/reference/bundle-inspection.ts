@@ -5,18 +5,21 @@ import {
 } from './bundle-reference-finder';
 import type { BundleIssue, BundleStatistics } from './bundle-reference-types';
 
-export function isTransactionOrBatchBundle(bundle: any): boolean {
-  return bundle?.type === 'transaction' || bundle?.type === 'batch';
+export function isTransactionOrBatchBundle(bundle: unknown): boolean {
+  const type = getBundleType(bundle);
+  return type === 'transaction' || type === 'batch';
 }
 
-export function getBundleType(bundle: any): string | null {
-  return bundle?.type || null;
+export function getBundleType(bundle: unknown): string | null {
+  const value = toRecord(bundle)?.type;
+  return typeof value === 'string' ? value : null;
 }
 
-export function validateBundleStructure(bundle: any): BundleIssue[] {
+export function validateBundleStructure(bundle: unknown): BundleIssue[] {
   const issues: BundleIssue[] = [];
+  const bundleRecord = toRecord(bundle);
 
-  if (!bundle.type) {
+  if (!getBundleType(bundle)) {
     issues.push({
       severity: 'error',
       code: 'bundle-missing-type',
@@ -24,7 +27,7 @@ export function validateBundleStructure(bundle: any): BundleIssue[] {
     });
   }
 
-  if (bundle.entry !== undefined && !Array.isArray(bundle.entry)) {
+  if (bundleRecord?.entry !== undefined && !Array.isArray(bundleRecord.entry)) {
     issues.push({
       severity: 'error',
       code: 'bundle-invalid-entries',
@@ -39,7 +42,7 @@ export function validateBundleStructure(bundle: any): BundleIssue[] {
   return issues;
 }
 
-export function getBundleStatistics(bundle: any): BundleStatistics {
+export function getBundleStatistics(bundle: unknown): BundleStatistics {
   const entries = extractBundleEntries(bundle);
   const allReferences = findAllBundleReferences(bundle);
   const resourceTypeCounts = new Map<string, number>();
@@ -66,7 +69,7 @@ export function getBundleStatistics(bundle: any): BundleStatistics {
   };
 }
 
-function addTransactionEntryIssues(bundle: any, issues: BundleIssue[]): void {
+function addTransactionEntryIssues(bundle: unknown, issues: BundleIssue[]): void {
   const entries = extractBundleEntries(bundle);
 
   entries.forEach((entry, index) => {
@@ -99,4 +102,10 @@ function addTransactionEntryIssues(bundle: any, issues: BundleIssue[]): void {
       });
     }
   });
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }

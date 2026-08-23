@@ -11,7 +11,12 @@ export interface CodeSystemValidationIssue {
 export interface CodeSystemValidationResult {
     valid: boolean;
     message?: string;
-    reason?: 'code-unknown' | 'system-unresolvable' | 'display-mismatch' | 'remote-budget-exhausted';
+    reason?:
+        | 'code-unknown'
+        | 'system-unresolvable'
+        | 'display-mismatch'
+        | 'remote-budget-exhausted'
+        | 'national-extension-unverified';
     issues?: CodeSystemValidationIssue[];
     inactive?: boolean;
     display?: string;

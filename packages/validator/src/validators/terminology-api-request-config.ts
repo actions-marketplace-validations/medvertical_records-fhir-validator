@@ -1,11 +1,14 @@
 import * as fs from 'fs';
 import * as https from 'https';
+import { createHash } from 'node:crypto';
 import axios, { type AxiosRequestConfig } from 'axios';
 import { logger } from '../logger';
 import type { TerminologyApiAuthConfig } from './valueset-types';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
 type OAuth2Token = {
   accessToken: string;
+  authSignature: string;
   expiresAt: number;
 };
 
@@ -108,7 +111,10 @@ export class TerminologyRequestConfigBuilder {
     try {
       return fs.readFileSync(filePath, 'utf8');
     } catch (error) {
-      logger.warn(`[TerminologyApiClient] Could not read mTLS ${label} from configured path: ${error instanceof Error ? error.message : String(error)}`);
+      logger.warn('[TerminologyApiClient] Could not read configured mTLS material', {
+        material: label,
+        ...validationFailureMetadata(error),
+      });
       return undefined;
     }
   }
@@ -116,7 +122,18 @@ export class TerminologyRequestConfigBuilder {
   private async getOAuth2Token(auth: TerminologyApiAuthConfig): Promise<string | null> {
     if (!auth.clientId || !auth.clientSecret || !auth.tokenUrl) return null;
 
-    if (this.oauth2Token && Date.now() < this.oauth2Token.expiresAt - 30_000) {
+    const authSignature = createHash('sha256')
+      .update(JSON.stringify({
+        clientId: auth.clientId,
+        clientSecret: auth.clientSecret,
+        scope: auth.scope,
+        tokenUrl: auth.tokenUrl,
+      }))
+      .digest('hex');
+    if (
+      this.oauth2Token?.authSignature === authSignature &&
+      Date.now() < this.oauth2Token.expiresAt - 30_000
+    ) {
       return this.oauth2Token.accessToken;
     }
 
@@ -136,6 +153,7 @@ export class TerminologyRequestConfigBuilder {
         const expiresInSec = typeof resp.data.expires_in === 'number' ? resp.data.expires_in : 3600;
         this.oauth2Token = {
           accessToken: resp.data.access_token,
+          authSignature,
           expiresAt: Date.now() + expiresInSec * 1000,
         };
         logger.info(`[TerminologyApiClient] OAuth2 token acquired (expires in ${expiresInSec}s)`);
@@ -145,7 +163,8 @@ export class TerminologyRequestConfigBuilder {
       return null;
     } catch (err) {
       logger.warn(
-        `[TerminologyApiClient] OAuth2 token acquisition failed: ${err instanceof Error ? err.message : String(err)}`,
+        '[TerminologyApiClient] OAuth2 token acquisition failed',
+        validationFailureMetadata(err),
       );
       return null;
     }

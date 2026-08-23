@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { QuestionnaireValidator } from '../questionnaire-validator';
-import { valueSetCache } from '../valueset-cache';
+import { ValueSetCache } from '../valueset-cache';
 
-const validator = new QuestionnaireValidator();
+const valueSetCache = new ValueSetCache();
+const validator = new QuestionnaireValidator(valueSetCache);
 
 describe('QuestionnaireValidator — QuestionnaireResponse', () => {
   it('flags missing status as error', () => {
@@ -31,6 +32,109 @@ describe('QuestionnaireValidator — QuestionnaireResponse', () => {
     const linkIdIssues = issues.filter(i => i.code === 'qr-missing-linkid');
     expect(linkIdIssues).toHaveLength(1);
     expect(linkIdIssues[0].severity).toBe('error');
+  });
+
+  it('normalizes malformed response items instead of trusting their shape', () => {
+    const issues = validator.validateQuestionnaireResponse({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      item: [{ linkId: 42, answer: [null] }],
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'qr-missing-linkid',
+      path: 'QuestionnaireResponse.item[0].linkId',
+    }));
+  });
+
+  it('reports a malformed answer value without throwing', () => {
+    const issues = validator.validateQuestionnaireResponse({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      item: [{ linkId: 'choice', answer: [{ valueCoding: null }] }],
+    }, {
+      resourceType: 'Questionnaire',
+      status: 'active',
+      item: [{ linkId: 'choice', type: 'choice' }],
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'qr-type-mismatch',
+      path: 'QuestionnaireResponse.item[0].answer[0].value',
+    }));
+  });
+
+  it('validates nested QuestionnaireResponse items below answers', () => {
+    const issues = validator.validateQuestionnaireResponse({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      item: [{
+        linkId: 'parent',
+        answer: [{ valueString: 'yes', item: [{}] }],
+      }],
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'qr-missing-linkid',
+      path: 'QuestionnaireResponse.item[0].answer[0].item[0].linkId',
+    }));
+  });
+
+  it('validates deeply nested response trees without recursive stack growth', () => {
+    const questionnaireRoot: Record<string, unknown> = {
+      linkId: 'q-0',
+      type: 'group',
+    };
+    const responseRoot: Record<string, unknown> = { linkId: 'q-0' };
+    let questionnaireItem = questionnaireRoot;
+    let responseItem = responseRoot;
+    for (let index = 1; index < 5_000; index++) {
+      const nextQuestion = { linkId: `q-${index}`, type: 'group' };
+      const nextResponse = { linkId: `q-${index}` };
+      questionnaireItem.item = [nextQuestion];
+      responseItem.item = [nextResponse];
+      questionnaireItem = nextQuestion;
+      responseItem = nextResponse;
+    }
+
+    expect(() => validator.validateQuestionnaireResponse({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      item: [responseRoot],
+    }, {
+      resourceType: 'Questionnaire',
+      status: 'active',
+      item: [questionnaireRoot],
+    })).not.toThrow();
+  });
+
+  it('terminates safely for cyclic response and questionnaire item graphs', () => {
+    const questionnaireItem: Record<string, unknown> = {
+      linkId: 'group',
+      type: 'group',
+    };
+    questionnaireItem.item = [questionnaireItem];
+    const responseItem: Record<string, unknown> = { linkId: 'group' };
+    responseItem.item = [responseItem];
+
+    expect(() => validator.validateQuestionnaireResponse({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      item: [responseItem],
+    }, {
+      resourceType: 'Questionnaire',
+      status: 'active',
+      item: [questionnaireItem],
+    })).not.toThrow();
+  });
+
+  it('ignores malformed contained and response values without throwing', () => {
+    expect(() => validator.validateAnyResource({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      contained: [null, 42, 'invalid'],
+      item: [{ linkId: 'question', answer: [null] }],
+    })).not.toThrow();
   });
 
   it('returns no issues for valid QuestionnaireResponse', () => {
@@ -88,6 +192,25 @@ describe('QuestionnaireValidator — QuestionnaireResponse', () => {
       severity: 'error',
       path: 'QuestionnaireResponse.questionnaire',
     }));
+  });
+
+  it('does not read wrong-type canonicals from another validator cache', () => {
+    const canonical = 'http://example.org/canonical/shared-only';
+    valueSetCache.setValueSetFile(canonical, {
+      resourceType: 'ValueSet',
+      url: canonical,
+      status: 'active',
+    });
+    const isolatedValidator = new QuestionnaireValidator(new ValueSetCache());
+
+    const issues = isolatedValidator.validateQuestionnaireResponse({
+      resourceType: 'QuestionnaireResponse',
+      status: 'completed',
+      questionnaire: canonical,
+    }, undefined, { warnOnUnresolvedQuestionnaireReference: true });
+    valueSetCache.clear();
+
+    expect(issues.some(issue => issue.code === 'questionnaire-reference-wrong-type')).toBe(false);
   });
 
   it('applies maxDecimalPlaces to decimal and quantity answers', () => {

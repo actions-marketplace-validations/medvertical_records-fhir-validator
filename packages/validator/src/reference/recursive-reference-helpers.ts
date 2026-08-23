@@ -1,5 +1,9 @@
 import { logger } from '../logger';
 import { parseReference } from './reference-type-extractor';
+import {
+  extractBundleEntries,
+  findReferencesInResource,
+} from './bundle-reference-finder';
 
 interface RecursiveReferenceFilterContext {
   startTime: number;
@@ -28,19 +32,25 @@ export interface ReferenceToValidate {
 }
 
 export function extractReferencesToValidate(
-  resource: any,
+  resource: unknown,
   parentResourceId: string,
   depth: number,
 ): ReferenceToValidate[] {
-  const references: ReferenceToValidate[] = [];
-
-  if (!resource || typeof resource !== 'object') {
-    return references;
-  }
-
-  extractReferencesFromObject(resource, '', parentResourceId, depth, references);
-
-  return references;
+  return findReferencesInResource(resource, '', { includeContained: true }).map(
+    ({ reference, fieldPath }) => {
+      const parseResult = parseReference(reference);
+      return {
+        reference,
+        resourceType: parseResult.resourceType || undefined,
+        resourceId: parseResult.resourceId || undefined,
+        fieldPath: fieldPath.endsWith('.reference')
+          ? fieldPath.slice(0, -'.reference'.length)
+          : fieldPath,
+        parentResourceId,
+        depth,
+      };
+    },
+  );
 }
 
 export function filterReferences(
@@ -66,6 +76,10 @@ export function filterReferences(
     filtered = filtered.filter(ref => !ref.reference.startsWith('#'));
   }
 
+  filtered = Array.from(
+    new Map(filtered.map((reference) => [reference.reference, reference])).values(),
+  );
+
   const maxRefs = context.config.maxReferencesPerResource || 10;
   if (filtered.length > maxRefs) {
     logger.debug(
@@ -77,28 +91,33 @@ export function filterReferences(
   return filtered;
 }
 
-export function resolveContainedReference(resource: any, reference: string): any | null {
+export function resolveContainedReference(
+  resource: unknown,
+  reference: string,
+): Record<string, unknown> | null {
   if (!reference.startsWith('#') || reference === '#') return null;
-  if (!Array.isArray(resource?.contained)) return null;
+  const contained = toRecord(resource)?.contained;
+  if (!Array.isArray(contained)) return null;
 
   const containedId = reference.slice(1);
-  return resource.contained.find((contained: any) =>
-    contained && String(contained.id) === containedId,
-  ) ?? null;
+  for (const candidate of contained) {
+    const record = toRecord(candidate);
+    if (record && record.id === containedId) return record;
+  }
+  return null;
 }
 
-export function resolveBundleReference(resource: any, reference: string): any | null {
-  if (resource?.resourceType !== 'Bundle' || !Array.isArray(resource.entry)) return null;
-
-  for (const entry of resource.entry) {
-    const entryResource = entry?.resource;
-    if (!entryResource || typeof entryResource !== 'object') continue;
+export function resolveBundleReference(
+  resource: unknown,
+  reference: string,
+): Record<string, unknown> | null {
+  for (const entry of extractBundleEntries(resource)) {
+    const entryResource = entry.resource;
+    if (!entryResource) continue;
     if (entry.fullUrl === reference) return entryResource;
-    if (
-      entryResource.resourceType &&
-      entryResource.id &&
-      reference === `${entryResource.resourceType}/${entryResource.id}`
-    ) {
+    const resourceType = getString(entryResource, 'resourceType');
+    const resourceId = getString(entryResource, 'id');
+    if (resourceType && resourceId && reference === `${resourceType}/${resourceId}`) {
       return entryResource;
     }
   }
@@ -106,17 +125,30 @@ export function resolveBundleReference(resource: any, reference: string): any | 
   return null;
 }
 
-export function getResourceIdentifier(resource: any): string {
-  if (!resource || typeof resource !== 'object') {
-    return `unknown-${Date.now()}-${Math.random()}`;
+export class ResourceIdentityRegistry {
+  private readonly anonymousResourceIds = new WeakMap<object, string>();
+  private anonymousResourceSequence = 0;
+
+  getIdentifier(resource: unknown): string {
+    const record = toRecord(resource);
+    if (!record) return 'unknown-scalar';
+    const resourceType = getString(record, 'resourceType');
+    const resourceId = getString(record, 'id');
+    if (resourceType && resourceId) return `${resourceType}/${resourceId}`;
+    if (resourceId) return resourceId;
+    const existing = this.anonymousResourceIds.get(record);
+    if (existing) return existing;
+    const identifier = `unknown-object-${++this.anonymousResourceSequence}`;
+    this.anonymousResourceIds.set(record, identifier);
+    return identifier;
   }
-  if (resource.resourceType && resource.id) {
-    return `${resource.resourceType}/${resource.id}`;
-  }
-  if (resource.id) {
-    return resource.id;
-  }
-  return `unknown-${Date.now()}-${Math.random()}`;
+}
+
+export function getResourceIdentifier(
+  resource: unknown,
+  identities: ResourceIdentityRegistry,
+): string {
+  return identities.getIdentifier(resource);
 }
 
 export function isTimeoutReached(context: RecursiveReferenceFilterContext): boolean {
@@ -125,45 +157,13 @@ export function isTimeoutReached(context: RecursiveReferenceFilterContext): bool
   return elapsed >= timeout;
 }
 
-function extractReferencesFromObject(
-  obj: any,
-  path: string,
-  parentResourceId: string,
-  depth: number,
-  references: ReferenceToValidate[],
-): void {
-  if (!obj || typeof obj !== 'object') {
-    return;
-  }
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
 
-  if (obj.reference && typeof obj.reference === 'string') {
-    const parseResult = parseReference(obj.reference);
-
-    references.push({
-      reference: obj.reference,
-      resourceType: parseResult.resourceType || undefined,
-      resourceId: parseResult.resourceId || undefined,
-      fieldPath: path || 'reference',
-      parentResourceId,
-      depth,
-    });
-  }
-
-  for (const [key, value] of Object.entries(obj)) {
-    const newPath = path ? `${path}.${key}` : key;
-
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => {
-        extractReferencesFromObject(
-          item,
-          `${newPath}[${index}]`,
-          parentResourceId,
-          depth,
-          references,
-        );
-      });
-    } else if (value && typeof value === 'object') {
-      extractReferencesFromObject(value, newPath, parentResourceId, depth, references);
-    }
-  }
+function getString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
 }

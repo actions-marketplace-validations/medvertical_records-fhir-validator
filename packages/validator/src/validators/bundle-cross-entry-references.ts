@@ -10,9 +10,9 @@ import {
 } from './bundle-cross-entry-reference-resolution';
 
 interface ReferenceContext {
-    entries: any[];
+    entries: unknown[];
     entryIndex: number;
-    resource: any;
+    resource: Record<string, unknown>;
     sourceFullUrl: string | undefined;
     ref: string;
     refPath: string;
@@ -22,11 +22,12 @@ interface ReferenceContext {
 }
 
 export function validateBundleCrossEntryReferences(
-    bundle: any,
+    bundle: unknown,
     bundleType: string | null,
     strictRefs = false,
 ): ValidationIssue[] {
-    const entries: any[] = bundle?.entry ?? [];
+    if (!isRecord(bundle)) return [];
+    const entries: unknown[] = Array.isArray(bundle.entry) ? bundle.entry : [];
     if (entries.length === 0) return [];
 
     const indexes = buildReferenceIndexes(entries);
@@ -34,7 +35,10 @@ export function validateBundleCrossEntryReferences(
     const issues: ValidationIssue[] = [];
 
     for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
-        const resource = entries[entryIndex]?.resource;
+        const entry = entries[entryIndex];
+        const resource = isRecord(entry) && isRecord(entry.resource)
+            ? entry.resource
+            : undefined;
         if (!resource) continue;
         issues.push(...validateEntryReferences(
             entries,
@@ -50,14 +54,17 @@ export function validateBundleCrossEntryReferences(
 }
 
 function validateEntryReferences(
-    entries: any[],
+    entries: unknown[],
     entryIndex: number,
-    resource: any,
+    resource: Record<string, unknown>,
     indexes: BundleReferenceIndexes,
     isClosedBundle: boolean,
     strictRefs: boolean,
 ): ValidationIssue[] {
-    const sourceFullUrl: string | undefined = entries[entryIndex]?.fullUrl;
+    const sourceEntry = entries[entryIndex];
+    const sourceFullUrl = isRecord(sourceEntry) && typeof sourceEntry.fullUrl === 'string'
+        ? sourceEntry.fullUrl
+        : undefined;
     const refsWithPaths: { reference: string; path: string }[] = [];
     extractReferencesWithPaths(resource, '', refsWithPaths);
 
@@ -67,6 +74,13 @@ function validateEntryReferences(
         const historyMatch = ref.match(/^(.*)\/_history\/[^/]+$/);
         const unversioned = historyMatch ? historyMatch[1] : ref;
         const resolved = resolveReferenceInBundle(ref, unversioned, sourceFullUrl, indexes, strictRefs);
+        if (
+            isRelativeReference(ref) &&
+            sourceFullUrl &&
+            !sourceFullUrlMatchesResource(sourceFullUrl, resource)
+        ) {
+            resolved.resolvable = false;
+        }
         if (resolved.resolvable) continue;
 
         issues.push(...createUnresolvedReferenceIssues({
@@ -83,6 +97,25 @@ function validateEntryReferences(
     }
 
     return issues;
+}
+
+function isRelativeReference(reference: string): boolean {
+    return /^[A-Z][A-Za-z]+\/[^/?#]+(?:\/_history\/[^/?#]+)?$/.test(reference);
+}
+
+function sourceFullUrlMatchesResource(
+    fullUrl: string,
+    resource: Record<string, unknown>,
+): boolean {
+    if (!/^https?:\/\//.test(fullUrl)) return true;
+    if (typeof resource.resourceType !== 'string' || typeof resource.id !== 'string') return true;
+    try {
+        const segments = new URL(fullUrl).pathname.split('/').filter(Boolean);
+        return segments.length < 2 ||
+            (segments.at(-2) === resource.resourceType && segments.at(-1) === resource.id);
+    } catch {
+        return true;
+    }
 }
 
 function createUnresolvedReferenceIssues(
@@ -112,7 +145,7 @@ function createClosedBundleReferenceIssues(context: ReferenceContext): Validatio
         customMessage: context.resolved.multipleMatches
             ? `Found ${context.resolved.matchCount} matches for '${context.ref}' in the bundle`
             : `Can't find '${context.ref}' in the bundle ` +
-                `(${context.resource.resourceType ?? 'entry'}[${context.entryIndex}]).${detail}`,
+                `(${getResourceLabel(context.resource)}[${context.entryIndex}]).${detail}`,
         severityOverride: 'error',
         details: buildReferenceMismatchDetails(context),
     }));
@@ -158,6 +191,19 @@ function createOpenBundleReferenceIssues(
     context: ReferenceContext,
     indexes: BundleReferenceIndexes,
 ): ValidationIssue[] {
+    if (context.ref.startsWith('urn:uuid:') || context.ref.startsWith('urn:oid:')) {
+        return [createValidationIssue({
+            code: 'bundle-cross-entry-reference-missing',
+            path: getReferenceIssuePath(context),
+            resourceType: 'Bundle',
+            customMessage:
+                `Can't find '${context.ref}' in the bundle ` +
+                `(${getResourceLabel(context.resource)}[${context.entryIndex}]).`,
+            severityOverride: 'warning',
+            details: buildReferenceMismatchDetails(context),
+        })];
+    }
+
     if (!context.resolved.hasTypeIdMatch || !context.sourceFullUrl || context.sourceFullUrl.startsWith('urn:')) {
         return [];
     }
@@ -166,7 +212,9 @@ function createOpenBundleReferenceIssues(
     const matches = indexes.typeIdToFullUrls.get(context.unversioned) || [];
 
     return matches.map((matchedFullUrl, matchIndex) => {
-        const matchedEntryIndex = context.entries.findIndex((entry: any) => entry?.fullUrl === matches[matchIndex]);
+        const matchedEntryIndex = context.entries.findIndex(entry =>
+            isRecord(entry) && entry.fullUrl === matches[matchIndex]
+        );
         const entryLabel = matchedEntryIndex >= 0 ? matchedEntryIndex + 1 : '?';
         return createValidationIssue({
             code: 'bundle-cross-entry-fullurl-mismatch',
@@ -181,7 +229,7 @@ function createOpenBundleReferenceIssues(
 }
 
 function getReferenceIssuePath(context: ReferenceContext): string {
-    return (!context.sourceFullUrl || !context.refPath)
+    return !context.refPath
         ? `Bundle.entry[${context.entryIndex}].resource`
         : `Bundle.entry[${context.entryIndex}].resource.${context.refPath}`;
 }
@@ -194,15 +242,20 @@ function composeFullTarget(ref: string, sourceFullUrl: string | undefined): stri
     return base ? `${base}${ref}` : ref;
 }
 
-function findEntryFullUrlsByLogicalRef(entries: any[], logicalRef: string): string[] {
+function findEntryFullUrlsByLogicalRef(entries: unknown[], logicalRef: string): string[] {
     const [resourceType, id] = logicalRef.split('/');
     if (!resourceType || !id) return [];
 
     return entries
-        .filter((entry: any) =>
-            entry?.resource?.resourceType === resourceType &&
-            entry?.resource?.id === id)
-        .map((entry: any) => entry?.fullUrl || '');
+        .filter(entry =>
+            isRecord(entry) &&
+            isRecord(entry.resource) &&
+            entry.resource.resourceType === resourceType &&
+            entry.resource.id === id
+        )
+        .map(entry => isRecord(entry) && typeof entry.fullUrl === 'string'
+            ? entry.fullUrl
+            : '');
 }
 
 function buildTypeIdMismatchDetail(context: ReferenceContext): string {
@@ -249,4 +302,14 @@ function buildReferenceMismatchDetails(context: ReferenceContext): Record<string
     }
 
     return details;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getResourceLabel(resource: Record<string, unknown>): string {
+    return typeof resource.resourceType === 'string' && resource.resourceType.length > 0
+        ? resource.resourceType
+        : 'entry';
 }

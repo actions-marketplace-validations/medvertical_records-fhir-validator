@@ -61,4 +61,20 @@ describe('CLI runner input discovery', () => {
     expect(files).toHaveLength(1);
     expect(files[0].endsWith('/fixtures/patient.json')).toBe(true);
   });
+
+  it('discovers XML and NDJSON inputs with the default filter', async () => {
+    const root = await createTempDir();
+    await writeFixture(root, 'patient.xml', '<Patient xmlns="http://hl7.org/fhir"/>');
+    await writeFixture(root, 'bulk.ndjson', '{"resourceType":"Observation"}');
+    await writeFixture(root, 'notes.txt', 'not FHIR');
+
+    expect(findInputFiles({
+      paths: [root],
+      include: [],
+      exclude: [],
+    }).map(file => file.slice(root.length + 1))).toEqual([
+      'bulk.ndjson',
+      'patient.xml',
+    ]);
+  });
 });

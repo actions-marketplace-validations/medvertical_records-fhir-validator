@@ -1,61 +1,53 @@
-import type { ValidationIssue } from '../types';
-import { createValidationIssue } from '../issues';
-import type { StructureDefinition } from '../core/structure-definition-types';
+import type { ValidationIssue } from "../types";
+import { createValidationIssue } from "../issues";
+import type { ElementDefinition, StructureDefinition } from "../core/structure-definition-types";
 import {
   extractFixedValue,
   extractPatternValue,
   getValueAtPath,
   matchesPattern,
-  valueMatchesFixedConstraint,
   valuesMatch,
-} from './slice-utils';
-import type { SliceDefinition } from './slice-types';
+} from "./slice-utils";
+import type { SliceDefinition } from "./slice-types";
+import { isConcreteChoiceProperty, splitConcreteChoiceProperty } from "../core/fhir-choice-property";
+import { getChildCardinalities, resolveValueOccurrences } from "./slicing-content-paths";
+import { formatConstraintValue, resourceTypeFromPath } from "./slicing-content-format";
 
-const CHOICE_BASES = [
-  'value', 'effective', 'onset', 'abatement', 'deceased', 'multipleBirth',
-  'defaultValue', 'medication', 'reported', 'occurrence', 'timing',
-  'product', 'serviced', 'location', 'allowed', 'used',
-  'rate', 'born', 'age',
-];
-
-export function resourceTypeFromPath(path: string): string {
-  const firstSegment = path.split('.')[0]?.replace(/\[[^\]]+\]/g, '');
-  return firstSegment || 'Unknown';
-}
+export { resourceTypeFromPath } from "./slicing-content-format";
+export { validateSliceRootConstraints } from "./slicing-root-constraint-validator";
 
 export function validateSliceContentConstraints(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   elementPath: string,
-  profileSD: StructureDefinition
+  profileSD: StructureDefinition,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const elements = profileSD.snapshot?.element || profileSD.differential?.element || [];
   const slicePrefix = `${slice.path}:${slice.sliceName}`;
   const checkedFixedPaths = new Set<string>();
   const checkedPatternPaths = new Set<string>();
+  const requiredPaths = new Map(slice.childMin ?? []);
 
   for (const elementDef of elements) {
     const relativePath = getSliceRelativePath(elementDef, slicePrefix);
-    if (relativePath === null || relativePath.includes(':')) continue;
+    if (relativePath === null || relativePath.includes(":")) continue;
 
     const fixedValue = extractFixedValue(elementDef);
     if (fixedValue !== undefined) {
       checkedFixedPaths.add(relativePath);
-      issues.push(...validateSliceFixedValue(
-        element,
-        slice,
-        elementPath,
-        relativePath,
-        fixedValue,
-        (elementDef.min ?? 0) > 0 && allAncestorsPresent(element, relativePath),
-      ));
+      issues.push(...validateSliceFixedValue(element, slice, elementPath, relativePath, fixedValue));
     }
 
     const patternValue = extractPatternValue(elementDef);
     if (patternValue !== undefined) {
       checkedPatternPaths.add(relativePath);
       issues.push(...validateSlicePatternValue(element, slice, elementPath, relativePath, patternValue));
+    }
+
+    const minimum = elementDef.min ?? 0;
+    if (minimum > 0) {
+      requiredPaths.set(relativePath, Math.max(requiredPaths.get(relativePath) ?? 0, minimum));
     }
   }
 
@@ -65,26 +57,9 @@ export function validateSliceContentConstraints(
     issues.push(...validateSliceFixedValue(element, slice, elementPath, relativePath, fixedValue));
   }
 
-  for (const [relativePath, minimum] of slice.childMin ?? []) {
+  for (const [relativePath, minimum] of requiredPaths) {
     if (!isContentConstraintPath(relativePath)) continue;
-    if (!allAncestorsPresent(element, relativePath)) continue;
-    const actualValue = getValueAtPath(element, relativePath);
-    const actualCount = Array.isArray(actualValue)
-      ? actualValue.length
-      : actualValue === undefined || actualValue === null ? 0 : 1;
-    if (actualCount >= minimum) continue;
-    issues.push(createValidationIssue({
-      code: 'structural-cardinality-min',
-      path: `${elementPath}.${relativePath}`,
-      resourceType: resourceTypeFromPath(elementPath),
-      customMessage: `Element ${elementPath}.${relativePath} has too few values: expected at least ${minimum}, found ${actualCount}`,
-      details: {
-        sliceName: slice.sliceName,
-        relativePath,
-        expectedMin: minimum,
-        actualCount,
-      },
-    }));
+    issues.push(...validateMinimumPerParent(element, slice, elementPath, relativePath, minimum));
   }
 
   for (const [relativePath, patternValue] of slice.childPatterns ?? []) {
@@ -96,139 +71,16 @@ export function validateSliceContentConstraints(
   return issues;
 }
 
-function allAncestorsPresent(element: any, relativePath: string): boolean {
-  const segments = relativePath.split('.');
-  if (segments.length <= 1) return true;
-
-  for (let length = 1; length < segments.length; length += 1) {
-    const ancestor = getValueAtPath(element, segments.slice(0, length).join('.'));
-    if (ancestor === undefined || ancestor === null) return false;
-    if (Array.isArray(ancestor) && ancestor.length === 0) return false;
-  }
-  return true;
-}
-
-export function validateSliceRootConstraints(
-  element: any,
-  slice: SliceDefinition,
-  elementPath: string,
-): ValidationIssue[] {
-  const issues: ValidationIssue[] = [];
-
-  if (
-    slice.fixed !== undefined &&
-    !valueMatchesFixedConstraint(element, slice.fixed, slice.fixedKind)
-  ) {
-    const fieldIssues = validateRootFixedValueFields(element, slice, elementPath);
-    if (fieldIssues.length > 0) {
-      issues.push(...fieldIssues);
-    } else {
-      issues.push(createValidationIssue({
-        code: 'profile-slice-fixed-value-mismatch',
-        path: elementPath,
-        resourceType: resourceTypeFromPath(elementPath),
-        customMessage: `Slice '${slice.sliceName}' requires fixed value '${slice.fixed}', found: '${element}'`,
-        details: {
-          sliceName: slice.sliceName,
-          relativePath: '$this',
-          expectedValue: slice.fixed,
-          actualValue: element,
-        },
-      }));
-    }
-  }
-
-  if (
-    slice.pattern !== undefined &&
-    !matchesPattern(element, slice.pattern)
-  ) {
-    issues.push(createValidationIssue({
-      code: 'profile-slice-pattern-mismatch',
-      path: elementPath,
-      resourceType: resourceTypeFromPath(elementPath),
-      customMessage: `Slice '${slice.sliceName}' pattern mismatch`,
-      details: {
-        sliceName: slice.sliceName,
-        relativePath: '$this',
-        expectedPattern: slice.pattern,
-        actualValue: element,
-      },
-    }));
-  }
-
-  return issues;
-}
-
-function validateRootFixedValueFields(
-  actualValue: any,
-  slice: SliceDefinition,
-  elementPath: string,
-): ValidationIssue[] {
-  const fixedValue = slice.fixed;
-  if (!isPlainObject(actualValue) || !isPlainObject(fixedValue)) return [];
-
-  const issues: ValidationIssue[] = [];
-  const fixedKeys = new Set(Object.keys(fixedValue));
-  for (const key of Object.keys(actualValue)) {
-    if (fixedKeys.has(key)) continue;
-    issues.push(createRootFixedFieldIssue(
-      slice,
-      `${elementPath}.${key}`,
-      key,
-      undefined,
-      actualValue[key],
-      `The element ${key} is present in the instance but not allowed in the applicable fixed value specified in profile`,
-    ));
-  }
-
-  for (const key of fixedKeys) {
-    const expected = fixedValue[key];
-    const actual = actualValue[key];
-    if (valuesMatch(actual, expected)) continue;
-    issues.push(createRootFixedFieldIssue(
-      slice,
-      `${elementPath}.${key}`,
-      key,
-      expected,
-      actual,
-      `Slice '${slice.sliceName}' requires '${key}' to match fixed value '${JSON.stringify(expected)}', found: '${JSON.stringify(actual)}'`,
-    ));
-  }
-
-  return issues;
-}
-
-function createRootFixedFieldIssue(
-  slice: SliceDefinition,
-  path: string,
-  relativePath: string,
-  expectedValue: any,
-  actualValue: any,
-  customMessage: string,
-): ValidationIssue {
-  return createValidationIssue({
-    code: 'profile-fixed-value-mismatch',
-    path,
-    resourceType: resourceTypeFromPath(path),
-    customMessage,
-    details: {
-      sliceName: slice.sliceName,
-      relativePath,
-      expectedValue,
-      actualValue,
-    },
-  });
-}
-
-function isPlainObject(value: any): value is Record<string, any> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function emitMatchedSliceChildIssues(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   elementPath: string,
-  profileSD: StructureDefinition
+  profileSD: StructureDefinition,
+  mustSupportSeverity: "warning" | "information" = "warning",
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const snapshot = profileSD.snapshot?.element;
@@ -241,79 +93,60 @@ export function emitMatchedSliceChildIssues(
     if (!id || !id.startsWith(idPrefix)) continue;
 
     const relative = id.substring(idPrefix.length);
-    if (relative.includes('.') || relative.includes(':')) continue;
+    if (relative.includes(".") || relative.includes(":")) continue;
 
     const isRequired = (elementDef.min ?? 0) >= 1;
     const isMustSupport = elementDef.mustSupport === true;
     if (!isRequired && !isMustSupport) continue;
 
     const actualValue = getValueAtPath(element, relative);
-    const isPresent = actualValue !== undefined && actualValue !== null &&
-      (!Array.isArray(actualValue) || actualValue.length > 0);
+    const isPresent = actualValue !== undefined && actualValue !== null && (!Array.isArray(actualValue) || actualValue.length > 0);
     if (isPresent) continue;
     if (isMustSupport && mustSupportMissingIsSatisfiedBySiblingValue(element, relative)) continue;
 
     const childPath = `${elementPath}:${slice.sliceName}.${relative}`;
-    issues.push(createMissingSliceChildIssue(childPath, slice.sliceName, isRequired, profileSD.url));
+    issues.push(createMissingSliceChildIssue(childPath, slice.sliceName, isRequired, profileSD.url, mustSupportSeverity));
   }
 
   return issues;
 }
 
-function getSliceRelativePath(elementDef: any, slicePrefix: string): string | null {
+function getSliceRelativePath(elementDef: ElementDefinition, slicePrefix: string): string | null {
   const id = elementDef.id;
   const path = elementDef.path;
 
-  if (id && id.startsWith(`${slicePrefix}.`)) {
+  if (typeof id === "string" && id.startsWith(`${slicePrefix}.`)) {
     return id.substring(slicePrefix.length + 1);
   }
-  if (path.startsWith(`${slicePrefix}.`)) {
+  if (typeof path === "string" && path.startsWith(`${slicePrefix}.`)) {
     return path.substring(slicePrefix.length + 1);
   }
   return null;
 }
 
 function validateSliceFixedValue(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   elementPath: string,
   relativePath: string,
-  fixedValue: any,
-  required = false,
+  fixedValue: unknown,
 ): ValidationIssue[] {
-  const actualValue = getValueAtPath(element, relativePath);
-  if (actualValue === undefined || actualValue === null) {
-    // fixed[x] constrains a value when present; it does not change the
-    // element's cardinality. Missing required children are reported from the
-    // element's min cardinality, not as a second fixed-value violation.
-    return required ? [createValidationIssue({
-      code: 'structural-cardinality-min',
-      path: `${elementPath}.${relativePath}`,
-      resourceType: resourceTypeFromPath(elementPath),
-      customMessage: `Element ${elementPath}.${relativePath} has too few values: expected at least 1, found 0`,
-      details: {
-        sliceName: slice.sliceName,
-        relativePath,
-        expectedMin: 1,
-        actualCount: 0,
-      },
-    })] : [];
-  }
-
-  if (valuesMatch(actualValue, fixedValue)) return [];
-
-  return [createValidationIssue({
-    code: 'profile-slice-fixed-value-mismatch',
-    path: `${elementPath}.${relativePath}`,
-    resourceType: resourceTypeFromPath(elementPath),
-    customMessage: `Slice '${slice.sliceName}' requires '${relativePath}' to be '${fixedValue}', found: '${actualValue}'`,
-    details: {
-      sliceName: slice.sliceName,
-      relativePath,
-      expectedValue: fixedValue,
-      actualValue,
-    },
-  })];
+  return resolveValueOccurrences(element, relativePath)
+    .filter((occurrence) => !valuesMatch(occurrence.value, fixedValue))
+    .map((occurrence) =>
+      createValidationIssue({
+        code: "profile-slice-fixed-value-mismatch",
+        path: appendRelativePath(elementPath, occurrence.path),
+        resourceType: resourceTypeFromPath(elementPath),
+        customMessage: `Slice '${slice.sliceName}' requires '${relativePath}' to be '${formatConstraintValue(fixedValue)}', found: '${formatConstraintValue(occurrence.value)}'`,
+        details: {
+          sliceName: slice.sliceName,
+          relativePath,
+          expectedValue: fixedValue,
+          actualValue: occurrence.value,
+        },
+      }),
+    );
 }
 
 function isContentConstraintPath(relativePath: string): boolean {
@@ -321,32 +154,32 @@ function isContentConstraintPath(relativePath: string): boolean {
   // such as "extension:domain.url". getValueAtPath resolves instance object
   // paths, not StructureDefinition slice labels, so emitting those as runtime
   // fixed/pattern mismatches creates false positives on valid nested slices.
-  return !relativePath.split('.').some(segment => segment.includes(':'));
+  return !relativePath.split(".").some((segment) => segment.includes(":"));
 }
 
 function validateSlicePatternValue(
-  element: any,
+  element: unknown,
   slice: SliceDefinition,
   elementPath: string,
   relativePath: string,
-  patternValue: any,
+  patternValue: unknown,
 ): ValidationIssue[] {
-  const actualValue = getValueAtPath(element, relativePath);
-  if (actualValue === undefined || actualValue === null) return [];
-  if (matchesPattern(actualValue, patternValue)) return [];
-
-  return [createValidationIssue({
-    code: 'profile-slice-pattern-mismatch',
-    path: `${elementPath}.${relativePath}`,
-    resourceType: resourceTypeFromPath(elementPath),
-    customMessage: `Slice '${slice.sliceName}' pattern mismatch at ${relativePath}`,
-    details: {
-      sliceName: slice.sliceName,
-      relativePath,
-      expectedPattern: patternValue,
-      actualValue,
-    },
-  })];
+  return resolveValueOccurrences(element, relativePath)
+    .filter((occurrence) => !matchesPattern(occurrence.value, patternValue))
+    .map((occurrence) =>
+      createValidationIssue({
+        code: "profile-slice-pattern-mismatch",
+        path: appendRelativePath(elementPath, occurrence.path),
+        resourceType: resourceTypeFromPath(elementPath),
+        customMessage: `Slice '${slice.sliceName}' pattern mismatch at ${relativePath}`,
+        details: {
+          sliceName: slice.sliceName,
+          relativePath,
+          expectedPattern: patternValue,
+          actualValue: occurrence.value,
+        },
+      }),
+    );
 }
 
 function createMissingSliceChildIssue(
@@ -354,34 +187,66 @@ function createMissingSliceChildIssue(
   sliceName: string,
   isRequired: boolean,
   profileUrl?: string,
+  mustSupportSeverity: "warning" | "information" = "warning",
 ): ValidationIssue {
   return createValidationIssue({
-    code: isRequired ? 'required-element-missing' : 'profile-mustsupport-missing',
+    code: isRequired ? "required-element-missing" : "profile-mustsupport-missing",
     path: childPath,
     resourceType: resourceTypeFromPath(childPath),
     profile: profileUrl,
     messageParams: { element: childPath },
     details: { sliceName },
+    severityOverride: isRequired ? undefined : mustSupportSeverity,
   });
 }
 
-function mustSupportMissingIsSatisfiedBySiblingValue(element: any, relativePath: string): boolean {
+function mustSupportMissingIsSatisfiedBySiblingValue(element: unknown, relativePath: string): boolean {
   return /^dataAbsentReason$/i.test(relativePath) && hasAnyChoiceValue(element);
 }
 
-function hasAnyChoiceValue(element: any): boolean {
-  return CHOICE_BASES.some(base => hasChoiceValue(element, base));
+function hasAnyChoiceValue(element: unknown): boolean {
+  return (
+    hasChoiceValue(element, "value") ||
+    (isPlainObject(element) &&
+      Object.keys(element).some((key) => splitConcreteChoiceProperty(key) !== null && element[key] !== undefined && element[key] !== null))
+  );
 }
 
-function hasChoiceValue(element: any, base: string): boolean {
-  if (!element || typeof element !== 'object') return false;
+function hasChoiceValue(element: unknown, base: string): boolean {
+  if (!isPlainObject(element)) return false;
   if (element[base] !== undefined && element[base] !== null) return true;
 
-  return Object.keys(element).some(key =>
-    key.startsWith(base) &&
-    key.length > base.length &&
-    key[base.length] === key[base.length].toUpperCase() &&
-    element[key] !== undefined &&
-    element[key] !== null
-  );
+  return Object.keys(element).some((key) => isConcreteChoiceProperty(key, base) && element[key] !== undefined && element[key] !== null);
+}
+
+function validateMinimumPerParent(
+  element: unknown,
+  slice: SliceDefinition,
+  elementPath: string,
+  relativePath: string,
+  minimum: number,
+): ValidationIssue[] {
+  return getChildCardinalities(element, relativePath).flatMap((cardinality) => {
+    if (cardinality.count >= minimum) return [];
+
+    const issuePath = appendRelativePath(elementPath, cardinality.path);
+    return [
+      createValidationIssue({
+        code: "structural-cardinality-min",
+        path: issuePath,
+        resourceType: resourceTypeFromPath(elementPath),
+        customMessage: `Element ${issuePath} has too few values: expected at least ${minimum}, found ${cardinality.count}`,
+        details: {
+          sliceName: slice.sliceName,
+          relativePath,
+          expectedMin: minimum,
+          actualCount: cardinality.count,
+        },
+      }),
+    ];
+  });
+}
+
+function appendRelativePath(basePath: string, relativePath: string): string {
+  return relativePath ? `${basePath}.${relativePath}` : basePath;
 }

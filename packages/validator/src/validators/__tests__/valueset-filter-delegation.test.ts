@@ -124,7 +124,7 @@ describe('ValueSet filtered include server delegation', () => {
       serverUrl: 'https://tx.example/fhir',
       serverDelegation: {
         expandValueSets: true,
-        validateCodes: false,
+        validateCodes: true,
         cacheResults: true,
         cacheTTLSeconds: 3600,
       },
@@ -402,7 +402,7 @@ describe('ValueSet filtered include server delegation', () => {
     expect(validator.getCacheStats().terminologyDiagnostics.failOpenMembershipChecks.byReason['unsupported-filter']).toBe(1);
   });
 
-  it('keeps required bindings strict when unsupported terminology filters are only partially expanded', async () => {
+  it('fails open on required bindings when unsupported filters cannot be checked locally or via server', async () => {
     const get = vi.fn().mockResolvedValue({
       data: {
         resourceType: 'Parameters',
@@ -432,8 +432,15 @@ describe('ValueSet filtered include server delegation', () => {
       },
     });
 
+    // With validate-code delegation off the server cannot be asked, and a
+    // non-concept property filter (CLASSTYPE) makes the local expansion
+    // provably incomplete for LOINC — a required miss is unprovable, so it
+    // degrades to unverified instead of a false-positive error.
     await expect(
       validator.isCodeValidForBinding('58410-2', LOINC, UNSUPPORTED_FILTER_VALUE_SET_URL, 'required')
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
+    expect(
+      validator.getCacheStats().terminologyDiagnostics.unverifiedBindings.byReason['unsupported-filter']
+    ).toBe(1);
   });
 });

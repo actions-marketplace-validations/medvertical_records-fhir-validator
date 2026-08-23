@@ -6,15 +6,26 @@
  */
 
 import type { BusinessRule, BusinessRuleMap } from './business-rule-types';
-import { BusinessRuleValidators } from './business-rule-validators';
 import { logger } from '../logger';
+import { validatePatientAge } from './validators/patient-validators';
+import {
+  validateObservationEffectiveDate,
+  validateObservationStatusValueConsistency,
+  validateObservationValueRange,
+} from './validators/observation-validators';
+import {
+  validateConditionOnsetDate,
+  validateConditionStatusDateConsistency,
+} from './validators/condition-validators';
+import {
+  validateEncounterPeriod,
+  validateEncounterStatusPeriodConsistency,
+} from './validators/encounter-validators';
 
 export class RuleRegistry {
   private businessRules: BusinessRuleMap = new Map();
-  private validators: BusinessRuleValidators;
 
   constructor() {
-    this.validators = new BusinessRuleValidators();
     this.initializeBusinessRules();
   }
 
@@ -27,7 +38,7 @@ export class RuleRegistry {
       {
         name: 'patient-age-validation',
         description: 'Validate patient age is reasonable (birth date validation)',
-        validator: this.validators.validatePatientAge.bind(this.validators)
+        validator: validatePatientAge
       }
     ]);
 
@@ -36,17 +47,17 @@ export class RuleRegistry {
       {
         name: 'observation-value-range-validation',
         description: 'Validate observation values are within reasonable ranges',
-        validator: this.validators.validateObservationValueRange.bind(this.validators)
+        validator: validateObservationValueRange
       },
       {
         name: 'observation-effective-date-validation',
         description: 'Validate observation effective date is reasonable',
-        validator: this.validators.validateObservationEffectiveDate.bind(this.validators)
+        validator: validateObservationEffectiveDate
       },
       {
         name: 'observation-status-value-consistency',
         description: 'Validate observation status and value consistency',
-        validator: this.validators.validateObservationStatusValueConsistency.bind(this.validators)
+        validator: validateObservationStatusValueConsistency
       }
     ]);
 
@@ -55,12 +66,12 @@ export class RuleRegistry {
       {
         name: 'condition-onset-date-validation',
         description: 'Validate condition onset date is reasonable',
-        validator: this.validators.validateConditionOnsetDate.bind(this.validators)
+        validator: validateConditionOnsetDate
       },
       {
         name: 'condition-status-date-consistency',
         description: 'Validate condition status and date consistency',
-        validator: this.validators.validateConditionStatusDateConsistency.bind(this.validators)
+        validator: validateConditionStatusDateConsistency
       }
     ]);
 
@@ -69,12 +80,12 @@ export class RuleRegistry {
       {
         name: 'encounter-period-validation',
         description: 'Validate encounter period is reasonable',
-        validator: this.validators.validateEncounterPeriod.bind(this.validators)
+        validator: validateEncounterPeriod
       },
       {
         name: 'encounter-status-period-consistency',
         description: 'Validate encounter status and period consistency',
-        validator: this.validators.validateEncounterStatusPeriodConsistency.bind(this.validators)
+        validator: validateEncounterStatusPeriodConsistency
       }
     ]);
 
@@ -95,4 +106,3 @@ export class RuleRegistry {
     return Array.from(this.businessRules.keys());
   }
 }
-

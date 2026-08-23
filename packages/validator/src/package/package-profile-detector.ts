@@ -1,7 +1,7 @@
 /**
  * Profile-URL → package-ID detection for the FHIR package registry.
  *
- * Fast path: known URL patterns for common national/IG packages.
+ * Fast path: host/path-aware patterns for common national/IG packages.
  * Fallback: the embedder's DB-backed ProfilePackageMapper (when wired).
  */
 
@@ -13,220 +13,55 @@ import {
   packageReferenceMetadata,
   packageTargetMetadata,
 } from './package-artifact-policy.js';
+import {
+  detectKnownPackageForProfile,
+  isResolvableProfileCanonical,
+} from './package-profile-patterns.js';
 
 /**
  * Detect package ID from a profile URL.
- * First tries known patterns, then falls back to generic ProfilePackageMapper.
+ * First tries known canonical patterns, then the generic ProfilePackageMapper.
  */
 export async function detectPackageForProfile(profileUrl: string): Promise<string | null> {
   logger.info('[PackageRegistry] Detecting package for profile', packageTargetMetadata(profileUrl));
-
-  // ========================================================================
-  // Fast path: Known patterns for common packages
-  // ========================================================================
-
-  // US Core: http://hl7.org/fhir/us/core/StructureDefinition/...
-  if (profileUrl.includes('hl7.org/fhir/us/core')) {
-    logger.info('[PackageRegistry] Matched known US Core profile pattern');
-    return 'hl7.fhir.us.core';
+  if (!isResolvableProfileCanonical(profileUrl)) {
+    logger.warn('[PackageRegistry] Refusing invalid profile canonical');
+    return null;
   }
 
-  // Da Vinci PDEX Plan-Net: http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/...
-  if (profileUrl.includes('hl7.org/fhir/us/davinci-pdex-plan-net')) {
-    logger.info('[PackageRegistry] Matched known Da Vinci PDEX Plan-Net profile pattern');
-    return 'hl7.fhir.us.davinci-pdex-plan-net';
+  const knownMatch = detectKnownPackageForProfile(profileUrl);
+  if (knownMatch && isSafePackageId(knownMatch.packageId)) {
+    logger.info('[PackageRegistry] Matched known profile pattern', {
+      ...packageReferenceMetadata(knownMatch.packageId),
+      pattern: knownMatch.pattern,
+    });
+    return knownMatch.packageId;
   }
 
-  // Da Vinci PDEX: http://hl7.org/fhir/us/davinci-pdex/StructureDefinition/...
-  if (profileUrl.includes('hl7.org/fhir/us/davinci-pdex')) {
-    logger.info('[PackageRegistry] Matched known Da Vinci PDEX profile pattern');
-    return 'hl7.fhir.us.davinci-pdex';
-  }
-
-  // Da Vinci CRD: http://hl7.org/fhir/us/davinci-crd/StructureDefinition/...
-  if (profileUrl.includes('hl7.org/fhir/us/davinci-crd')) {
-    logger.info('[PackageRegistry] Matched known Da Vinci CRD profile pattern');
-    return 'hl7.fhir.us.davinci-crd';
-  }
-
-  // HL7 SDC: http://hl7.org/fhir/uv/sdc/StructureDefinition/...
-  if (profileUrl.includes('hl7.org/fhir/uv/sdc')) {
-    logger.info('[PackageRegistry] Matched known HL7 SDC profile pattern');
-    return 'hl7.fhir.uv.sdc';
-  }
-
-  // Generic HL7 UV IGs: http://hl7.org/fhir/uv/{ig}/StructureDefinition/...
-  const hl7UvMatch = profileUrl.toLowerCase().match(/^https?:\/\/hl7\.org\/fhir\/uv\/([^/]+)\//);
-  if (hl7UvMatch) {
-    const packageId = `hl7.fhir.uv.${hl7UvMatch[1]}`;
-    if (isSafePackageId(packageId)) {
-      logger.info('[PackageRegistry] Matched generic HL7 UV profile pattern', packageReferenceMetadata(packageId));
-      return packageId;
-    }
-  }
-
-  // UK Core: https://fhir.hl7.org.uk/StructureDefinition/...
-  // Note: UK Core packages are on Simplifier.net
-  if (profileUrl.includes('fhir.hl7.org.uk') || profileUrl.includes('fhir.uk')) {
-    // UK Core package name on Simplifier: uk.core.r4.v2
-    return 'uk.core.r4.v2';
-  }
-
-  // Nictiz NL R4 profiles: http://nictiz.nl/fhir/StructureDefinition/...
-  if (profileUrl.includes('nictiz.nl/fhir')) {
-    return 'nictiz.fhir.nl.r4.nl-core';
-  }
-
-  // German Basisprofile: http://fhir.de/StructureDefinition/...
-  if (profileUrl.includes('fhir.de') || profileUrl.includes('basisprofil')) {
-    return 'de.basisprofil.r4';
-  }
-
-  // ISiP: https://gematik.de/fhir/isip/...
-  if (profileUrl.includes('gematik.de') && profileUrl.includes('isip')) {
-    return 'de.gematik.isip-basismodul';
-  }
-
-  // ISiK: https://gematik.de/fhir/isik/...
-  if (profileUrl.includes('gematik.de') && profileUrl.includes('isik')) {
-    return 'de.gematik.isik-basismodul';
-  }
-
-  // MII: https://www.medizininformatik-initiative.de/fhir/...
-  if (profileUrl.includes('medizininformatik') || profileUrl.includes('mii')) {
-    const normalizedProfileUrl = profileUrl.toLowerCase();
-    const isMii2026 = /\|2026\./.test(normalizedProfileUrl) || normalizedProfileUrl.includes('/2026/');
-
-    // Detect specific MII module from URL
-    if (isMii2026 && (
-      normalizedProfileUrl.includes('/modul-person/') ||
-      normalizedProfileUrl.includes('/modul-diagnose/') ||
-      normalizedProfileUrl.includes('/modul-prozedur/') ||
-      normalizedProfileUrl.includes('/modul-fall/')
-    )) {
-      return 'de.medizininformatikinitiative.kerndatensatz.base';
-    }
-    if (normalizedProfileUrl.includes('/modul-person/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.person';
-    }
-    if (normalizedProfileUrl.includes('/modul-labor/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.laborbefund';
-    }
-    if (normalizedProfileUrl.includes('/modul-diagnose/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.diagnose';
-    }
-    if (normalizedProfileUrl.includes('/modul-prozedur/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.prozedur';
-    }
-    if (normalizedProfileUrl.includes('/modul-medikation/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.medikation';
-    }
-    if (normalizedProfileUrl.includes('/modul-consent/') || normalizedProfileUrl.includes('/consent/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.consent';
-    }
-    if (normalizedProfileUrl.includes('/modul-bildgebung/') || normalizedProfileUrl.includes('/bildgebung/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.bildgebung';
-    }
-    if (normalizedProfileUrl.includes('/modul-biobank/') || normalizedProfileUrl.includes('/biobank/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.biobank';
-    }
-    if (
-      normalizedProfileUrl.includes('/modul-molgen/') ||
-      normalizedProfileUrl.includes('/molgen/') ||
-      normalizedProfileUrl.includes('molekulargenetisch')
-    ) {
-      return 'de.medizininformatikinitiative.kerndatensatz.molgen';
-    }
-    if (normalizedProfileUrl.includes('/modul-onkologie/') || normalizedProfileUrl.includes('/onkologie/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.onkologie';
-    }
-    if (normalizedProfileUrl.includes('/modul-patho/') || normalizedProfileUrl.includes('/patho/')) {
-      return 'de.medizininformatikinitiative.kerndatensatz.patho';
-    }
-    if (
-      normalizedProfileUrl.includes('/modul-icu/') ||
-      normalizedProfileUrl.includes('/icu/') ||
-      normalizedProfileUrl.includes('/intensivmedizin/')
-    ) {
-      return 'de.medizininformatikinitiative.kerndatensatz.icu';
-    }
-
-    return isMii2026
-      ? 'de.medizininformatikinitiative.kerndatensatz.base'
-      : 'de.medizininformatikinitiative.kerndatensatz.person';
-  }
-
-  // KBV eAU: https://fhir.kbv.de/StructureDefinition/KBV_(PR|EX|CS|VS|NS)_EAU_...
-  if (profileUrl.includes('fhir.kbv.de') && profileUrl.includes('KBV_') && profileUrl.includes('_EAU_')) {
-    return 'kbv.ita.eau';
-  }
-
-  // KBV FOR: https://fhir.kbv.de/StructureDefinition/KBV_(PR|EX|CS|VS|NS)_FOR_...
-  if (profileUrl.includes('fhir.kbv.de') && profileUrl.includes('KBV_') && profileUrl.includes('_FOR_')) {
-    return 'kbv.ita.for';
-  }
-
-  // KBV: https://fhir.kbv.de/StructureDefinition/...
-  if (profileUrl.includes('fhir.kbv.de')) {
-    return 'kbv.basis';
-  }
-
-  // Australian eRequesting: http://hl7.org.au/fhir/ereq/StructureDefinition/...
-  if (profileUrl.includes('hl7.org.au/fhir/ereq')) {
-    return 'hl7.fhir.au.ereq';
-  }
-
-  // Australian Base: http://hl7.org.au/fhir/StructureDefinition/...
-  if (profileUrl.includes('hl7.org.au')) {
-    return 'hl7.fhir.au.base';
-  }
-
-  // HL7 Europe EPS branch packages are not consistently published through
-  // the public package registry. The package manifest name includes the R4
-  // suffix even when the IG is referred to as hl7.fhir.eu.eps.
-  if (profileUrl.includes('hl7.eu/fhir/eps')) {
-    return 'hl7.fhir.eu.eps.r4';
-  }
-
-  if (profileUrl.includes('hl7.eu/fhir/base')) {
-    return 'hl7.fhir.eu.base';
-  }
-
-  // Canadian Baseline: http://hl7.org/fhir/ca/baseline/StructureDefinition/...
-  if (profileUrl.includes('hl7.org/fhir/ca')) {
-    return 'hl7.fhir.ca.baseline';
-  }
-
-  // WHO ANC-CDS: http://fhir.org/guides/who/anc-cds/StructureDefinition/...
-  if (profileUrl.includes('fhir.org/guides/who/anc-cds') || profileUrl.includes('who.anc-cds')) {
-    logger.info('[PackageRegistry] Matched known WHO ANC-CDS profile pattern');
-    return 'who.fhir.anc-cds';
-  }
-
-  // ========================================================================
-  // Generic discovery: Use ProfilePackageMapper for unknown packages
-  // ========================================================================
-
-  logger.info('[PackageRegistry] Using generic profile package discovery', packageTargetMetadata(profileUrl));
-
+  logger.info(
+    '[PackageRegistry] Using generic profile package discovery',
+    packageTargetMetadata(profileUrl),
+  );
   try {
-    // Use the embedder's package-mapping fallback (server wires the
-    // DB-backed ProfilePackageMapper here; standalone callers skip).
-    const find = getProfileSource().findPackageForProfile;
-    if (find) {
-      const packageInfo = await find(profileUrl);
-      if (packageInfo && isSafePackageId(packageInfo.packageId)) {
-        logger.info('[PackageRegistry] Generic profile package discovery succeeded', {
-          ...packageReferenceMetadata(packageInfo.packageId),
-          confidence: packageInfo.confidenceScore ?? null,
-        });
-        return packageInfo.packageId;
-      }
+    const findPackage = getProfileSource().findPackageForProfile;
+    const packageInfo = findPackage ? await findPackage(profileUrl) : null;
+    if (packageInfo && isSafePackageId(packageInfo.packageId)) {
+      logger.info('[PackageRegistry] Generic profile package discovery succeeded', {
+        ...packageReferenceMetadata(packageInfo.packageId),
+        confidence: packageInfo.confidenceScore ?? null,
+      });
+      return packageInfo.packageId;
     }
   } catch (error: unknown) {
-    logger.error('[PackageRegistry] Generic profile package discovery failed', packageErrorMetadata(error));
+    logger.error(
+      '[PackageRegistry] Generic profile package discovery failed',
+      packageErrorMetadata(error),
+    );
   }
 
-  logger.warn('[PackageRegistry] Could not detect package for profile', packageTargetMetadata(profileUrl));
+  logger.warn(
+    '[PackageRegistry] Could not detect package for profile',
+    packageTargetMetadata(profileUrl),
+  );
   return null;
 }

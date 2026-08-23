@@ -1,13 +1,14 @@
 import {
   displaysEquivalentForCodeInfo,
 } from './valueset-display-utils';
-import type { TerminologyResolutionConfig } from './valueset-types';
+import type {
+  TerminologyResolutionConfig,
+  TerminologyServerOverride,
+} from './valueset-types';
 import {
   TerminologyApiClient,
   type CodeSystemValidationResult,
 } from './terminology-api-client';
-
-type TerminologyServerOverride = { url: string; auth?: any };
 
 export async function validateCodeInCodeSystemWithFallbacks({
   apiClient,

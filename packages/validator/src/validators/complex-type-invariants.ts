@@ -2,12 +2,13 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
 
-export function checkExtensionExt1(extValue: any, basePath: string): ValidationIssue | null {
-    if (!extValue || typeof extValue !== 'object') return null;
+export function checkExtensionExt1(extValue: unknown, basePath: string): ValidationIssue | null {
+    const extension = asRecord(extValue);
+    if (!extension) return null;
 
-    const hasNestedExtension = Array.isArray(extValue.extension) && extValue.extension.length > 0;
-    const hasValueX = Object.keys(extValue).some(k => /^value[A-Z]/.test(k)) ||
-        resolveFhirSegmentValue(extValue, 'value[x]') !== undefined;
+    const hasNestedExtension = Array.isArray(extension.extension) && extension.extension.length > 0;
+    const hasValueX = Object.keys(extension).some(k => /^value[A-Z]/.test(k)) ||
+        resolveFhirSegmentValue(extension, 'value[x]') !== undefined;
 
     if (hasNestedExtension !== hasValueX) return null;
 
@@ -17,7 +18,7 @@ export function checkExtensionExt1(extValue: any, basePath: string): ValidationI
     return createValidationIssue({
         code: 'profile-constraint-violation',
         path: basePath,
-        resourceType: extValue.resourceType || 'Extension',
+        resourceType: typeof extension.resourceType === 'string' ? extension.resourceType : 'Extension',
         customMessage:
             `ext-1 violation at ${basePath}: Extension must have either ` +
             `extensions or value[x], not both. Found ${detail}.`,
@@ -30,9 +31,10 @@ export function checkExtensionExt1(extValue: any, basePath: string): ValidationI
     });
 }
 
-export function checkPeriodPer1(period: any, basePath: string): ValidationIssue | null {
-    if (!period || typeof period !== 'object') return null;
-    const { start, end } = period;
+export function checkPeriodPer1(period: unknown, basePath: string): ValidationIssue | null {
+    const periodRecord = asRecord(period);
+    if (!periodRecord) return null;
+    const { start, end } = periodRecord;
     if (typeof start !== 'string' || typeof end !== 'string') return null;
     if (start.length === 0 || end.length === 0) return null;
 
@@ -42,11 +44,17 @@ export function checkPeriodPer1(period: any, basePath: string): ValidationIssue 
     return createValidationIssue({
         code: 'business-invalid-period-end',
         path: basePath,
-        resourceType: period.resourceType || 'Period',
+        resourceType: typeof periodRecord.resourceType === 'string' ? periodRecord.resourceType : 'Period',
         customMessage: `per-1 violation at ${basePath}: Period.end (${end}) is before Period.start (${start}).`,
         severityOverride: 'error',
         details: { constraintKey: 'per-1', start, end, reason: 'backwards' },
     });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
 }
 
 function isFhirDateTimeBackwards(start: string, end: string): boolean {
@@ -70,7 +78,7 @@ function parseFhirDateTimeRange(value: string): DateTimeRange | null {
     );
     if (!match) return null;
 
-    const [, yearRaw, monthRaw, dayRaw, hourRaw, minuteRaw, secondRaw, fractionRaw, offsetRaw] = match;
+    const [, yearRaw, monthRaw, dayRaw, hourRaw, , , fractionRaw, offsetRaw] = match;
     const year = Number(yearRaw);
 
     if (!monthRaw) {

@@ -1,6 +1,11 @@
 import type { ValidationIssue } from '../types';
+import type { ValidationSeverity } from '@records-fhir/validation-types';
 import type { Binding } from '../core/structure-definition-types';
-import { createBindingViolation, createBindingUnverified } from '../issues';
+import {
+  createBindingViolation,
+  createBindingUnverified,
+  createValueSetUnavailable,
+} from '../issues';
 import { logger } from '../logger';
 
 import type { TerminologyResolutionConfig, CodeBindingOutcome } from './valueset-types';
@@ -14,11 +19,14 @@ import { type FhirVersion } from './valueset-expansion-cache-key';
 import { validateDisplayMatchesCodeSystem } from './valueset-display-validator';
 import type { ValueSetCache } from './valueset-cache';
 import type { ValueSetPackageLoader } from './valueset-package-loader';
+import { validateCodeSystemVersions } from './valueset-binding-version-validator';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
 export type ValidateBindingOptions = {
   valueSetUrl?: string;
   profileUrl?: string;
   fhirVersion?: FhirVersion;
+  unverifiedSeverity?: ValidationSeverity;
 };
 
 /**
@@ -37,6 +45,7 @@ export interface BindingValidationDeps {
     fhirVersion?: FhirVersion,
     elementPath?: string,
   ): Promise<CodeBindingOutcome>;
+  isValueSetAvailable(valueSetUrl: string, fhirVersion?: FhirVersion): Promise<boolean>;
 }
 
 /**
@@ -44,7 +53,7 @@ export interface BindingValidationDeps {
  */
 export async function validateBinding(
   deps: BindingValidationDeps,
-  code: any,
+  code: unknown,
   binding: Binding | undefined,
   elementPath: string,
   options?: ValidateBindingOptions,
@@ -60,8 +69,27 @@ export async function validateBinding(
   }
 
   try {
+    const valueSetUrl = options?.valueSetUrl || binding.valueSet;
     const codeInfos = extractCodeInfos(code);
     if (codeInfos.length === 0) {
+      if (!valueSetUrl) return issues;
+
+      const strictRequired = deps.resolutionConfig.strictUnverifiedRequiredBindings
+        && binding.strength === 'required';
+      const shouldReport = deps.resolutionConfig.reportUnverifiedBindings || strictRequired;
+      if (
+        shouldReport
+        && !await deps.isValueSetAvailable(valueSetUrl, options?.fhirVersion)
+      ) {
+        issues.push(createValueSetUnavailable({
+          strength: binding.strength as 'required' | 'extensible' | 'preferred',
+          valueSet: valueSetUrl,
+          path: elementPath,
+          resourceType: resourceTypeFromElementPath(elementPath),
+          profile: options?.profileUrl,
+          severityOverride: options?.unverifiedSeverity ?? (strictRequired ? 'warning' : undefined),
+        }));
+      }
       return issues;
     }
 
@@ -75,8 +103,10 @@ export async function validateBinding(
     ));
 
   } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn(`[ValueSetValidator] Binding validation failed, treating as unverified: ${err.message}`);
+    logger.warn(
+      '[ValueSetValidator] Binding validation failed, treating as unverified',
+      validationFailureMetadata(error),
+    );
     const codeInfo = extractCodeInfo(code);
     const strictRequired = deps.resolutionConfig.strictUnverifiedRequiredBindings
       && binding.strength === 'required';
@@ -92,7 +122,7 @@ export async function validateBinding(
         path: elementPath,
         resourceType: resourceTypeFromElementPath(elementPath),
         profile: options?.profileUrl,
-        severityOverride: strictRequired ? 'warning' : undefined,
+        severityOverride: options?.unverifiedSeverity ?? (strictRequired ? 'warning' : undefined),
       }));
     }
   }
@@ -102,7 +132,7 @@ export async function validateBinding(
 
 async function validateExtractedCodeBindings(
   deps: BindingValidationDeps,
-  rawCode: any,
+  rawCode: unknown,
   codeInfos: CodeInfo[],
   binding: Binding,
   elementPath: string,
@@ -119,9 +149,10 @@ async function validateExtractedCodeBindings(
     rawCode !== null && typeof rawCode === 'object' && !Array.isArray(rawCode);
 
   issues.push(...await validateCodeSystemVersions(
-    deps,
+    deps.packageLoader,
     rawCode,
     codeInfos,
+    binding.strength as BindingStrength,
     valueSetUrl,
     elementPath,
     options,
@@ -161,8 +192,8 @@ async function validateExtractedCodeBindings(
   ) {
     // Strict policy raises only unverifiable *required* bindings to warning;
     // extensible/preferred stay informational (gap P-3 step c).
-    const severityOverride =
-      strictRequired && binding.strength === 'required' ? 'warning' as const : undefined;
+    const severityOverride = options?.unverifiedSeverity
+      ?? (strictRequired && binding.strength === 'required' ? 'warning' as const : undefined);
     for (const codeInfo of unverifiedCodeInfos) {
       issues.push(createBindingUnverified({
         strength: binding.strength as 'required' | 'extensible' | 'preferred',
@@ -206,92 +237,9 @@ async function validateExtractedCodeBindings(
   return issues;
 }
 
-async function validateCodeSystemVersions(
-  deps: BindingValidationDeps,
-  rawCode: any,
-  codeInfos: CodeInfo[],
-  valueSetUrl: string,
-  elementPath: string,
-  options?: ValidateBindingOptions,
-): Promise<ValidationIssue[]> {
-  const versionedCodeInfos = codeInfos.filter(codeInfo => codeInfo.system && codeInfo.version);
-  if (versionedCodeInfos.length === 0) return [];
-
-  const valueSet = await deps.packageLoader.loadValueSetResource(valueSetUrl, options?.fhirVersion);
-  const includes = valueSet?.compose?.include ?? [];
-  const issues: ValidationIssue[] = [];
-
-  for (const codeInfo of versionedCodeInfos) {
-    const systemIncludes = includes.filter(include => include.system === codeInfo.system);
-    const constrainedVersions = systemIncludes
-      .map(include => include.version)
-      .filter((version): version is string => Boolean(version) && version !== '*');
-    if (
-      constrainedVersions.length === 0 ||
-      constrainedVersions.includes(codeInfo.version!) ||
-      systemIncludes.some(include => !include.version)
-    ) {
-      continue;
-    }
-
-    const versionPath = Array.isArray(rawCode?.coding)
-      ? `${elementPath}.coding[${codeInfo.codingIndex ?? 0}].version`
-      : `${elementPath}.version`;
-    issues.push(createBindingVersionMismatch({
-      codeInfo,
-      expectedVersions: constrainedVersions,
-      valueSetUrl,
-      versionPath,
-      profileUrl: options?.profileUrl,
-    }));
-  }
-
-  return issues;
-}
-
-function createBindingVersionMismatch({
-  codeInfo,
-  expectedVersions,
-  valueSetUrl,
-  versionPath,
-  profileUrl,
-}: {
-  codeInfo: CodeInfo;
-  expectedVersions: string[];
-  valueSetUrl: string;
-  versionPath: string;
-  profileUrl?: string;
-}): ValidationIssue {
-  const expected = expectedVersions.join(', ');
-  return {
-    id: `terminology-codesystem-version-mismatch-${Date.now()}-${codeInfo.codingIndex ?? 0}`,
-    aspect: 'terminology',
-    severity: 'error',
-    code: 'terminology-code-system-version-mismatch',
-    message:
-      `CodeSystem '${codeInfo.system}' version '${codeInfo.version}' does not match ` +
-      `the version required by ValueSet '${valueSetUrl}' (${expected})`,
-    path: versionPath,
-    resourceType: resourceTypeFromElementPath(versionPath),
-    profile: profileUrl,
-    timestamp: new Date(),
-    details: {
-      code: codeInfo.code,
-      system: codeInfo.system,
-      actualVersion: codeInfo.version,
-      expectedVersions,
-      valueSet: valueSetUrl,
-      fieldPath: versionPath,
-      fixHint:
-        `Use one of the CodeSystem versions required by the ValueSet (${expected}), ` +
-        'or omit Coding.version when the binding does not require a version assertion.',
-    },
-  };
-}
-
 async function validateDisplaysForCodeInfos(
   deps: BindingValidationDeps,
-  rawCode: any,
+  rawCode: unknown,
   codeInfos: CodeInfo[],
   valueSetUrl: string,
   binding: Binding,

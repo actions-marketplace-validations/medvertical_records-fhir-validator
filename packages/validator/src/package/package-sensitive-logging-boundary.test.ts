@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const paths = [
   'packages/validator/src/package/package-registry-client.ts',
+  'packages/validator/src/package/package-registry-http.ts',
   'packages/validator/src/package/package-downloader.ts',
   'packages/validator/src/package/package-installation-store.ts',
   'packages/validator/src/package/package-profile-detector.ts',

@@ -21,7 +21,7 @@ export function rewriteChoiceTypeBasePath(basePath: string, typeCode: string): s
   return stem + typeSuffix;
 }
 
-export function parentComplexElementAbsent(value: any, subPath: string): boolean {
+export function parentComplexElementAbsent(value: unknown, subPath: string): boolean {
   if (!subPath.includes('.')) return false;
   const parentSubPath = subPath.substring(0, subPath.lastIndexOf('.'));
   const parentValue = getNestedValue(value, parentSubPath);
@@ -34,7 +34,7 @@ export function parentComplexElementAbsent(value: any, subPath: string): boolean
 
 export function narrowChoiceTypeElement(
   subPath: string,
-  value: any,
+  value: unknown,
   elementDef: ElementDefinition,
 ): ElementDefinition {
   if (!subPath.endsWith('[x]') || !value || typeof value !== 'object') return elementDef;
@@ -42,6 +42,20 @@ export function narrowChoiceTypeElement(
   const actualKey = Object.keys(value).find(k => k.startsWith(prefix) && k !== prefix);
   if (!actualKey || !elementDef.type || elementDef.type.length <= 1) return elementDef;
   const suffix = actualKey.substring(prefix.length);
+  const matched = elementDef.type.find(t => t.code.toLowerCase() === suffix.toLowerCase());
+  return matched ? { ...elementDef, type: [matched] } : elementDef;
+}
+
+export function narrowChoiceTypeForConcreteSegment(
+  elementDef: ElementDefinition,
+  choiceSegment: string,
+  concreteSegment: string,
+): ElementDefinition {
+  if (!choiceSegment.endsWith('[x]')) return elementDef;
+  if (!elementDef.type || elementDef.type.length <= 1) return elementDef;
+  const baseName = choiceSegment.slice(0, -3);
+  if (!concreteSegment.startsWith(baseName) || concreteSegment === baseName) return elementDef;
+  const suffix = concreteSegment.substring(baseName.length);
   const matched = elementDef.type.find(t => t.code.toLowerCase() === suffix.toLowerCase());
   return matched ? { ...elementDef, type: [matched] } : elementDef;
 }

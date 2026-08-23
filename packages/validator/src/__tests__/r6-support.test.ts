@@ -9,8 +9,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ReferenceValidator } from '../reference/reference-validator-refactored';
-import { sdFHIRPathExecutor } from '../validators/sd-fhirpath-executor';
+import { SDFHIRPathExecutor } from '../validators/sd-fhirpath-executor';
 import type { StructureDefinition } from '../core/structure-definition-types';
+
+const sdFHIRPathExecutor = new SDFHIRPathExecutor();
 
 describe('R6 reference validation', () => {
   it('emits the partial-support warning for an R6 resource', async () => {

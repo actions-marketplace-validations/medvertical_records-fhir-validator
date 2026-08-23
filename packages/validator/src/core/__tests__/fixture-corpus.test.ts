@@ -22,6 +22,10 @@ import { join, basename } from 'path';
 const FIXTURES_ROOT = join(process.cwd(), 'server/tests/fixtures/fhir-resources');
 const VALID_DIR = join(FIXTURES_ROOT, 'valid');
 const INVALID_DIR = join(FIXTURES_ROOT, 'invalid');
+// The first fixture can cold-load thousands of bundled StructureDefinitions.
+// Keep the bound aligned with the validator timeout while subsequent fixtures
+// continue to benefit from the shared in-memory cache.
+const FIXTURE_VALIDATION_TIMEOUT_MS = 30_000;
 
 function loadFixtures(dir: string): Array<{ name: string; resource: any }> {
   return readdirSync(dir)
@@ -92,6 +96,7 @@ describe('Fixture Corpus', () => {
           expect.soft(errors, `${name} should have 0 errors but got:\n${summary}`).toHaveLength(0);
         }
       },
+      FIXTURE_VALIDATION_TIMEOUT_MS,
     );
 
     // Track known false positives — these should pass once the underlying issue is fixed
@@ -113,6 +118,7 @@ describe('Fixture Corpus', () => {
         // These are expected to fail — when they start passing, remove from KNOWN_FALSE_POSITIVES
         expect(errors.length).toBeGreaterThan(0);
       },
+      FIXTURE_VALIDATION_TIMEOUT_MS,
     );
   });
 
@@ -135,6 +141,7 @@ describe('Fixture Corpus', () => {
           `${name} should produce at least 1 error/warning but got 0`,
         ).toBeGreaterThan(0);
       },
+      FIXTURE_VALIDATION_TIMEOUT_MS,
     );
   });
 });

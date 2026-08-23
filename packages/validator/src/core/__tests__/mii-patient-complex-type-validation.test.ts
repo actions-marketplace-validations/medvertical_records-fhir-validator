@@ -11,6 +11,10 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { recordsValidator } from '../../index';
+
+const validateR4 = (resource: unknown, profileUrl?: string) =>
+  recordsValidator.validateRequest({ resource, profileUrl, fhirVersion: 'R4' });
+
 // MII Patient profile URL
 const MII_PATIENT_PROFILE = 'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/Patient';
 
@@ -48,15 +52,14 @@ const VALID_PATIENT_WITH_NAME = {
 describe('MII Patient Complex Type Validation', () => {
   beforeAll(async () => {
     // Warm up the validator by triggering initialization
-    await recordsValidator.validate({ resourceType: 'Patient' }, undefined, 'R4').catch(() => {});
+    await validateR4({ resourceType: 'Patient' }).catch(() => {});
   }, 60000);
 
   describe('Required sub-elements validation', () => {
     it('should report missing family and given in HumanName when validating against MII Patient profile', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_MISSING_NAME_SUBELEMENTS,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       // Should have required-element-missing error for name[0].family (required in MII)
@@ -96,10 +99,9 @@ describe('MII Patient Complex Type Validation', () => {
     }, 120000);
 
     it('should not report required-element-missing errors when all required sub-elements are present', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         VALID_PATIENT_WITH_NAME,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       // Should not have required-element-missing errors for name sub-elements
@@ -127,10 +129,9 @@ describe('MII Patient Complex Type Validation', () => {
         }]
       };
 
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         patientWithIncompleteName,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       // Depending on the installed MII package, given is either required or
@@ -147,10 +148,9 @@ describe('MII Patient Complex Type Validation', () => {
 
   describe('Comparison with expected HAPI behavior', () => {
     it('should report at least the same required-element-missing errors as HAPI', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_MISSING_NAME_SUBELEMENTS,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       // According to VALIDATION_ENGINE_COMPARISON.md, HAPI reports:

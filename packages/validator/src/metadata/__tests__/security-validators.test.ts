@@ -46,6 +46,19 @@ describe('SecurityValidator', () => {
       expect(invalidObjectIssue?.severity).toBe('error');
     });
 
+    it('should continue validating after a null label', () => {
+      const security = [
+        null,
+        { system: 'http://example.com/security', code: 'duplicate' },
+        { system: 'http://example.com/security', code: 'duplicate' },
+      ];
+
+      const issues = validator.validate(security, 'Patient');
+
+      expect(issues.some(issue => issue.code === 'metadata-security-invalid-object')).toBe(true);
+      expect(issues.some(issue => issue.code === 'metadata-security-duplicate')).toBe(true);
+    });
+
     it('should warn when system or code is missing', () => {
       const security = [{}];
       const issues = validator.validate(security, 'Patient');

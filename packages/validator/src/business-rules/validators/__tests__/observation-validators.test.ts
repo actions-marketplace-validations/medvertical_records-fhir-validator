@@ -49,6 +49,30 @@ describe('validateObservationStatusValueConsistency', () => {
     }, 'Observation');
 
     expect(issues).toHaveLength(1);
-    expect(issues[0].code).toBe('final-status-no-value');
+    expect(issues[0].code).toBe('business-final-status-no-value');
+  });
+
+  it.each([
+    ['valueBoolean', false],
+    ['valueInteger', 0],
+    ['valueString', ''],
+  ])('treats present %s values as values', async (property, value) => {
+    const issues = await validateObservationStatusValueConsistency({
+      resourceType: 'Observation',
+      status: 'final',
+      [property]: value,
+    }, 'Observation');
+
+    expect(issues).toEqual([]);
+  });
+
+  it('ignores malformed component entries and recognizes later values', async () => {
+    const issues = await validateObservationStatusValueConsistency({
+      resourceType: 'Observation',
+      status: 'final',
+      component: [null, 'broken', { valueBoolean: false }],
+    }, 'Observation');
+
+    expect(issues).toEqual([]);
   });
 });

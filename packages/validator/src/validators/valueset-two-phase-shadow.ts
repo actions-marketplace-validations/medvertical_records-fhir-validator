@@ -6,6 +6,7 @@ import {
   TwoPhaseTerminologyExpansion,
   type TwoPhaseLookupResult,
 } from './terminology-two-phase-expansion';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 
 /**
  * Shadow/enforce evaluator for two-phase terminology expansion.
@@ -104,11 +105,13 @@ export class TwoPhaseShadowEvaluator {
       this.stats.mismatches++;
       if (this.config?.logMismatches !== false) {
         if (this.mismatchLogs < TwoPhaseShadowEvaluator.MISMATCH_LOG_LIMIT) {
-          logger.warn(
-            `[TwoPhaseTerminology] Shadow mismatch for ` +
-            `${context.system ? `${context.system}|` : ''}${context.code} in ${context.valueSetUrl}: ` +
-            `twoPhase=${twoPhaseResult}, validator=${finalResult}, coverage=${result.coverage}, source=${result.source}`,
-          );
+          logger.warn('[TwoPhaseTerminology] Shadow mismatch', {
+            ...terminologyTargetMetadata(context.system, context.code, context.valueSetUrl),
+            twoPhaseResult,
+            validatorResult: finalResult,
+            coverage: result.coverage,
+            source: result.source,
+          });
         } else if (this.mismatchLogs === TwoPhaseShadowEvaluator.MISMATCH_LOG_LIMIT) {
           logger.warn(
             `[TwoPhaseTerminology] Further shadow mismatches suppressed; ` +

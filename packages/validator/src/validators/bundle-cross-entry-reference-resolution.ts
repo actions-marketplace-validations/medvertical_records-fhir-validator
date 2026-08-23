@@ -19,7 +19,7 @@ export interface ResolvedReference {
     logicalReference?: string;
 }
 
-export function buildReferenceIndexes(entries: any[]): BundleReferenceIndexes {
+export function buildReferenceIndexes(entries: unknown[]): BundleReferenceIndexes {
     const fullUrlIndex = new Set<string>();
     const fullUrlToEntryIndexes = new Map<string, number[]>();
     const typeIdToFullUrls = new Map<string, string[]>();
@@ -28,27 +28,40 @@ export function buildReferenceIndexes(entries: any[]): BundleReferenceIndexes {
 
     for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
         const entry = entries[entryIndex];
-        if (entry.fullUrl) {
+        if (!isRecord(entry)) continue;
+        if (typeof entry.fullUrl === 'string' && entry.fullUrl.length > 0) {
             fullUrlIndex.add(entry.fullUrl);
             const indexes = fullUrlToEntryIndexes.get(entry.fullUrl) || [];
             indexes.push(entryIndex);
             fullUrlToEntryIndexes.set(entry.fullUrl, indexes);
         }
         const resource = entry.resource;
-        if (resource?.resourceType && resource?.id) {
+        if (
+            isRecord(resource) &&
+            typeof resource.resourceType === 'string' &&
+            resource.resourceType.length > 0 &&
+            typeof resource.id === 'string' &&
+            resource.id.length > 0
+        ) {
             const resourceRef = `${resource.resourceType}/${resource.id}`;
             const urls = typeIdToFullUrls.get(resourceRef) || [];
-            urls.push(entry.fullUrl || '');
+            urls.push(typeof entry.fullUrl === 'string' ? entry.fullUrl : '');
             typeIdToFullUrls.set(resourceRef, urls);
-            const versionId = resource.meta?.versionId;
+            const versionId = isRecord(resource.meta) &&
+                typeof resource.meta.versionId === 'string' &&
+                resource.meta.versionId.length > 0
+                ? resource.meta.versionId
+                : undefined;
             if (versionId) {
                 versionedIndex.add(`${resourceRef}/_history/${versionId}`);
-                if (entry.fullUrl) {
+                if (typeof entry.fullUrl === 'string' && entry.fullUrl.length > 0) {
                     versionedIndex.add(`${entry.fullUrl}/_history/${versionId}`);
                 }
             }
         }
-        const requestUrl = typeof entry?.request?.url === 'string' ? entry.request.url : undefined;
+        const requestUrl = isRecord(entry.request) && typeof entry.request.url === 'string'
+            ? entry.request.url
+            : undefined;
         if (requestUrl && isRelativeResourceReference(requestUrl)) {
             const indexes = requestUrlToEntryIndexes.get(requestUrl) || [];
             indexes.push(entryIndex);
@@ -166,7 +179,7 @@ function resolveWithoutSourceFullUrl(
         : hasTypeIdMatch || indexes.versionedIndex.has(ref);
     return {
         resolvable: resolvable && (!hasTypeIdMatch || typeIdMatchCount <= 1 || refIsVersioned),
-        hasTypeIdMatch: false,
+        hasTypeIdMatch,
         multipleMatches: !refIsVersioned && typeIdMatchCount > 1,
         matchCount: typeIdMatchCount,
     };
@@ -216,7 +229,7 @@ function resolveByTypeIdFallback(
         : hasTypeIdMatch || indexes.versionedIndex.has(ref);
     return {
         resolvable: resolvable && (!hasTypeIdMatch || typeIdMatchCount <= 1 || refIsVersioned),
-        hasTypeIdMatch: false,
+        hasTypeIdMatch,
         multipleMatches: !refIsVersioned && typeIdMatchCount > 1,
         matchCount: typeIdMatchCount,
     };
@@ -237,4 +250,8 @@ function findRequestUrlMatches(
 
 function isRelativeResourceReference(value: string): boolean {
     return /^([A-Z][A-Za-z]+)\/([^/?#|]+)$/.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

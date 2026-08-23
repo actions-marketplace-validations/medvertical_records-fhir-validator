@@ -45,19 +45,56 @@ function comparePackageVersions(candidate: string | undefined, current: string |
     return 0;
 }
 
-export function isBetterPackageMatch(
-    packageName: string,
-    isPreferredFhirMajor: boolean,
-    currentPackageName: string | null,
-    currentIsPreferredFhirMajor: boolean,
+export interface PackageMatchCandidate {
+    packageName: string;
+    isPreferredFhirMajor: boolean;
+    /**
+     * The package is the maintained home of the canonical (e.g. a
+     * hl7.terminology package for a terminology.hl7.org canonical). Core
+     * packages ship frozen snapshots of those resources that go stale — R4
+     * core's adverse-event-seriousness still has pre-THO capitalised codes —
+     * and the Java validator resolves against THO, so authority outranks
+     * every other criterion.
+     */
+    isCanonicalAuthority: boolean;
+    /** Index of the package store the match came from; lower = higher priority. */
+    storeRank: number;
+    resourceVersion?: string;
+}
+
+export function isCanonicalAuthorityPackage(packageName: string, canonical: string): boolean {
+    if (canonical.startsWith('http://terminology.hl7.org/')) {
+        return packageName.startsWith('hl7.terminology');
+    }
+    // Mirror rule: core-space canonicals belong to the FHIR core packages.
+    // hl7.terminology ships snapshots of some of them (task-status), which
+    // must not outrank core merely by having a newer package version.
+    if (canonical.startsWith('http://hl7.org/fhir/')) {
+        return /^hl7\.fhir\.r\d+[ab]?\.core(#|$)/.test(packageName);
+    }
+    return false;
+}
+
+export function isBetterPackageCandidate(
+    candidate: PackageMatchCandidate,
+    current: PackageMatchCandidate | null,
 ): boolean {
-    if (!currentPackageName) return true;
-    if (isPreferredFhirMajor !== currentIsPreferredFhirMajor) {
-        return isPreferredFhirMajor;
+    if (!current) return true;
+    if (candidate.isCanonicalAuthority !== current.isCanonicalAuthority) {
+        return candidate.isCanonicalAuthority;
+    }
+    if (candidate.isPreferredFhirMajor !== current.isPreferredFhirMajor) {
+        return candidate.isPreferredFhirMajor;
+    }
+    // Identical resource versions must resolve to the earlier store: a copy in
+    // the user's package cache may not shadow the configured/bundled copy of
+    // the same content, or resolution becomes machine-dependent.
+    if (candidate.resourceVersion && candidate.resourceVersion === current.resourceVersion) {
+        return candidate.storeRank < current.storeRank;
     }
 
     return comparePackageVersions(
-        extractPackageVersion(packageName),
-        extractPackageVersion(currentPackageName),
+        extractPackageVersion(candidate.packageName),
+        extractPackageVersion(current.packageName),
     ) > 0;
 }

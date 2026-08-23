@@ -1,12 +1,12 @@
 import type { ElementDefinition, StructureDefinition } from '../core/structure-definition-types';
 
 export interface ExtensionValidationContext {
-  resource: any;
+  resource: unknown;
   profileSD: StructureDefinition;
   strictMode: boolean;
   fhirVersion: 'R4' | 'R5' | 'R6';
   profileUrl: string;
-  getValueAtPath: (resource: any, path: string) => any;
+  getValueAtPath: (resource: unknown, path: string) => unknown;
 }
 
 export interface ExtensionDefinition {

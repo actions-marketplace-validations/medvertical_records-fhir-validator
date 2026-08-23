@@ -1,14 +1,22 @@
 import type { ElementDefinition } from '../core/structure-definition-types';
 import type { ValidationTarget } from '../business-rules/element-validation-targets';
 import { getEvaluationContext } from './constraint-path-utils';
+import {
+  extractFixedEntry,
+  extractPatternEntry,
+  getValueAtPath,
+  inferType,
+  matchesPattern,
+  valueCanIdentifyFixedSlice,
+} from './slice-utils';
 
 interface SliceMatchContext {
-  resource: any;
+  resource: unknown;
   target: Pick<ValidationTarget, 'fullPath'>;
 }
 
 export function targetMatchesSliceDefinition(
-  value: any,
+  value: unknown,
   element: ElementDefinition,
   elements: ElementDefinition[],
   context?: SliceMatchContext,
@@ -32,24 +40,40 @@ export function targetMatchesSliceDefinition(
 }
 
 function matchesSliceElement(
-  value: any,
+  value: unknown,
   element: ElementDefinition,
   elements: ElementDefinition[],
 ): boolean {
-  const patternEntries = Object.entries(element)
-    .filter(([key]) => key.startsWith('pattern') || key.startsWith('fixed'));
-
-  if (patternEntries.length > 0) {
-    return patternEntries.every(([, expected]) => matchesPattern(value, expected));
-  }
+  const inlinePattern = extractPatternEntry(element);
+  if (inlinePattern && !matchesPattern(value, inlinePattern.value)) return false;
+  const inlineFixed = extractFixedEntry(element);
+  if (
+    inlineFixed &&
+    !valueCanIdentifyFixedSlice(value, inlineFixed.value, inlineFixed.key)
+  ) return false;
+  if (inlinePattern || inlineFixed) return true;
 
   const childPatternEntries = getSliceChildPatternEntries(element, elements);
   if (childPatternEntries.length === 0) {
-    return true;
+    return matchesChoiceTypeSlice(value, element);
   }
 
-  return childPatternEntries.every(({ relativePath, expected }) =>
-    matchesPattern(getValueAtRelativePath(value, relativePath), expected)
+  return childPatternEntries.every(({ relativePath, kind, key, expected }) => {
+    const actual = getValueAtPath(value, relativePath);
+    return kind === 'pattern'
+      ? matchesPattern(actual, expected)
+      : valueCanIdentifyFixedSlice(actual, expected, key);
+  });
+}
+
+function matchesChoiceTypeSlice(
+  value: unknown,
+  element: ElementDefinition,
+): boolean {
+  if (!element.path.endsWith('[x]') || !Array.isArray(element.type)) return false;
+  const actualType = inferType(value);
+  return element.type.some(type =>
+    isRecord(type) && type.code === actualType
   );
 }
 
@@ -64,6 +88,7 @@ function getSliceAncestors(
 
   return elements
     .filter(candidate =>
+      isElementDefinition(candidate) &&
       Boolean(candidate.sliceName) &&
       typeof candidate.id === 'string' &&
       (elementId === candidate.id || elementId.startsWith(`${candidate.id}.`))
@@ -75,7 +100,7 @@ function getSliceAncestorValue(
   slice: ElementDefinition,
   element: ElementDefinition,
   context: SliceMatchContext | undefined,
-): any {
+): unknown {
   if (!context || !slice.path || !element.path) return undefined;
   if (!pathStartsWith(element.path, slice.path)) return undefined;
 
@@ -94,70 +119,44 @@ function pathStartsWith(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}.`);
 }
 
-function matchesPattern(actual: any, expected: any): boolean {
-  if (expected === undefined) return true;
-  if (Array.isArray(actual) && !Array.isArray(expected)) {
-    return actual.some(item => matchesPattern(item, expected));
-  }
-  if (expected === null || typeof expected !== 'object') {
-    return actual === expected;
-  }
-  if (!actual || typeof actual !== 'object') {
-    return false;
-  }
-  if (Array.isArray(expected)) {
-    if (!Array.isArray(actual)) return false;
-    return expected.every((expectedItem, index) => matchesPattern(actual[index], expectedItem));
-  }
-  return Object.entries(expected).every(([key, value]) =>
-    matchesPattern(actual[key], value)
-  );
-}
-
 function getSliceChildPatternEntries(
   element: ElementDefinition,
   elements: ElementDefinition[],
-): Array<{ relativePath: string; expected: any }> {
+): Array<{
+  relativePath: string;
+  kind: 'fixed' | 'pattern';
+  key: string;
+  expected: unknown;
+}> {
   if (!element.id) return [];
   const prefix = `${element.id}.`;
 
   return elements.flatMap(candidate => {
+    if (!isElementDefinition(candidate)) return [];
     if (!candidate.id?.startsWith(prefix)) return [];
-    const expected = getPatternOrFixedValue(candidate);
-    if (expected === undefined) return [];
+    const pattern = extractPatternEntry(candidate);
+    const fixed = extractFixedEntry(candidate);
+    const constraint = pattern
+      ? { kind: 'pattern' as const, ...pattern }
+      : fixed
+        ? { kind: 'fixed' as const, ...fixed }
+        : undefined;
+    if (!constraint) return [];
     const relativePath = candidate.id.substring(prefix.length);
     if (relativePath.includes(':')) return [];
-    return [{ relativePath, expected }];
+    return [{
+      relativePath,
+      kind: constraint.kind,
+      key: constraint.key,
+      expected: constraint.value,
+    }];
   });
 }
 
-function getPatternOrFixedValue(element: ElementDefinition): any {
-  const candidate = element as ElementDefinition & Record<string, unknown>;
-  if (candidate.pattern !== undefined) return candidate.pattern;
-  if (candidate.fixed !== undefined) return candidate.fixed;
-  for (const key of Object.keys(candidate)) {
-    if ((key.startsWith('pattern') || key.startsWith('fixed')) && key !== 'pattern' && key !== 'fixed') {
-      return candidate[key];
-    }
-  }
-  return undefined;
+function isElementDefinition(value: unknown): value is ElementDefinition {
+  return isRecord(value) && typeof value.path === 'string';
 }
 
-function getValueAtRelativePath(value: any, relativePath: string): any {
-  if (!relativePath || relativePath === '$this') return value;
-
-  let current = value;
-  for (const segment of relativePath.split('.')) {
-    if (Array.isArray(current)) {
-      current = current
-        .map(item => item?.[segment])
-        .filter(item => item !== undefined && item !== null);
-      continue;
-    }
-
-    if (!current || typeof current !== 'object') return undefined;
-    current = current[segment];
-  }
-
-  return current;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

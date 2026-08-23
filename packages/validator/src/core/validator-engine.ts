@@ -1,47 +1,40 @@
 import type { ValidationIssue, ValidationSettings } from '../types';
-import { StructureDefinitionLoader } from './structure-definition-loader';
-import type { StructureDefinition } from './structure-definition-types';
+import type { StructureDefinitionLoader } from './structure-definition-loader';
 
-import { ValueSetValidator, type TerminologyResolutionConfig } from '../validators/valueset-validator';
-import { logger } from '../logger';
-import {
-  StructuralExecutor,
-  ProfileExecutor,
-  TerminologyExecutor,
-  ReferenceExecutor,
-  InvariantExecutor,
-  CustomRuleExecutor,
-  MetadataExecutor
-} from './executors';
-import { createValidationErrorIssue } from './validation-utils';
-import { loadProfileWithSnapshot, type FhirClientLike } from './profile-loader-utils';
+import type { TerminologyResolutionConfig } from '../validators/valueset-validator';
+import type { FhirClientLike } from './profile-loader-utils';
 import type { BatchValidationOptions } from './batch-validator';
-import { AnomalyDetector, type AnomalyFinding, type AnomalyDetectorConfig } from '../validators/anomaly-detector';
-import {
-  applyProfileLoadingSettings,
-  buildTerminologyResolutionConfig,
-} from './validator-runtime-settings';
-import { validateBundleEntryResources } from './validator-bundle-entry-validation';
-import { QuestionnaireContextRegistry } from './questionnaire-context-registry';
+import type { AnomalyFinding, AnomalyDetectorConfig } from '../validators/anomaly-detector';
 import { resolveRecordsValidatorConfig, type RecordsValidatorConfig } from './validator-engine-config';
 import {
   createRecordsValidatorComponents,
   type RecordsValidatorComponents,
 } from './validator-engine-components';
 import { validateResourceStructure } from './validator-structure-validation';
-import { validateRecordsBatch } from './validator-batch-validation';
+import {
+  validateRecordsAspects,
+  validateRecordsBatch,
+  createRecordsBatchValidationContext,
+  type RecordsBatchValidationContext,
+} from './validator-batch-validation';
 import { validateRecordsResource } from './validator-single-resource-validation';
 import { checkRecordsValidatorAvailability } from './validator-initialization';
 import type { ReferenceResolver } from '../validators/slicing-validator';
 import {
-  isResolvedContainedReferenceIssue,
-  rebaseContainedIssue,
+  validateContainedResourceTree,
 } from './validator-contained-issues';
+import { validateParametersResourceTree } from './parameters-resource-validation';
+import type { FhirResourceRecord } from '../reference/bundle-reference-types';
+import { isFhirResource, type FhirResource } from './fhir-resource';
+import type { MultiAspectValidateResult } from './multi-aspect-types';
+import { ProfileWarmupCoordinator } from './profile-warmup-coordinator';
+import { validateRecordsBundleEntries } from './validator-bundle-entry-runtime';
+import { ValidatorRuntimeControls } from './validator-runtime-controls';
 
 export type { RecordsValidatorConfig } from './validator-engine-config';
 
 export interface ValidationContext {
-  resource: any;
+  resource: unknown;
   resourceType: string;
   profileUrl?: string;
   fhirVersion: 'R4' | 'R5' | 'R6';
@@ -50,36 +43,26 @@ export interface ValidationContext {
 
 export class RecordsValidator {
   private config: RecordsValidatorConfig;
-  private profileCache!: RecordsValidatorComponents['profileCache'];
-  private sdLoader!: StructureDefinitionLoader;
-  private valuesetValidator!: ValueSetValidator;
-  private constraintValidator!: RecordsValidatorComponents['constraintValidator'];
-  private snapshotGenerator!: RecordsValidatorComponents['snapshotGenerator'];
+  private readonly components: RecordsValidatorComponents;
   private available: boolean = false;
   private initializationPromise: Promise<void>;
-
-  private structuralExecutor!: StructuralExecutor;
-  private profileExecutor!: ProfileExecutor;
-  private terminologyExecutor!: TerminologyExecutor;
-  private referenceExecutor!: ReferenceExecutor;
-  private invariantExecutor!: InvariantExecutor;
-  private customRuleExecutor!: CustomRuleExecutor;
-  private metadataExecutor!: MetadataExecutor;
-  private bestPracticeValidator!: RecordsValidatorComponents['bestPracticeValidator'];
-  private anomalyDetector!: AnomalyDetector;
-  private questionnaireRegistry!: QuestionnaireContextRegistry;
+  private readonly profileWarmupCoordinator = new ProfileWarmupCoordinator();
+  private readonly runtimeControls: ValidatorRuntimeControls;
 
   constructor(config: RecordsValidatorConfig = {}) {
     this.config = resolveRecordsValidatorConfig(config);
 
-    const components = createRecordsValidatorComponents(this.config);
-    Object.assign(this, components);
+    this.components = createRecordsValidatorComponents(this.config);
+    this.runtimeControls = new ValidatorRuntimeControls(
+      this.components,
+      this.profileWarmupCoordinator,
+    );
 
     this.initializationPromise = this.initialize();
   }
 
   private async initialize(): Promise<void> {
-    this.available = await checkRecordsValidatorAvailability(this.sdLoader);
+    this.available = await checkRecordsValidatorAvailability(this.components.sdLoader);
   }
 
   async waitForInitialization(): Promise<void> {
@@ -91,32 +74,43 @@ export class RecordsValidator {
   }
 
   async validateBatch(
-    resources: any[],
+    resources: unknown[],
     options: BatchValidationOptions = {}
-  ): Promise<Map<any, ValidationIssue[]> | Map<any, any>> {
+  ): Promise<
+    Map<unknown, ValidationIssue[]> |
+    Map<unknown, MultiAspectValidateResult>
+  > {
     await this.waitForInitialization();
-    this.applyRuntimeSettings(options.settings as ValidationSettings | undefined);
+    this.runtimeControls.applySettings(options.settings as ValidationSettings | undefined);
 
-    return validateRecordsBatch(resources, options, {
-      sdLoader: this.sdLoader,
-      profileCache: this.profileCache,
-      snapshotGenerator: this.snapshotGenerator,
-      structuralExecutor: this.structuralExecutor,
-      profileExecutor: this.profileExecutor,
-      terminologyExecutor: this.terminologyExecutor,
-      referenceExecutor: this.referenceExecutor,
-      invariantExecutor: this.invariantExecutor,
-      customRuleExecutor: this.customRuleExecutor,
-      metadataExecutor: this.metadataExecutor,
-      bestPracticeValidator: this.bestPracticeValidator,
+    return validateRecordsBatch(resources, options, this.createBatchValidationContext());
+  }
+
+  async validateAspects(
+    resource: unknown,
+    options: BatchValidationOptions,
+  ): Promise<MultiAspectValidateResult> {
+    await this.waitForInitialization();
+    this.runtimeControls.applySettings(options.settings as ValidationSettings | undefined);
+    return validateRecordsAspects(
+      resource,
+      options,
+      this.createBatchValidationContext(),
+    );
+  }
+
+  private createBatchValidationContext(): RecordsBatchValidationContext {
+    return createRecordsBatchValidationContext({
+      components: this.components,
+      profileWarmupCoordinator: this.profileWarmupCoordinator,
       strictMode: this.config.strictMode || false,
-      validateSingleResource: (resource, profileUrl, fhirVersion, settings, fhirClient, organizationId, serverId) =>
-        this.validate(resource, profileUrl, fhirVersion, settings, fhirClient, undefined, organizationId, serverId),
+      validateSingleResource: (target, profileUrl, version, settings, client, orgId, serverId) =>
+        this.validate(target, profileUrl, version, settings, client, undefined, orgId, serverId),
     });
   }
 
   async validate(
-    resource: any,
+    resource: unknown,
     profileUrl?: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
     settings?: ValidationSettings,
@@ -127,91 +121,64 @@ export class RecordsValidator {
     recursionDepth: number = 0,
   ): Promise<ValidationIssue[]> {
     await this.waitForInitialization();
-    this.applyRuntimeSettings(settings as ValidationSettings | undefined);
+    this.runtimeControls.applySettings(settings as ValidationSettings | undefined);
+
+    const validateEmbeddedResource = (
+      embedded: FhirResourceRecord,
+      embeddedProfile: string,
+      nextDepth: number,
+    ) => this.validate(
+      embedded,
+      embeddedProfile,
+      fhirVersion,
+      settings,
+      fhirClient,
+      referenceResolver,
+      organizationId,
+      serverId,
+      nextDepth,
+    );
 
     return validateRecordsResource(
       { resource, profileUrl, fhirVersion, settings, fhirClient, referenceResolver, organizationId, serverId },
       {
-        sdLoader: this.sdLoader,
-        profileCache: this.profileCache,
-        snapshotGenerator: this.snapshotGenerator,
-        structuralExecutor: this.structuralExecutor,
-        profileExecutor: this.profileExecutor,
-        terminologyExecutor: this.terminologyExecutor,
-        invariantExecutor: this.invariantExecutor,
-        customRuleExecutor: this.customRuleExecutor,
-        metadataExecutor: this.metadataExecutor,
-        referenceExecutor: this.referenceExecutor,
-        bestPracticeValidator: this.bestPracticeValidator,
-        questionnaireRegistry: this.questionnaireRegistry,
+        sdLoader: this.components.sdLoader,
+        profileCache: this.components.profileCache,
+        snapshotGenerator: this.components.snapshotGenerator,
+        structuralExecutor: this.components.structuralExecutor,
+        profileExecutor: this.components.profileExecutor,
+        terminologyExecutor: this.components.terminologyExecutor,
+        invariantExecutor: this.components.invariantExecutor,
+        customRuleExecutor: this.components.customRuleExecutor,
+        metadataExecutor: this.components.metadataExecutor,
+        referenceExecutor: this.components.referenceExecutor,
+        bestPracticeValidator: this.components.bestPracticeValidator,
+        terminologyResourceValidator: this.components.terminologyResourceValidator,
+        questionnaireRegistry: this.components.questionnaireRegistry,
         strictMode: this.config.strictMode || false,
         validateBundleEntriesIfNeeded: (target, version) =>
           this.validateBundleEntriesIfNeeded(target, version),
         validateContainedResourcesIfNeeded: (target) =>
-          this.validateContainedResourcesIfNeeded(
-            target,
-            fhirVersion,
-            settings,
-            fhirClient,
-            referenceResolver,
-            organizationId,
-            serverId,
+          validateContainedResourceTree(target, {
             recursionDepth,
-          ),
+            maxDepth: RecordsValidator.BUNDLE_ENTRY_MAX_DEPTH,
+            validate: validateEmbeddedResource,
+          }),
+        validateParametersResourcesIfNeeded: (target) =>
+          validateParametersResourceTree(target, {
+            recursionDepth,
+            maxDepth: RecordsValidator.BUNDLE_ENTRY_MAX_DEPTH,
+            validate: validateEmbeddedResource,
+          }),
       },
     );
   }
 
-  private async validateContainedResourcesIfNeeded(
-    resource: any,
-    fhirVersion: 'R4' | 'R5' | 'R6',
-    settings: ValidationSettings | undefined,
-    fhirClient: FhirClientLike | undefined,
-    referenceResolver: ReferenceResolver | null | undefined,
-    organizationId: number | undefined,
-    serverId: number | undefined,
-    recursionDepth: number,
-  ): Promise<ValidationIssue[]> {
-    if (!Array.isArray(resource?.contained) || recursionDepth >= RecordsValidator.BUNDLE_ENTRY_MAX_DEPTH) {
-      return [];
-    }
-
-    const parentResourceType = resource.resourceType || 'Resource';
-    const nested = await Promise.all(resource.contained.map(async (contained: any, index: number) => {
-      if (!contained || typeof contained !== 'object' || typeof contained.resourceType !== 'string') {
-        return [];
-      }
-
-      const profileUrl = contained.meta?.profile?.[0]
-        ?? `http://hl7.org/fhir/StructureDefinition/${contained.resourceType}`;
-      const issues = await this.validate(
-        contained,
-        profileUrl,
-        fhirVersion,
-        settings,
-        fhirClient,
-        referenceResolver,
-        organizationId,
-        serverId,
-        recursionDepth + 1,
-      );
-
-      return issues
-        .filter(issue =>
-          issue.aspect !== 'metadata'
-          && !isResolvedContainedReferenceIssue(issue, resource)
-        )
-        .map(issue => rebaseContainedIssue(issue, parentResourceType, contained, index));
-    }));
-
-    return nested.flat();
-  }
-
   private async validateBundleEntriesIfNeeded(
-    resource: any,
+    resource: unknown,
     fhirVersion: 'R4' | 'R5' | 'R6',
   ): Promise<ValidationIssue[]> {
-    if (resource.resourceType !== 'Bundle' || !Array.isArray(resource.entry)) {
+    if (!isFhirResource(resource) || resource.resourceType !== 'Bundle' || !Array.isArray(resource.entry)) {
       return [];
     }
     return this.validateBundleEntries(resource, fhirVersion, 1);
@@ -220,7 +187,7 @@ export class RecordsValidator {
   private static readonly BUNDLE_ENTRY_MAX_DEPTH = 3;
 
   async validateStructure(
-    resource: any,
+    resource: unknown,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
     recursionDepth: number = 0
   ): Promise<ValidationIssue[]> {
@@ -228,11 +195,11 @@ export class RecordsValidator {
     await this.waitForInitialization();
 
     return validateResourceStructure(resource, fhirVersion, recursionDepth, {
-      sdLoader: this.sdLoader,
-      profileCache: this.profileCache,
-      snapshotGenerator: this.snapshotGenerator,
-      structuralExecutor: this.structuralExecutor,
-      questionnaireRegistry: this.questionnaireRegistry,
+      sdLoader: this.components.sdLoader,
+      profileCache: this.components.profileCache,
+      snapshotGenerator: this.components.snapshotGenerator,
+      structuralExecutor: this.components.structuralExecutor,
+      questionnaireRegistry: this.components.questionnaireRegistry,
       maxBundleEntryDepth: RecordsValidator.BUNDLE_ENTRY_MAX_DEPTH,
       validateBundleEntries: (bundle, version, nextDepth) =>
         this.validateBundleEntries(bundle, version, nextDepth),
@@ -240,55 +207,40 @@ export class RecordsValidator {
   }
 
   private async validateBundleEntries(
-    bundle: any,
+    bundle: FhirResource,
     fhirVersion: 'R4' | 'R5' | 'R6',
-    recursionDepth: number
+    recursionDepth: number,
   ): Promise<ValidationIssue[]> {
-    return validateBundleEntryResources(bundle, fhirVersion, recursionDepth, {
-      sdLoader: this.sdLoader,
-      profileCache: this.profileCache,
-      snapshotGenerator: this.snapshotGenerator,
+    return validateRecordsBundleEntries(bundle, fhirVersion, recursionDepth, {
+      sdLoader: this.components.sdLoader,
+      profileCache: this.components.profileCache,
+      snapshotGenerator: this.components.snapshotGenerator,
       maxDepth: RecordsValidator.BUNDLE_ENTRY_MAX_DEPTH,
-      structuralExecutor: this.structuralExecutor,
-      validateResource: (resource, profileUrl, version) => this.validate(resource, profileUrl, version),
-      validateNestedBundleEntries: (nestedBundle, version, nextDepth) =>
-        this.validateBundleEntries(nestedBundle, version, nextDepth),
+      structuralExecutor: this.components.structuralExecutor,
+      validateResource: (resource, profileUrl, version, referenceResolver) => this.validate(
+        resource,
+        profileUrl,
+        version,
+        undefined,
+        undefined,
+        referenceResolver,
+      ),
     });
   }
 
   async validateMetadata(
-    resource: any
+    resource: unknown
   ): Promise<ValidationIssue[]> {
-    // Ensure initialization is complete before validating
     await this.waitForInitialization();
-
-    try {
-      return await this.metadataExecutor.validate({ resource });
-    } catch (error) {
-      logger.error('[RecordsValidator] Metadata validation error:', error);
-      throw error;
-    }
+    return this.components.directAspectValidation.validateMetadata(resource);
   }
 
   async validateReferences(
-    resource: any,
+    resource: unknown,
     fhirClient?: FhirClientLike,
     fhirVersion?: 'R4' | 'R5' | 'R6'
   ): Promise<ValidationIssue[]> {
-    try {
-      return await this.referenceExecutor.validate({
-        resource,
-        fhirClient,
-        fhirVersion
-      });
-    } catch (error) {
-      logger.error('[RecordsValidator] Reference validation error:', error);
-      return [createValidationErrorIssue(
-        'reference',
-        'validation-error',
-        `Reference validation failed: ${error instanceof Error ? error.message : String(error)}`
-      )];
-    }
+    return this.components.directAspectValidation.validateReferences(resource, fhirClient, fhirVersion);
   }
 
   async isProfileSupported(
@@ -296,98 +248,95 @@ export class RecordsValidator {
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
   ): Promise<boolean> {
     await this.waitForInitialization();
-    return (await this.loadProfileWithSnapshot(profileUrl, fhirVersion)) !== null;
+    return this.runtimeControls.isProfileSupported(profileUrl, fhirVersion);
   }
 
   getSupportedProfiles(): string[] {
-    return this.sdLoader.getAvailableProfiles();
+    return this.runtimeControls.getSupportedProfiles();
   }
 
   getSdLoader(): StructureDefinitionLoader {
-    return this.sdLoader;
+    return this.runtimeControls.getSdLoader();
   }
 
   async loadProfileWithSnapshot(
     profileUrl: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
-  ): Promise<StructureDefinition | null> {
-    return loadProfileWithSnapshot(
-      this.sdLoader,
-      this.profileCache,
-      this.snapshotGenerator,
-      profileUrl,
-      fhirVersion,
-    );
+  ) {
+    return this.runtimeControls.loadProfileWithSnapshot(profileUrl, fhirVersion);
   }
 
-  registerQuestionnaire(questionnaire: any): boolean {
-    return this.questionnaireRegistry.register(questionnaire);
+  registerQuestionnaire(questionnaire: unknown): boolean {
+    return this.runtimeControls.registerQuestionnaire(questionnaire);
   }
 
-  getQuestionnaire(canonicalOrRef: string | undefined | null): any | null {
-    return this.questionnaireRegistry.get(canonicalOrRef);
+  async prewarmQuestionnaireAnswerValueSets(questionnaire: unknown): Promise<void> {
+    await this.runtimeControls.prewarmQuestionnaireAnswerValueSets(questionnaire);
   }
 
-  private applyRuntimeSettings(settings?: ValidationSettings): void {
-    if (!settings) {
-      return;
-    }
-
-    applyProfileLoadingSettings(this.sdLoader, settings);
-    this.configureTerminologyResolution(buildTerminologyResolutionConfig(settings));
+  getQuestionnaire(canonicalOrRef: string | undefined | null): FhirResourceRecord | null {
+    return this.runtimeControls.getQuestionnaire(canonicalOrRef);
   }
 
   configureTerminologyResolution(config: TerminologyResolutionConfig): void {
-    this.terminologyExecutor.configureResolution(config);
-    this.structuralExecutor.configureTerminologyResolution(config);
-    this.valuesetValidator.setResolutionConfig(config);
-    const scopedCount = config.servers?.filter(s => s.preferredSystems && s.preferredSystems.length > 0).length || 0;
-    logger.info(
-      `[RecordsValidator] Terminology resolution configured: strategy=${config.strategy}, ` +
-      `server=${config.serverUrl}, auth=${config.auth?.type || 'none'}, ` +
-      `servers=${config.servers?.length || 0} (${scopedCount} with scope routing)`,
-    );
+    this.runtimeControls.configureTerminologyResolution(config);
   }
 
   clearTerminologyCache(): void {
-    this.terminologyExecutor.clearCache();
-    this.valuesetValidator.clearCache();
-    logger.info('[RecordsValidator] Terminology caches cleared');
+    this.runtimeControls.clearTerminologyCache();
+  }
+
+  registerTerminologyResource(
+    resource: unknown,
+    fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+  ): boolean {
+    return this.runtimeControls.registerTerminologyResource(resource, fhirVersion);
   }
 
   getConstraintDiagnostics(): ReturnType<RecordsValidatorComponents['constraintValidator']['getDiagnostics']> {
-    return this.constraintValidator.getDiagnostics();
+    return this.runtimeControls.getConstraintDiagnostics();
   }
 
   clearConstraintDiagnostics(): void {
-    this.constraintValidator.clearDiagnostics();
+    this.runtimeControls.clearConstraintDiagnostics();
+  }
+
+  getFHIRPathCacheStats() {
+    return this.runtimeControls.getFHIRPathCacheStats();
+  }
+
+  clearFHIRPathCaches(): void {
+    this.runtimeControls.clearFHIRPathCaches();
   }
 
   clearProfileCache(): void {
-    this.profileCache.clear();
-    logger.info('[RecordsValidator] Profile cache cleared');
+    this.runtimeControls.clearProfileCache();
+  }
+
+  resetProfileWarmupState(): void {
+    this.runtimeControls.resetProfileWarmupState();
   }
 
   evictProfile(profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'): void {
-    this.snapshotGenerator.evict(profileUrl);
-    this.profileCache.delete(`${profileUrl}:${fhirVersion}:snapshot`);
+    this.runtimeControls.evictProfile(profileUrl, fhirVersion);
   }
 
   setPinnedCanonicals(pinned: Map<string, string>): void {
-    this.sdLoader.setPinnedCanonicals(pinned);
+    this.runtimeControls.setPinnedCanonicals(pinned);
   }
 
   getPinnedCanonicalCount(): number {
-    return this.sdLoader.getPinnedCanonicalCount();
+    return this.runtimeControls.getPinnedCanonicalCount();
+  }
+
+  getPinnedCanonicalFingerprint(): ReturnType<StructureDefinitionLoader['getPinnedCanonicalFingerprint']> {
+    return this.runtimeControls.getPinnedCanonicalFingerprint();
   }
 
   detectAnomalies(
-    resources: any[],
+    resources: unknown[],
     config?: Partial<AnomalyDetectorConfig>,
   ): AnomalyFinding[] {
-    if (config) {
-      return new AnomalyDetector(config).detect(resources);
-    }
-    return this.anomalyDetector.detect(resources);
+    return this.runtimeControls.detectAnomalies(resources, config);
   }
 }

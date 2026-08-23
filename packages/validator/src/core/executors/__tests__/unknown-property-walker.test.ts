@@ -300,6 +300,29 @@ describe('unknown-property-walker', () => {
     expect(loadCount).toBe(1);
   });
 
+  it('retries unresolved datatype profiles after packages become available', async () => {
+    let available = false;
+    const sdLoader = {
+      loadProfile: vi.fn(async () => available ? {
+        snapshot: {
+          element: [
+            { path: 'HumanName' },
+            { path: 'HumanName.family', type: [{ code: 'string' }] },
+          ],
+        },
+      } : null),
+    } as any;
+    const deps = makeWalkerDeps(sdLoader, 'R4');
+    const resource = { resourceType: 'TestRes', name: { faimly: 'typo' } };
+
+    expect(await detectUnknownProperties(resource, index, 'TestRes', sd.url, deps))
+      .toHaveLength(0);
+    available = true;
+    expect(await detectUnknownProperties(resource, index, 'TestRes', sd.url, deps))
+      .toContainEqual(expect.objectContaining({ path: 'HumanName.faimly' }));
+    expect(sdLoader.loadProfile).toHaveBeenCalledTimes(2);
+  });
+
   it('expands choice-type properties (value[x] -> valueString / valueQuantity)', async () => {
     expect(await detectUnknownProperties(
       { resourceType: 'TestRes', valueString: 'hello' }, index, 'TestRes', sd.url,
@@ -465,5 +488,17 @@ describe('unknown-property-walker', () => {
       index, 'TestRes', sd.url,
     );
     expect(issues).toHaveLength(0);
+  });
+
+  it('terminates when an in-memory repeating element contains a cycle', async () => {
+    const contact: unknown[] = [];
+    contact.push(contact);
+
+    await expect(detectUnknownProperties(
+      { resourceType: 'TestRes', contact },
+      index,
+      'TestRes',
+      sd.url,
+    )).resolves.toEqual([]);
   });
 });

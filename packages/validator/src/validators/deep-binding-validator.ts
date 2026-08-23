@@ -1,220 +1,201 @@
 /**
- * Deep Binding Validator
- * 
- * Traverses a resource recursively and validates ALL coded elements against
- * their bindings. This ensures HAPI-level parity by checking every coding
- * anywhere in the resource, not just top-level fields.
- * 
- * Key Features:
- * - Recursive traversal of entire resource tree
- * - Finds ALL Coding and CodeableConcept elements
- * - Validates each against SD element bindings
- * - Reports path-specific issues for each violation
+ * Supplemental required-binding presence checks.
+ *
+ * ValueSet membership belongs to TerminologyExecutor. This validator checks
+ * that present values at required binding paths contain a usable code.
  */
 
 import type { ValidationIssue } from '../types';
-import type { StructureDefinition } from '../core/structure-definition-types';
+import type {
+    ElementDefinition,
+    StructureDefinition,
+} from '../core/structure-definition-types';
+import { getValidationTargets } from '../business-rules';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
 
-// ============================================================================
-// Types
-// ============================================================================
+type FhirRecord = Record<string, unknown>;
+
+interface RequiredBindingElement {
+    path: string;
+    valueSet?: string;
+    typeCodes: string[];
+}
 
 export interface DeepBindingContext {
-    resource: any;
+    resource: unknown;
     resourceType: string;
     structureDef?: StructureDefinition;
 }
 
-interface CodedElement {
-    path: string;
-    coding?: { system?: string; code?: string; display?: string }[];
-    code?: string;
-    system?: string;
-}
-
-// ============================================================================
-// Deep Binding Validator
-// ============================================================================
-
 export class DeepBindingValidator {
-
-    /**
-     * Validate all coded elements in a resource
-     */
     validate(context: DeepBindingContext): ValidationIssue[] {
-        const { resource, resourceType, structureDef } = context;
+        const resourceType = getResourceType(context.resource, context.resourceType);
+        if (!isRecord(context.resource) || !context.structureDef) return [];
+
+        const bindings = getRequiredBindingElements(context.structureDef);
+        logger.debug(
+            `[DeepBindingValidator] Checking ${bindings.length} required bindings for ${resourceType}`,
+        );
+
         const issues: ValidationIssue[] = [];
-
-        if (!resource) return issues;
-
-        logger.debug(`[DeepBindingValidator] Scanning ${resourceType} for coded elements`);
-
-        // Find all coded elements recursively
-        const codedElements = this.findCodedElements(resource, resourceType);
-
-        logger.debug(`[DeepBindingValidator] Found ${codedElements.length} coded elements`);
-
-        // Build binding map from SD if available
-        const bindingMap = structureDef ? this.buildBindingMap(structureDef) : new Map();
-
-        // Validate each coded element
-        for (const element of codedElements) {
-            const binding = this.findBindingForPath(element.path, bindingMap, resourceType);
-
-            if (binding && binding.strength === 'required') {
-                // Validate coded element against binding
-                const elementIssues = this.validateCodedElement(element, binding, resourceType);
-                issues.push(...elementIssues);
-            }
-        }
-
-        return issues;
-    }
-
-    /**
-     * Recursively find all coded elements in a resource
-     */
-    private findCodedElements(obj: any, currentPath: string): CodedElement[] {
-        const elements: CodedElement[] = [];
-
-        if (!obj || typeof obj !== 'object') return elements;
-
-        if (Array.isArray(obj)) {
-            for (let i = 0; i < obj.length; i++) {
-                elements.push(...this.findCodedElements(obj[i], `${currentPath}[${i}]`));
-            }
-            return elements;
-        }
-
-        // Check if this is a CodeableConcept (has coding array)
-        if (obj.coding && Array.isArray(obj.coding)) {
-            elements.push({
-                path: currentPath,
-                coding: obj.coding
-            });
-        }
-
-        // Check if this is a Coding (has system and code)
-        if (obj.system !== undefined || obj.code !== undefined) {
-            // Only add if not already added as part of CodeableConcept
-            if (!obj.coding) {
-                elements.push({
-                    path: currentPath,
-                    system: obj.system,
-                    code: obj.code
-                });
-            }
-        }
-
-        // Recurse into children
-        for (const key of Object.keys(obj)) {
-            if (key === 'coding') continue; // Already handled
-            if (typeof obj[key] === 'object' && obj[key] !== null) {
-                elements.push(...this.findCodedElements(obj[key], `${currentPath}.${key}`));
-            }
-        }
-
-        return elements;
-    }
-
-    /**
-     * Build a map of element paths to their bindings from StructureDefinition
-     */
-    private buildBindingMap(structureDef: StructureDefinition): Map<string, any> {
-        const map = new Map<string, any>();
-
-        if (!structureDef?.snapshot?.element) return map;
-
-        for (const element of structureDef.snapshot.element) {
-            if (element.binding) {
-                map.set(element.path, element.binding);
-            }
-        }
-
-        return map;
-    }
-
-    /**
-     * Find the appropriate binding for an element path
-     */
-    private findBindingForPath(
-        path: string,
-        bindingMap: Map<string, any>,
-        resourceType: string
-    ): any | undefined {
-        // Normalize path (remove array indices)
-        const normalizedPath = path.replace(/\[\d+\]/g, '');
-
-        // Try exact match first
-        if (bindingMap.has(normalizedPath)) {
-            return bindingMap.get(normalizedPath);
-        }
-
-        // Try with resource type prefix
-        const withPrefix = `${resourceType}.${normalizedPath.replace(resourceType + '.', '')}`;
-        if (bindingMap.has(withPrefix)) {
-            return bindingMap.get(withPrefix);
-        }
-
-        // Try parent paths
-        const segments = normalizedPath.split('.');
-        while (segments.length > 1) {
-            segments.pop();
-            const parentPath = segments.join('.');
-            if (bindingMap.has(parentPath)) {
-                return bindingMap.get(parentPath);
-            }
-        }
-
-        return undefined;
-    }
-
-    /**
-     * Validate a coded element against its binding
-     */
-    private validateCodedElement(
-        element: CodedElement,
-        binding: any,
-        resourceType: string
-    ): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-
-        // For CodeableConcept
-        if (element.coding && element.coding.length > 0) {
-            // Check if any coding satisfies the binding
-            const hasValidCoding = element.coding.some(c =>
-                c.code !== undefined && c.code !== null && c.code !== ''
-            );
-
-            if (!hasValidCoding && binding.strength === 'required') {
-                issues.push(createValidationIssue({
-                    code: 'deep-binding-no-valid-coding',
-                    path: element.path,
+        for (const binding of bindings) {
+            const targets = getValidationTargets(context.resource, binding.path)
+                .filter(target => target.value !== null && target.value !== undefined);
+            for (const target of targets) {
+                const codeIssue = validatePresentBindingValue(
+                    target.value,
+                    target.fullPath,
+                    binding,
                     resourceType,
-                    customMessage: `Required binding ${binding.valueSet}: No valid coding found`,
-                    severityOverride: 'error',
-                }));
+                );
+                if (codeIssue) issues.push(codeIssue);
             }
         }
-
-        // For simple code
-        if (element.code !== undefined && !element.coding) {
-            if (element.code === '' || element.code === null) {
-                issues.push(createValidationIssue({
-                    code: 'deep-binding-empty-code',
-                    path: element.path,
-                    resourceType,
-                    customMessage: `Required binding ${binding.valueSet}: Code is empty`,
-                    severityOverride: 'error',
-                }));
-            }
-        }
-
         return issues;
     }
 }
 
-// Singleton
+function getRequiredBindingElements(
+    structureDef: StructureDefinition,
+): RequiredBindingElement[] {
+    const elements = Array.isArray(structureDef.snapshot?.element)
+        ? structureDef.snapshot.element
+        : [];
+    const bindings: RequiredBindingElement[] = [];
+    const seenPaths = new Set<string>();
+
+    for (const candidate of elements) {
+        const element = toElementDefinition(candidate);
+        if (
+            !element
+            || isSliceScopedElement(element)
+            || element.binding?.strength !== 'required'
+            || seenPaths.has(element.path)
+        ) continue;
+
+        seenPaths.add(element.path);
+        bindings.push({
+            path: element.path,
+            valueSet: typeof element.binding.valueSet === 'string'
+                ? element.binding.valueSet
+                : undefined,
+            typeCodes: getTypeCodes(element),
+        });
+    }
+    return bindings;
+}
+
+function validatePresentBindingValue(
+    value: unknown,
+    path: string,
+    binding: RequiredBindingElement,
+    resourceType: string,
+): ValidationIssue | null {
+    const record = isRecord(value) ? value : undefined;
+    const isCodeableConcept =
+        binding.typeCodes.includes('CodeableConcept')
+        || Array.isArray(record?.coding);
+    if (isCodeableConcept) {
+        const codings = Array.isArray(record?.coding) ? record.coding : [];
+        const hasCode = codings.some(coding => {
+            const codingRecord = isRecord(coding) ? coding : undefined;
+            return isNonEmptyString(codingRecord?.code);
+        });
+        return hasCode
+            ? null
+            : createMissingCodeIssue(
+                'deep-binding-no-valid-coding',
+                path,
+                binding,
+                resourceType,
+                'No valid coding found',
+            );
+    }
+
+    const isCoding =
+        binding.typeCodes.includes('Coding')
+        || record?.system !== undefined
+        || record?.code !== undefined;
+    if (isCoding) {
+        return isNonEmptyString(record?.code)
+            ? null
+            : createMissingCodeIssue(
+                'deep-binding-empty-code',
+                path,
+                binding,
+                resourceType,
+                'Code is empty or missing',
+            );
+    }
+
+    if (binding.typeCodes.includes('code') && value === '') {
+        return createMissingCodeIssue(
+            'deep-binding-empty-code',
+            path,
+            binding,
+            resourceType,
+            'Code is empty',
+        );
+    }
+
+    return null;
+}
+
+function createMissingCodeIssue(
+    code: string,
+    path: string,
+    binding: RequiredBindingElement,
+    resourceType: string,
+    reason: string,
+): ValidationIssue {
+    const valueSet = binding.valueSet ?? '(declared ValueSet)';
+    return createValidationIssue({
+        code,
+        path,
+        resourceType,
+        customMessage: `Required binding ${valueSet}: ${reason}`,
+        severityOverride: 'error',
+        details: {
+            bindingStrength: 'required',
+            valueSet: binding.valueSet,
+        },
+    });
+}
+
+function isSliceScopedElement(element: ElementDefinition): boolean {
+    return typeof element.sliceName === 'string'
+        || (typeof element.id === 'string' && element.id.includes(':'));
+}
+
+function getTypeCodes(element: ElementDefinition): string[] {
+    if (!Array.isArray(element.type)) return [];
+    return element.type.flatMap(candidate => {
+        const record = isRecord(candidate) ? candidate : undefined;
+        return typeof record?.code === 'string' ? [record.code] : [];
+    });
+}
+
+function toElementDefinition(value: unknown): ElementDefinition | undefined {
+    return isRecord(value)
+        && typeof value.path === 'string'
+        && value.path.length > 0
+        ? value as ElementDefinition
+        : undefined;
+}
+
+function getResourceType(resource: unknown, fallback: string): string {
+    const resourceType = isRecord(resource) ? resource.resourceType : undefined;
+    if (isNonEmptyString(resourceType)) return resourceType;
+    return fallback.length > 0 ? fallback : 'Resource';
+}
+
+function isRecord(value: unknown): value is FhirRecord {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0;
+}
+
 export const deepBindingValidator = new DeepBindingValidator();

@@ -18,7 +18,7 @@ describe('validateExtractedReferences', () => {
 
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({
-      code: 'invalid-reference-format',
+      code: 'reference-invalid-format',
       path: 'Bundle.entry[3].resource.subject.reference',
       resourceType: 'Bundle',
       details: {
@@ -26,5 +26,23 @@ describe('validateExtractedReferences', () => {
         fieldPath: 'Bundle.entry[3].resource.subject',
       },
     });
+  });
+
+  it('keeps deterministic IDs distinct for repeated values at different paths', () => {
+    const issues = validateExtractedReferences(
+      [
+        { path: 'Observation.subject', reference: 'Patient/' },
+        { path: 'Observation.performer[0]', reference: 'Patient/' },
+      ],
+      'Observation',
+      constraintValidator,
+    );
+
+    expect(issues).toHaveLength(2);
+    expect(issues[0].id).not.toBe(issues[1].id);
+    expect(issues.map(issue => issue.path)).toEqual([
+      'Observation.subject.reference',
+      'Observation.performer[0].reference',
+    ]);
   });
 });

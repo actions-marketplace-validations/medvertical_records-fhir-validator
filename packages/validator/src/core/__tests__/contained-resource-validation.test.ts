@@ -116,11 +116,11 @@ describe('contained resource validation', () => {
 
     expect(errors).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        code: 'invalid',
+        code: 'structural-contained-id-missing',
         path: 'Patient.contained[0]/*Patient/null*/',
       }),
       expect.objectContaining({
-        code: 'invalid',
+        code: 'structural-contained-not-referenced',
         path: 'Patient.contained[0]',
       }),
     ]));

@@ -3,10 +3,11 @@ import { createValidationIssue } from '../issues';
 
 const RESOURCE_TYPE_PATTERN = /^[A-Z][A-Za-z]+$/;
 
-export function validateSearchsetBundle(bundle: any, entries: any[]): ValidationIssue[] {
+export function validateSearchsetBundle(bundle: unknown, entries: unknown[]): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  const bundleRecord = asRecord(bundle) ?? {};
 
-  if (bundle.total === undefined) {
+  if (bundleRecord.total === undefined) {
     issues.push(createValidationIssue({
       code: 'bundle-searchset-missing-total',
       path: 'Bundle',
@@ -16,8 +17,8 @@ export function validateSearchsetBundle(bundle: any, entries: any[]): Validation
     }));
   }
 
-  const links: any[] = Array.isArray(bundle.link) ? bundle.link : [];
-  const selfLink = links.find(l => l?.relation === 'self');
+  const links = Array.isArray(bundleRecord.link) ? bundleRecord.link : [];
+  const selfLink = links.map(asRecord).find(link => link?.relation === 'self');
   if (!selfLink) {
     issues.push(createValidationIssue({
       code: 'bundle-searchset-missing-self-link',
@@ -27,7 +28,7 @@ export function validateSearchsetBundle(bundle: any, entries: any[]): Validation
       severityOverride: 'warning',
     }));
 
-    if (entries.some((e: any) => !e?.search?.mode)) {
+    if (entries.some(entry => !asRecord(asRecord(entry)?.search)?.mode)) {
       issues.push(createValidationIssue({
         code: 'bundle-searchset-missing-search-mode',
         path: 'Bundle',
@@ -41,10 +42,11 @@ export function validateSearchsetBundle(bundle: any, entries: any[]): Validation
   const expectedTypes = parseSearchSelfLinkTypes(typeof selfLink?.url === 'string' ? selfLink.url : '');
 
   for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    const mode = entry?.search?.mode;
-    const res = entry?.resource;
+    const entry = asRecord(entries[i]);
+    const mode = asRecord(entry?.search)?.mode;
+    const res = asRecord(entry?.resource);
     if (!res) continue;
+    const resourceType = typeof res.resourceType === 'string' ? res.resourceType : undefined;
 
     if ((mode === 'match' || mode === 'include') && !res.id) {
       issues.push(createValidationIssue({
@@ -56,35 +58,55 @@ export function validateSearchsetBundle(bundle: any, entries: any[]): Validation
       }));
     }
 
-    if (mode === 'outcome' && res.resourceType && res.resourceType !== 'OperationOutcome') {
+    if (mode === 'outcome' && resourceType && resourceType !== 'OperationOutcome') {
       issues.push(createValidationIssue({
         code: 'bundle-searchset-outcome-wrong-type',
         path: `Bundle.entry[${i}].resource`,
         resourceType: 'Bundle',
-        customMessage: `This is not an OperationOutcome (${res.resourceType})`,
+        customMessage: `This is not an OperationOutcome (${resourceType})`,
         severityOverride: 'error',
       }));
     }
 
-    if (
-      expectedTypes.length > 0 &&
-      res.resourceType &&
-      mode !== 'outcome' &&
-      !expectedTypes.includes(res.resourceType)
-    ) {
-      issues.push(createValidationIssue({
-        code: 'bundle-searchset-entry-wrong-type',
-        path: `Bundle.entry[${i}].resource`,
-        resourceType: 'Bundle',
-        customMessage:
-          `This is not a matching resource type for the specified search ` +
-          `(${res.resourceType} expecting [${expectedTypes.join(', ')}])`,
-        severityOverride: 'error',
-      }));
-    }
+    issues.push(...checkEntryTypeMatchesSearch(expectedTypes, resourceType, mode, i));
   }
 
   return issues;
+}
+
+/**
+ * Per FHIR search semantics only `mode=match` entries must be of the searched
+ * type — `_include`/`_revinclude` entries (mode=include) may be any resource
+ * type. An absent mode leaves the entry's role unknown, so the mismatch is
+ * only a warning (HL7 validator parity: BUNDLE_SEARCH_ENTRY_WRONG_RESOURCE_TYPE_NO_MODE).
+ */
+function checkEntryTypeMatchesSearch(
+  expectedTypes: string[],
+  resourceType: string | undefined,
+  mode: unknown,
+  entryIndex: number,
+): ValidationIssue[] {
+  if (expectedTypes.length === 0 || !resourceType || expectedTypes.includes(resourceType)) {
+    return [];
+  }
+  if (mode !== 'match' && mode !== undefined) return [];
+
+  const modeHint = mode === undefined ? '(is a search mode needed?) ' : '';
+  return [createValidationIssue({
+    code: 'bundle-searchset-entry-wrong-type',
+    path: `Bundle.entry[${entryIndex}].resource`,
+    resourceType: 'Bundle',
+    customMessage:
+      `This is not a matching resource type for the specified search ` +
+      `${modeHint}(${resourceType} expecting [${expectedTypes.join(', ')}])`,
+    severityOverride: mode === 'match' ? 'error' : 'warning',
+  })];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function parseSearchSelfLinkTypes(url: string): string[] {

@@ -7,7 +7,11 @@ import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
  * are universally recognised by the Java reference validator (it auto-loads
  * the FHIR extensions IG). Treating them as "known" suppresses the
  * `profile-extension-not-found` false positive that doesn't appear in Java
- * baselines for fixtures like ips-link.
+ * baselines for fixtures like ips-link. Cross-version URLs
+ * (`http://hl7.org/fhir/<release>/StructureDefinition/extension-...`) are
+ * deliberately absent — `isKnownCrossVersionExtensionUrl` recognises the
+ * whole family generically, so listing individual ones here would shadow
+ * its modifier-extension safety check.
  */
 const KNOWN_HL7_EXTENSION_URLS = new Set<string>([
   'http://hl7.org/fhir/StructureDefinition/textLink',
@@ -17,12 +21,6 @@ const KNOWN_HL7_EXTENSION_URLS = new Set<string>([
   'http://hl7.org/fhir/StructureDefinition/individual-pronouns',
   'http://hl7.org/fhir/StructureDefinition/instance-name',
   'http://hl7.org/fhir/StructureDefinition/patient-occupation',
-  'http://hl7.org/fhir/4.0/StructureDefinition/extension-AuditEvent.agent.network.type',
-  'http://hl7.org/fhir/4.0/StructureDefinition/extension-AuditEvent.entity.type',
-  'http://hl7.org/fhir/5.0/StructureDefinition/extension-DiagnosticReport.composition',
-  'http://hl7.org/fhir/5.0/StructureDefinition/extension-Encounter.plannedStartDate',
-  'http://hl7.org/fhir/5.0/StructureDefinition/extension-MedicationRequest.renderedDosageInstruction',
-  'http://hl7.org/fhir/5.0/StructureDefinition/extension-MedicationStatement.renderedDosageInstruction',
   'http://hl7.org/fhir/StructureDefinition/NarrativeLink',
 ]);
 
@@ -51,7 +49,7 @@ export function shouldReportUnresolvableExtensionUrl(url: string): boolean {
 }
 
 export function validateExtensionStructure(
-  extension: any,
+  extension: Record<string, unknown>,
   extensionType: string,
   path: string,
   resourceType = 'Unknown',
@@ -59,7 +57,7 @@ export function validateExtensionStructure(
   const issues: ValidationIssue[] = [];
   const hasValue = Object.keys(extension).some(key => key.startsWith('value')) ||
     resolveFhirSegmentValue(extension, 'value[x]') !== undefined;
-  const hasNestedExtension = extension.extension && extension.extension.length > 0;
+  const hasNestedExtension = Array.isArray(extension.extension) && extension.extension.length > 0;
 
   if (!hasValue && !hasNestedExtension) {
     issues.push(createValidationIssue({
@@ -83,7 +81,7 @@ export function validateExtensionStructure(
 }
 
 export function validateExtensionValueType(
-  extension: any,
+  extension: Record<string, unknown>,
   allowedTypes: string[],
   path: string,
   resourceType = 'Unknown',
@@ -111,11 +109,11 @@ export function validateExtensionValueType(
 }
 
 export function validateKnownHl7ExtensionValueType(
-  extension: any,
+  extension: Record<string, unknown>,
   path: string,
   resourceType = 'Unknown',
 ): ValidationIssue[] {
-  const url: string | undefined = extension?.url;
+  const url = typeof extension.url === 'string' ? extension.url : undefined;
   if (!url || !KNOWN_HL7_EXTENSION_ALLOWED_TYPES[url]) return [];
 
   const allowed = KNOWN_HL7_EXTENSION_ALLOWED_TYPES[url];

@@ -7,6 +7,7 @@ import type {
 import { logger } from '../logger';
 import { applyConceptFilter, extractCodesFromCodeSystem } from './valueset-concept-utils';
 import type { FhirVersion } from './valueset-package-utils';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 
 export interface ValueSetConceptFilter {
     system: string;
@@ -41,14 +42,17 @@ export async function collectCodesFromValueSet(
     preferredFhirMajor?: string,
 ): Promise<string[]> {
     if (depth >= MAX_COMPOSITION_DEPTH) {
-        logger.warn(
-            `[ValueSetPackageLoader] Composition depth limit (${MAX_COMPOSITION_DEPTH}) reached at ` +
-            `${valueSet.url ?? '<anonymous>'} — stopping recursion`,
-        );
+        logger.warn('[ValueSetPackageLoader] Composition depth limit reached', {
+            ...terminologyTargetMetadata(valueSet.url),
+            maxDepth: MAX_COMPOSITION_DEPTH,
+        });
         return [];
     }
     if (valueSet.url && visited.has(valueSet.url)) {
-        logger.warn(`[ValueSetPackageLoader] Cycle detected at ${valueSet.url} — skipping`);
+        logger.warn(
+            '[ValueSetPackageLoader] Composition cycle detected',
+            terminologyTargetMetadata(valueSet.url),
+        );
         return [];
     }
     if (valueSet.url) visited.add(valueSet.url);
@@ -113,6 +117,59 @@ export async function collectIncludeConceptFilters(
     return filters;
 }
 
+/**
+ * Systems included whole-system (or via filter) whose CodeSystem cannot be
+ * enumerated locally. Codes from such a system may be valid even when the
+ * local expansion misses them, so a membership miss is not authoritative.
+ * A ValueSet shipping its own expansion is trusted as-is and reports none.
+ */
+export async function collectUnenumerableSystemIncludes(
+    valueSet: ValueSet,
+    resolver: ValueSetExpansionResolver,
+    visited: Set<string>,
+    depth: number,
+    preferredFhirMajor?: string,
+): Promise<string[]> {
+    if (depth >= MAX_COMPOSITION_DEPTH) return [];
+    if (valueSet.url && visited.has(valueSet.url)) return [];
+    if (valueSet.url) visited.add(valueSet.url);
+    if (valueSet.expansion?.contains?.length) return [];
+
+    const systems = new Set<string>();
+    for (const include of valueSet.compose?.include ?? []) {
+        const [system, pipedSystemVersion] = (include.system ?? '').split('|');
+        if (system && !include.concept?.length) {
+            const codeSystem = await resolver.loadCodeSystem(
+                system,
+                preferredFhirMajor,
+                include.version ?? pipedSystemVersion,
+            );
+            if (!isEnumerableCodeSystem(codeSystem)) systems.add(system);
+        }
+        for (const nestedUrl of include.valueSet ?? []) {
+            const nested = await resolver.loadValueSetResource(nestedUrl, fhirVersionForMajor(preferredFhirMajor));
+            if (!nested) continue;
+            const nestedSystems = await collectUnenumerableSystemIncludes(
+                nested,
+                resolver,
+                visited,
+                depth + 1,
+                preferredFhirMajor,
+            );
+            nestedSystems.forEach(nestedSystem => systems.add(nestedSystem));
+        }
+    }
+    return Array.from(systems);
+}
+
+function isEnumerableCodeSystem(codeSystem: CodeSystem | null): boolean {
+    if (!codeSystem) return false;
+    // Non-complete content (fragment/example/not-present/supplement) means the
+    // local concept list provably understates the system.
+    if (codeSystem.content && codeSystem.content !== 'complete') return false;
+    return extractCodesFromCodeSystem(codeSystem).length > 0;
+}
+
 function flattenExpansion(contains: NonNullable<ValueSet['expansion']>['contains'] | undefined): string[] {
     const codes: string[] = [];
     const visit = (entries: ValueSetExpansionEntry[]): void => {
@@ -137,7 +194,11 @@ async function resolveIncludeOrExclude(
     preferredFhirMajor?: string,
 ): Promise<string[]> {
     const codes: string[] = [];
-    const system = entry.system;
+    // Some IGs embed a version in the include's system ("http://...|4.0.1").
+    // Codings never carry that pipe, so expansion keys must use the bare
+    // canonical; the piped version only steers CodeSystem selection.
+    const [system, pipedSystemVersion] = (entry.system ?? '').split('|');
+    const requestedVersion = entry.version ?? pipedSystemVersion;
 
     for (const concept of entry.concept ?? []) {
         if (!concept.code) continue;
@@ -163,18 +224,21 @@ async function resolveIncludeOrExclude(
     const hasValueSets = Boolean(entry.valueSet?.length);
 
     if (system && !hasConcepts && !hasFilters && !hasValueSets) {
-        const codeSystem = await resolver.loadCodeSystem(system, preferredFhirMajor, entry.version);
+        const codeSystem = await resolver.loadCodeSystem(system, preferredFhirMajor, requestedVersion);
         if (codeSystem) {
             for (const code of extractCodesFromCodeSystem(codeSystem)) {
                 codes.push(`${system}|${code}`, code);
             }
         } else {
-            logger.warn(`[ValueSetPackageLoader] CodeSystem not found for ${system}`);
+            logger.warn(
+                '[ValueSetPackageLoader] CodeSystem not found',
+                terminologyTargetMetadata(system),
+            );
         }
     }
 
     if (system && hasFilters) {
-        const codeSystem = await resolver.loadCodeSystem(system, preferredFhirMajor, entry.version);
+        const codeSystem = await resolver.loadCodeSystem(system, preferredFhirMajor, requestedVersion);
         if (codeSystem) {
             for (const filter of (entry as ValueSetComposeInclude).filter ?? []) {
                 for (const code of applyConceptFilter(codeSystem, filter)) {

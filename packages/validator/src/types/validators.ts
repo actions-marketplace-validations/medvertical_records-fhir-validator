@@ -5,7 +5,10 @@
  * This provides a consistent contract for all validators.
  */
 
-import type { ValidationResult } from '@records-fhir/validation-types';
+import type {
+  ValidationResult,
+  ValidationSettings,
+} from '@records-fhir/validation-types';
 
 /**
  * Validation Context
@@ -14,7 +17,7 @@ import type { ValidationResult } from '@records-fhir/validation-types';
  */
 export interface ValidationContext {
   /** FHIR Resource being validated */
-  resource: any;
+  resource: unknown;
 
   /** Resource type (e.g., "Patient", "Observation") */
   resourceType: string;
@@ -32,10 +35,10 @@ export interface ValidationContext {
   serverId?: number;
 
   /** Additional metadata */
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 
   /** Validation settings */
-  settings?: any;
+  settings?: ValidationSettings;
 }
 
 /**
@@ -51,7 +54,7 @@ export interface IValidator {
    * @param context - Validation context
    * @returns Promise<ValidationResult>
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 }
 
 /**
@@ -63,7 +66,7 @@ export interface IStructuralValidator extends IValidator {
   /**
    * Validate resource structure
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 }
 
 /**
@@ -75,7 +78,7 @@ export interface IProfileValidator extends IValidator {
   /**
    * Validate resource against profiles
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 
   /**
    * Get profiles for a resource
@@ -92,7 +95,7 @@ export interface ITerminologyValidator extends IValidator {
   /**
    * Validate terminology in resource
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 
   /**
    * Validate a single code
@@ -109,7 +112,7 @@ export interface IReferenceValidator extends IValidator {
   /**
    * Validate references in resource
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 
   /**
    * Check if a reference exists
@@ -126,12 +129,12 @@ export interface IInvariantValidator extends IValidator {
   /**
    * Validate invariant rules
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 
   /**
    * Get rules for resource type
    */
-  getRulesForResourceType?(resourceType: string): Promise<any[]>;
+  getRulesForResourceType?(resourceType: string): Promise<unknown[]>;
 }
 
 /**
@@ -143,7 +146,7 @@ export interface ICustomRuleValidator extends IValidator {
   /**
    * Validate custom rules
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 }
 
 /**
@@ -155,7 +158,7 @@ export interface IMetadataValidator extends IValidator {
   /**
    * Validate resource metadata
    */
-  validate(resource: any, context: ValidationContext): Promise<ValidationResult>;
+  validate(resource: unknown, context: ValidationContext): Promise<ValidationResult>;
 }
 
 /**
@@ -176,4 +179,3 @@ export interface ValidationAspect {
   /** Priority (lower = higher priority) */
   priority?: number;
 }
-

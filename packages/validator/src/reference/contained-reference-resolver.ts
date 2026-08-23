@@ -8,6 +8,7 @@
  */
 
 import { extractResourceType as _extractResourceType, parseReference } from './reference-type-extractor';
+import { findReferencesInResource } from './bundle-reference-finder';
 
 // ============================================================================
 // Types
@@ -19,7 +20,7 @@ export interface ContainedResource {
   /** Resource type */
   resourceType: string;
   /** The full contained resource */
-  resource: any;
+  resource: Record<string, unknown>;
 }
 
 export interface ContainedReferenceResolutionResult {
@@ -58,18 +59,20 @@ export class ContainedReferenceResolver {
   /**
    * Extract all contained resources from a FHIR resource
    */
-  extractContainedResources(resource: any): ContainedResource[] {
-    if (!resource || !resource.contained || !Array.isArray(resource.contained)) {
+  extractContainedResources(resource: unknown): ContainedResource[] {
+    const contained = toRecord(resource)?.contained;
+    if (!Array.isArray(contained)) {
       return [];
     }
 
-    return resource.contained
-      .filter((contained: any) => contained && contained.id && contained.resourceType)
-      .map((contained: any) => ({
-        id: contained.id,
-        resourceType: contained.resourceType,
-        resource: contained,
-      }));
+    return contained.flatMap((candidate) => {
+      const record = toRecord(candidate);
+      const id = getString(record, 'id');
+      const resourceType = getString(record, 'resourceType');
+      return record && id && resourceType
+        ? [{ id, resourceType, resource: record }]
+        : [];
+    });
   }
 
   /**
@@ -77,7 +80,7 @@ export class ContainedReferenceResolver {
    */
   resolveContainedReference(
     reference: string,
-    parentResource: any,
+    parentResource: unknown,
     expectedType?: string
   ): ContainedReferenceResolutionResult {
     // Check if it starts with # (contained reference format)
@@ -143,7 +146,7 @@ export class ContainedReferenceResolver {
    */
   validateContainedReference(
     reference: string,
-    parentResource: any,
+    parentResource: unknown,
     expectedTypes?: string[]
   ): ContainedReferenceValidationResult {
     // First resolve the reference
@@ -191,7 +194,7 @@ export class ContainedReferenceResolver {
    * Validate all contained references in a resource
    */
   validateAllContainedReferences(
-    resource: any,
+    resource: unknown,
     references: Array<{ reference: string; fieldPath: string; expectedTypes?: string[] }>
   ): Array<ContainedReferenceValidationResult & { fieldPath: string }> {
     return references.map(({ reference, fieldPath, expectedTypes }) => ({
@@ -203,47 +206,16 @@ export class ContainedReferenceResolver {
   /**
    * Find all contained references in a resource
    */
-  findContainedReferences(resource: any, fieldPath: string = ''): string[] {
-    const references: string[] = [];
-
-    if (!resource || typeof resource !== 'object') {
-      return references;
-    }
-
-    // Check if this is a reference object
-    if (resource.reference && typeof resource.reference === 'string') {
-      const parseResult = parseReference(resource.reference);
-      if (parseResult.referenceType === 'contained') {
-        references.push(resource.reference);
-      }
-    }
-
-    // Recursively check all properties
-    for (const [key, value] of Object.entries(resource)) {
-      if (key === 'contained') {
-        // Skip the contained array itself to avoid circular processing
-        continue;
-      }
-
-      const newPath = fieldPath ? `${fieldPath}.${key}` : key;
-
-      if (Array.isArray(value)) {
-        value.forEach((item, index) => {
-          const arrayPath = `${newPath}[${index}]`;
-          references.push(...this.findContainedReferences(item, arrayPath));
-        });
-      } else if (value && typeof value === 'object') {
-        references.push(...this.findContainedReferences(value, newPath));
-      }
-    }
-
-    return references;
+  findContainedReferences(resource: unknown, fieldPath: string = ''): string[] {
+    return findReferencesInResource(resource, fieldPath)
+      .filter(({ reference }) => parseReference(reference).referenceType === 'contained')
+      .map(({ reference }) => reference);
   }
 
   /**
    * Get contained resource by ID
    */
-  getContainedResourceById(parentResource: any, resourceId: string): ContainedResource | null {
+  getContainedResourceById(parentResource: unknown, resourceId: string): ContainedResource | null {
     const contained = this.extractContainedResources(parentResource);
     return contained.find(cr => cr.id === resourceId) || null;
   }
@@ -251,14 +223,15 @@ export class ContainedReferenceResolver {
   /**
    * Check if a resource has contained resources
    */
-  hasContainedResources(resource: any): boolean {
-    return !!resource?.contained && Array.isArray(resource.contained) && resource.contained.length > 0;
+  hasContainedResources(resource: unknown): boolean {
+    const contained = toRecord(resource)?.contained;
+    return Array.isArray(contained) && contained.length > 0;
   }
 
   /**
    * Get all contained resource IDs
    */
-  getContainedResourceIds(parentResource: any): string[] {
+  getContainedResourceIds(parentResource: unknown): string[] {
     const contained = this.extractContainedResources(parentResource);
     return contained.map(cr => cr.id);
   }
@@ -266,7 +239,7 @@ export class ContainedReferenceResolver {
   /**
    * Get all contained resources of a specific type
    */
-  getContainedResourcesByType(parentResource: any, resourceType: string): ContainedResource[] {
+  getContainedResourcesByType(parentResource: unknown, resourceType: string): ContainedResource[] {
     const contained = this.extractContainedResources(parentResource);
     return contained.filter(cr => cr.resourceType === resourceType);
   }
@@ -274,7 +247,7 @@ export class ContainedReferenceResolver {
   /**
    * Validate that all contained resources are referenced
    */
-  validateUnreferencedContainedResources(resource: any): {
+  validateUnreferencedContainedResources(resource: unknown): {
     unreferencedResources: ContainedResource[];
     warnings: string[];
   } {
@@ -301,7 +274,7 @@ export class ContainedReferenceResolver {
   /**
    * Check for orphaned contained references (references that don't exist)
    */
-  findOrphanedReferences(resource: any): Array<{
+  findOrphanedReferences(resource: unknown): Array<{
     reference: string;
     fieldPath?: string;
   }> {
@@ -321,20 +294,24 @@ export class ContainedReferenceResolver {
   }
 }
 
-// ============================================================================
-// Singleton Instance
-// ============================================================================
-
-let resolverInstance: ContainedReferenceResolver | null = null;
-
 export function getContainedReferenceResolver(): ContainedReferenceResolver {
-  if (!resolverInstance) {
-    resolverInstance = new ContainedReferenceResolver();
-  }
-  return resolverInstance;
+  return new ContainedReferenceResolver();
 }
 
 export function resetContainedReferenceResolver(): void {
-  resolverInstance = null;
+  // Compatibility no-op: resolver instances are caller-owned.
 }
 
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getString(
+  record: Record<string, unknown> | null,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === 'string' ? value : undefined;
+}

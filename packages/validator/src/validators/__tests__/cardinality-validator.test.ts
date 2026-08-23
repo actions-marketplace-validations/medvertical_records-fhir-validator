@@ -83,6 +83,34 @@ describe('CardinalityValidator', () => {
     }));
   });
 
+  it('does not require component value[x] when every component has dataAbsentReason', () => {
+    const validator = new CardinalityValidator();
+    const elementDef = {
+      path: 'Observation.component.value[x]',
+      min: 0,
+      max: '1',
+      mustSupport: true,
+    } satisfies ElementDefinition;
+
+    const issues = validator.validate(
+      [],
+      elementDef,
+      'Observation.component.value[x]',
+      'http://hl7.org/fhir/us/core/StructureDefinition/us-core-blood-pressure',
+      {
+        resourceType: 'Observation',
+        component: [
+          { dataAbsentReason: { coding: [{ code: 'unknown' }] } },
+          { dataAbsentReason: { coding: [{ code: 'not-performed' }] } },
+        ],
+      },
+    );
+
+    expect(issues).not.toContainEqual(expect.objectContaining({
+      code: 'profile-mustsupport-missing',
+    }));
+  });
+
   it('does not require Observation.dataAbsentReason for component panel observations', () => {
     const validator = new CardinalityValidator();
     const elementDef = {
@@ -269,6 +297,33 @@ describe('CardinalityValidator', () => {
       {
         resourceType: 'Encounter',
         status: 'finished',
+      },
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'profile-mustsupport-missing',
+      path: 'Encounter.reasonCode',
+    }));
+  });
+
+  it('does not treat malformed empty arrays as encounter reason context', () => {
+    const validator = new CardinalityValidator();
+    const elementDef = {
+      path: 'Encounter.reasonCode',
+      min: 0,
+      max: '*',
+      mustSupport: true,
+    } satisfies ElementDefinition;
+
+    const issues = validator.validate(
+      undefined,
+      elementDef,
+      'Encounter.reasonCode',
+      'http://hl7.org/fhir/us/core/StructureDefinition/us-core-encounter',
+      {
+        resourceType: 'Encounter',
+        type: [null, {}],
+        reasonReference: [],
       },
     );
 

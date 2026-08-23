@@ -12,7 +12,22 @@ export interface QuestionnaireItem {
     answerValueSet?: string;
     enableWhen?: EnableWhen[];
     enableBehavior?: 'all' | 'any';
-    item?: QuestionnaireItem[];
+    extension?: QuestionnaireExtension[];
+    /** Raw nested items are normalized while building the questionnaire map. */
+    item?: unknown[];
+}
+
+export interface QuestionnaireExtension {
+    url?: string;
+    [key: string]: unknown;
+}
+
+export interface QuestionnaireQuantity {
+    value?: number;
+    unit?: string;
+    system?: string;
+    code?: string;
+    [key: string]: unknown;
 }
 
 export interface AnswerOption {
@@ -41,10 +56,11 @@ export interface EnableWhen {
 }
 
 export interface QuestionnaireResponseItem {
-    linkId: string;
+    linkId?: string;
     text?: string;
     answer?: QuestionnaireResponseAnswer[];
-    item?: QuestionnaireResponseItem[];
+    /** Raw nested items are normalized by the iterative traversal boundary. */
+    item?: unknown[];
 }
 
 export interface QuestionnaireResponseAnswer {
@@ -56,9 +72,10 @@ export interface QuestionnaireResponseAnswer {
     valueTime?: string;
     valueString?: string;
     valueUri?: string;
-    valueAttachment?: any;
+    valueAttachment?: unknown;
     valueCoding?: { system?: string; code: string; display?: string };
-    valueQuantity?: { value: number; unit?: string };
+    valueQuantity?: QuestionnaireQuantity;
     valueReference?: { reference: string };
-    item?: QuestionnaireResponseItem[];
+    /** Raw nested items are normalized by the iterative traversal boundary. */
+    item?: unknown[];
 }

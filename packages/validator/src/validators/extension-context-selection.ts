@@ -6,7 +6,7 @@ import type { ExtensionDefinition } from './extension-types';
 export function selectDefinitionsForResourceContext(
   candidatesByUrl: Map<string, ExtensionDefinition[]>,
   elements: ElementDefinition[],
-  resource: any,
+  resource: unknown,
 ): Map<string, ExtensionDefinition> {
   const selected = new Map<string, ExtensionDefinition>();
 
@@ -24,7 +24,7 @@ export function selectDefinitionsForResourceContext(
 function definitionMatchesResourceContext(
   definition: ExtensionDefinition,
   elements: ElementDefinition[],
-  resource: any,
+  resource: unknown,
 ): boolean {
   if (!definition.elementId) return true;
 

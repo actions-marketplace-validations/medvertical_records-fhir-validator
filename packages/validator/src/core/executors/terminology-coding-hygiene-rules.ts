@@ -1,6 +1,6 @@
 import type { ValidationIssue } from '../../types';
 import { createValidationIssue } from '../../issues';
-import { ucumCodeHasAnnotation, validateUcumCode } from '../../validators/ucum-validator';
+import { UcumCodeValidator, ucumCodeHasAnnotation } from '../../validators/ucum-validator';
 import {
   buildInvalidUcumIssueDetails,
   buildInvalidUcumMessage,
@@ -36,10 +36,15 @@ export function missingCodingSystemSeverity(
   return isQuestionnaireLocalChoiceCoding ? 'information' : 'warning';
 }
 
-export function validateCodingHygiene(resource: any, existingIssues: ValidationIssue[]): ValidationIssue[] {
+export function validateCodingHygiene(
+  resource: unknown,
+  existingIssues: ValidationIssue[],
+  ucumValidator: UcumCodeValidator = new UcumCodeValidator(),
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const seen = new Set(existingIssues.map(issue => `${issue.code}|${issue.path}`));
-  const root = resource?.resourceType || 'Resource';
+  const root = resourceTypeOf(resource);
+  const visited = new WeakSet<object>();
 
   const pushOnce = (issue: {
     severity: 'error' | 'warning' | 'information';
@@ -62,13 +67,17 @@ export function validateCodingHygiene(resource: any, existingIssues: ValidationI
     }));
   };
 
-  const visit = (value: any, path: string): void => {
+  const visit = (value: unknown, path: string): void => {
+    if (value === null || typeof value !== 'object') return;
+    if (visited.has(value)) return;
+    visited.add(value);
+
     if (Array.isArray(value)) {
       value.forEach((item, index) => visit(item, `${path}[${index}]`));
       return;
     }
 
-    if (!value || typeof value !== 'object') return;
+    if (!isRecord(value)) return;
 
     if (typeof value.code === 'string' && !value.system && isCodingHygienePath(path)) {
       const details: Record<string, unknown> = {
@@ -119,7 +128,7 @@ export function validateCodingHygiene(resource: any, existingIssues: ValidationI
     }
 
     if (value.system === 'http://unitsofmeasure.org' && typeof value.code === 'string') {
-      const result = validateUcumCode(value.code);
+      const result = ucumValidator.validate(value.code);
       if (result.valid && ucumCodeHasAnnotation(value.code)) {
         pushOnce({
           severity: 'information',
@@ -148,4 +157,14 @@ export function validateCodingHygiene(resource: any, existingIssues: ValidationI
 
   visit(resource, root);
   return issues;
+}
+
+function resourceTypeOf(value: unknown): string {
+  return isRecord(value) && typeof value.resourceType === 'string'
+    ? value.resourceType
+    : 'Resource';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

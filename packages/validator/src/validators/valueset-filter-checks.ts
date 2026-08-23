@@ -1,5 +1,6 @@
 import { isSnomedNationalExtensionCode } from './terminology-api-client';
 import type { TerminologyUnverifiedReason } from './valueset-types';
+import { codeSystemCanonicalsEquivalent } from './code-system-canonical-aliases';
 
 /**
  * Pure include-filter predicates shared by the ValueSet membership paths.
@@ -21,7 +22,7 @@ export function hasUnsupportedFilterForSystem(
   system: string | undefined,
 ): boolean {
   return filters.some(filter => {
-    if (system && filter.system !== system) return false;
+    if (system && !codeSystemCanonicalsEquivalent(filter.system, system)) return false;
     if (filter.property !== 'concept') return true;
     return filter.op !== '=' && filter.op !== 'is-a' && filter.op !== 'descendent-of';
   });
@@ -40,7 +41,7 @@ export function isUnresolvableSnomedExtensionFilterCode(
   if (system !== 'http://snomed.info/sct') return false;
   if (!isSnomedNationalExtensionCode(code)) return false;
   return filters.some(filter =>
-    filter.system === system
+    codeSystemCanonicalsEquivalent(filter.system, system)
     && filter.property === 'concept'
     && (filter.op === 'is-a' || filter.op === 'descendent-of')
   );
@@ -58,4 +59,34 @@ export function classifyUnverifiableFilterReason(
     return 'unresolvable-snomed-extension-filter';
   }
   return undefined;
+}
+
+/**
+ * Full compose-level classification: filter-based reasons first, then
+ * whole-system includes whose CodeSystem the local stores cannot enumerate.
+ * A code from (or without) such a system may be valid despite a local miss.
+ */
+export function classifyUnverifiableComposeReason(
+  system: string | undefined,
+  code: string,
+  filters: IncludeConceptFilter[],
+  unenumerableIncludeSystems: string[],
+): TerminologyUnverifiedReason | undefined {
+  const filterReason = classifyUnverifiableFilterReason(system, code, filters);
+  if (filterReason) return filterReason;
+  const systemUnenumerable = unenumerableIncludeSystems.some(includeSystem =>
+    !system || codeSystemCanonicalsEquivalent(includeSystem, system));
+  return systemUnenumerable ? 'unenumerable-system-include' : undefined;
+}
+
+/**
+ * Reasons that make the local expansion provably incomplete for the coded
+ * system, so even a required-binding miss cannot be asserted without a
+ * terminology server. The SNOMED-extension reason is excluded: no available
+ * source could confirm those codes, so the required miss stands.
+ */
+export function isLocallyUnprovableMissReason(
+  reason: TerminologyUnverifiedReason | undefined,
+): boolean {
+  return reason === 'unsupported-filter' || reason === 'unenumerable-system-include';
 }

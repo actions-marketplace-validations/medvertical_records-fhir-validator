@@ -38,9 +38,9 @@ export class ReferenceCircuitBreaker {
     state.failures += 1;
     if (state.failures >= this.failureThreshold) {
       state.openedUntil = Date.now() + this.cooldownMs;
-      logger.warn(
-        `[BatchedReferenceChecker] Circuit opened for ${host} after ${state.failures} failures`
-      );
+      logger.warn('[BatchedReferenceChecker] Reference circuit opened', {
+        failureCount: state.failures,
+      });
     }
     this.circuits.set(host, state);
   }

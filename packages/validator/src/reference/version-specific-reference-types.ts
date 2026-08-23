@@ -34,7 +34,7 @@ export interface VersionIntegrityCheckResult {
   /** Version info */
   versionInfo?: VersionedReferenceInfo;
   /** Details */
-  details?: any;
+  details?: Record<string, unknown>;
 }
 
 export interface VersionConsistencyCheckResult {

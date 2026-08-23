@@ -25,6 +25,14 @@ export type ValidationRunOutcome =
   | 'error'
   | null;
 
+export type ValidationRunTerminationCause =
+  | 'user-stop'
+  | 'resource-pressure'
+  | 'shutdown'
+  | 'lease-loss'
+  | 'timeout'
+  | 'runtime-cleanup';
+
 export interface ValidationRunResourceTypeSnapshot {
   processed: number;
   total: number;
@@ -37,6 +45,15 @@ export interface ValidationRunResourceTypeSnapshot {
     error: number;
     warning: number;
   };
+}
+
+export interface ValidationRunInFlightResourceTypeSnapshot {
+  processed: number;
+  total: number;
+  pending: number;
+  phase: 'validating' | 'persisting';
+  startedAt: string | null;
+  updatedAt: string | null;
 }
 
 export interface ValidationRunActivityEventSnapshot {
@@ -60,11 +77,17 @@ export interface ValidationRunSnapshotV1 {
     terminal: boolean;
     canPause: boolean;
     stoppedByUser: boolean;
+    /** Optional only for snapshots produced before this V1 field was introduced. */
+    terminationCause?: ValidationRunTerminationCause | null;
     interruptedReason: string | null;
   };
   outcome: ValidationRunOutcome;
   progress: {
     processedResources: number;
+    /** Includes validated resources in the current uncommitted page. */
+    liveProcessedResources?: number;
+    /** Validated resources still awaiting their page commit. */
+    inFlightProcessedResources?: number;
     totalResources: number;
     validResources: number;
     validationUnits: {
@@ -79,7 +102,21 @@ export interface ValidationRunSnapshotV1 {
     estimatedSecondsRemaining: number;
   };
   issues: {
+    /**
+     * Persisted, user-visible issue rows. These counts match the issue
+     * workspace and may be higher than the counters used by the quality gate.
+     */
     occurrences: {
+      error: number;
+      warning: number;
+      information: number;
+    };
+    /**
+     * Effective counters used by quality-gate evaluation after operational
+     * issue filtering. Optional only for wire compatibility with early V1
+     * snapshots; current producers always publish it.
+     */
+    qualityGateOccurrences?: {
       error: number;
       warning: number;
       information: number;
@@ -95,6 +132,7 @@ export interface ValidationRunSnapshotV1 {
     nextResourceType: string | null;
     message: string | null;
     events: ValidationRunActivityEventSnapshot[];
+    inFlightResourceTypes?: Record<string, ValidationRunInFlightResourceTypeSnapshot>;
   };
   queue: {
     length: number;

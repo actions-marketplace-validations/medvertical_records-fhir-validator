@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { StructureDefinitionLoader } from '../structure-definition-loader';
 import type { StructureDefinition } from '../structure-definition-types';
 import { checkDatabaseCache } from '../sd-loader-db-cache';
-import { warmUpProfilesFromDatabase } from '../sd-loader-initialization';
+import { warmUpProfilesFromDatabase } from '../sd-loader-profile-source-warmup';
 import { setProfileSource } from '../../persistence';
 
 const CORE_URL = 'http://hl7.org/fhir/StructureDefinition/MedicationRequest';
@@ -19,6 +19,12 @@ const MII_MOLGEN_GENOMIC_STUDY_ANALYSIS_URL = 'https://www.medizininformatik-ini
 const MII_MOLGEN_GENOMIC_STUDY_ANALYSIS_ALIAS_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-molgen/StructureDefinition/genomic-study-analysis|2026.0.4';
 const MII_ICU_EXTRACORPOREAL_PROCEDURE_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-extrakorporales-verfahren';
 const MII_ICU_ECT_EXTRACORPOREAL_PROCEDURE_ALIAS_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-icu/StructureDefinition/mii-pr-icu-ect-extrakorporales-verfahren';
+const MII_MTB_IN_SITU_HYBRIDIZATION_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-insituhybridization';
+const MII_MTB_IN_SITU_HYBRIDIZATION_ALIAS_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-biomarker-insituhybridization|2026.0.1';
+const MII_MTB_MSI_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-msi';
+const MII_MTB_MSI_ALIAS_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-immunohistochemistry-msi';
+const MII_MTB_SYSTEMIC_THERAPY_MEDICATION_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-systemtherapie-medication-statement';
+const MII_MTB_SYSTEMIC_THERAPY_MEDICATION_ALIAS_URL = 'https://www.medizininformatik-initiative.de/fhir/ext/modul-mtb/StructureDefinition/mii-pr-mtb-systemische-therapie-medication-statement';
 
 function makeSd(id: string, fhirVersion: string): StructureDefinition {
   return {
@@ -134,7 +140,7 @@ async function writePackageProfile(
 }
 
 async function makeLoader(
-  options: { maxCacheEntries?: number } = {},
+  options: { maxCacheEntries?: number; prewarmProfileSource?: boolean } = {},
 ): Promise<{ loader: StructureDefinitionLoader; dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'records-sd-loader-'));
   const loader = new StructureDefinitionLoader(dir, null, { autoDownload: false, ...options });
@@ -151,10 +157,26 @@ afterEach(() => {
 });
 
 describe('StructureDefinitionLoader versioned cache', () => {
+  it('can skip eager ProfileSource warmup while preserving on-demand loading', async () => {
+    const loadAllForWarmup = vi.fn().mockResolvedValue(new Map());
+    const profile = makeVersionedProfileSd('1.1.0');
+    const findByUrl = vi.fn().mockResolvedValue(profile);
+    setProfileSource({ loadAllForWarmup, findByUrl });
+
+    const { loader, dir } = await makeLoader({ prewarmProfileSource: false });
+    try {
+      expect(loadAllForWarmup).not.toHaveBeenCalled();
+      await expect(loader.loadProfile(PROFILE_URL, 'R4')).resolves.toBe(profile);
+      expect(findByUrl).toHaveBeenCalled();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('uses the loader cache path for the default package downloader', async () => {
     const { loader, dir } = await makeLoader();
     try {
-      expect((loader as any).packageDownloader.cachePath).toBe(dir);
+      expect((loader as any).runtime.packageDownloader.cachePath).toBe(dir);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -255,6 +277,39 @@ describe('StructureDefinitionLoader versioned cache', () => {
           'Procedure',
         ),
       );
+      await writePackageProfile(
+        dir,
+        'de.medizininformatikinitiative.kerndatensatz.mtb#2026.0.1',
+        'StructureDefinition-mii-pr-mtb-insituhybridization.json',
+        makeProfileSd(
+          'mii-pr-mtb-insituhybridization',
+          MII_MTB_IN_SITU_HYBRIDIZATION_URL,
+          '2026.0.1',
+          'Observation',
+        ),
+      );
+      await writePackageProfile(
+        dir,
+        'de.medizininformatikinitiative.kerndatensatz.mtb#2026.0.1',
+        'StructureDefinition-mii-pr-mtb-msi.json',
+        makeProfileSd(
+          'mii-pr-mtb-msi',
+          MII_MTB_MSI_URL,
+          '2026.0.1',
+          'Observation',
+        ),
+      );
+      await writePackageProfile(
+        dir,
+        'de.medizininformatikinitiative.kerndatensatz.mtb#2026.0.1',
+        'StructureDefinition-mii-pr-mtb-systemtherapie-medication-statement.json',
+        makeProfileSd(
+          'mii-pr-mtb-systemtherapie-medication-statement',
+          MII_MTB_SYSTEMIC_THERAPY_MEDICATION_URL,
+          '2026.0.1',
+          'MedicationStatement',
+        ),
+      );
 
       const loader = new StructureDefinitionLoader(dir, null, { autoDownload: false });
       await loader.waitForInitialization();
@@ -271,15 +326,42 @@ describe('StructureDefinitionLoader versioned cache', () => {
         url: MII_ICU_EXTRACORPOREAL_PROCEDURE_URL,
         version: '2026.0.2',
       });
+      await expect(
+        loader.loadProfile(MII_MTB_IN_SITU_HYBRIDIZATION_ALIAS_URL, 'R4')
+      ).resolves.toMatchObject({
+        url: MII_MTB_IN_SITU_HYBRIDIZATION_URL,
+        version: '2026.0.1',
+      });
+      await expect(
+        loader.loadProfile(MII_MTB_MSI_ALIAS_URL, 'R4')
+      ).resolves.toMatchObject({
+        url: MII_MTB_MSI_URL,
+        version: '2026.0.1',
+      });
+      await expect(
+        loader.loadProfile(MII_MTB_SYSTEMIC_THERAPY_MEDICATION_ALIAS_URL, 'R4')
+      ).resolves.toMatchObject({
+        url: MII_MTB_SYSTEMIC_THERAPY_MEDICATION_URL,
+        version: '2026.0.1',
+      });
 
       const batch = await loader.loadProfilesBatch([
         MII_MOLGEN_GENOMIC_STUDY_ANALYSIS_ALIAS_URL,
         MII_ICU_ECT_EXTRACORPOREAL_PROCEDURE_ALIAS_URL,
+        MII_MTB_IN_SITU_HYBRIDIZATION_ALIAS_URL,
+        MII_MTB_MSI_ALIAS_URL,
+        MII_MTB_SYSTEMIC_THERAPY_MEDICATION_ALIAS_URL,
       ], 'R4');
       expect(batch.get(MII_MOLGEN_GENOMIC_STUDY_ANALYSIS_ALIAS_URL)?.url)
         .toBe(MII_MOLGEN_GENOMIC_STUDY_ANALYSIS_URL);
       expect(batch.get(MII_ICU_ECT_EXTRACORPOREAL_PROCEDURE_ALIAS_URL)?.url)
         .toBe(MII_ICU_EXTRACORPOREAL_PROCEDURE_URL);
+      expect(batch.get(MII_MTB_IN_SITU_HYBRIDIZATION_ALIAS_URL)?.url)
+        .toBe(MII_MTB_IN_SITU_HYBRIDIZATION_URL);
+      expect(batch.get(MII_MTB_MSI_ALIAS_URL)?.url)
+        .toBe(MII_MTB_MSI_URL);
+      expect(batch.get(MII_MTB_SYSTEMIC_THERAPY_MEDICATION_ALIAS_URL)?.url)
+        .toBe(MII_MTB_SYSTEMIC_THERAPY_MEDICATION_URL);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -291,13 +373,13 @@ describe('StructureDefinitionLoader versioned cache', () => {
       const r4 = makeSd('medicationrequest-r4', '4.0.1');
       const r5 = makeSd('medicationrequest-r5', '5.0.0');
 
-      (loader as any).cache.set(CORE_URL, r5);
-      (loader as any).cache.set(`${CORE_URL}:R5`, r5);
+      (loader as any).runtime.cache.set(CORE_URL, r5);
+      (loader as any).runtime.cache.set(`${CORE_URL}:R5`, r5);
 
       const r4Result = await loader.loadProfilesBatch([CORE_URL], 'R4');
       expect((r4Result.get(CORE_URL) as any)?.fhirVersion).toMatch(/^4\./);
 
-      (loader as any).cache.set(`${CORE_URL}:R4`, r4);
+      (loader as any).runtime.cache.set(`${CORE_URL}:R4`, r4);
       const r4Hit = await loader.loadProfilesBatch([CORE_URL], 'R4');
       expect(r4Hit.get(CORE_URL)?.id).toBe('medicationrequest-r4');
 
@@ -343,15 +425,15 @@ describe('StructureDefinitionLoader versioned cache', () => {
       const externalProfile = makeVersionedProfileSd('1.1.0');
       const reloadableProfile = makeUsCoreCoverageSd();
       addProfile(loader, externalProfile);
-      (loader as any).cache.set(`${reloadableProfile.url}:R4`, reloadableProfile);
+      (loader as any).runtime.cache.set(`${reloadableProfile.url}:R4`, reloadableProfile);
 
       await expect(loader.loadProfile(externalProfile.url, 'R4'))
         .resolves.toMatchObject({ url: externalProfile.url });
       await expect(loader.loadProfile(externalProfile.url, 'R4'))
         .resolves.toMatchObject({ url: externalProfile.url });
 
-      expect((loader as any).cache.has(`${externalProfile.url}:R4`)).toBe(true);
-      expect((loader as any).cache.has(`${reloadableProfile.url}:R4`)).toBe(false);
+      expect((loader as any).runtime.cache.has(`${externalProfile.url}:R4`)).toBe(true);
+      expect((loader as any).runtime.cache.has(`${reloadableProfile.url}:R4`)).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -367,23 +449,23 @@ describe('checkDatabaseCache', () => {
       },
     });
 
-    await expect(checkDatabaseCache(CORE_URL, new Set(), 'R4')).resolves.toBeNull();
-    await expect(checkDatabaseCache(CORE_URL, new Set(), 'R5')).resolves.toBe(r5);
+    await expect(checkDatabaseCache(CORE_URL, 'R4')).resolves.toBeNull();
+    await expect(checkDatabaseCache(CORE_URL, 'R5')).resolves.toBe(r5);
   });
 
-  it('rejects ProfileSource entries from the wrong explicit canonical version', async () => {
+  it('rechecks a wrong explicit canonical version on the next source lookup', async () => {
     const wrongVersion = makeVersionedProfileSd('1.3.1');
+    const exactVersion = makeVersionedProfileSd('1.1.0');
+    let calls = 0;
     setProfileSource({
       async findByUrl() {
-        return wrongVersion;
+        return calls++ === 0 ? wrongVersion : exactVersion;
       },
     });
 
     const requested = `${PROFILE_URL}|1.1.0`;
-    const notFound = new Set<string>();
-
-    await expect(checkDatabaseCache(requested, notFound, 'R4')).resolves.toBeNull();
-    expect(notFound.has(`${requested}:R4`)).toBe(true);
+    await expect(checkDatabaseCache(requested, 'R4')).resolves.toBeNull();
+    await expect(checkDatabaseCache(requested, 'R4')).resolves.toBe(exactVersion);
   });
 
   it('accepts ProfileSource entries for the requested explicit canonical version', async () => {
@@ -394,7 +476,17 @@ describe('checkDatabaseCache', () => {
       },
     });
 
-    await expect(checkDatabaseCache(`${PROFILE_URL}|1.1.0`, new Set(), 'R4')).resolves.toBe(exactVersion);
+    await expect(checkDatabaseCache(`${PROFILE_URL}|1.1.0`, 'R4')).resolves.toBe(exactVersion);
+  });
+
+  it('rejects a ProfileSource entry for a different canonical URL', async () => {
+    const wrongProfile = {
+      ...makeVersionedProfileSd('1.1.0'),
+      url: 'http://example.org/fhir/StructureDefinition/OtherProfile',
+    };
+    setProfileSource({ findByUrl: async () => wrongProfile });
+
+    await expect(checkDatabaseCache(`${PROFILE_URL}|1.1.0`, 'R4')).resolves.toBeNull();
   });
 });
 
@@ -445,5 +537,30 @@ describe('warmUpProfilesFromDatabase', () => {
 
     expect(cache.has(`${PROFILE_URL}|unknown:R4`)).toBe(false);
     expect(availableProfiles.has(`${PROFILE_URL}|unknown`)).toBe(false);
+  });
+
+  it('does not warm a profile whose content belongs to another canonical', async () => {
+    const wrongProfile = {
+      ...makeVersionedProfileSd('1.1.0'),
+      url: 'http://example.org/fhir/StructureDefinition/OtherProfile',
+    };
+    setProfileSource({
+      async loadAllForWarmup() {
+        return new Map([
+          [PROFILE_URL, {
+            canonicalUrl: PROFILE_URL,
+            version: '1.1.0',
+            profile: wrongProfile,
+          }],
+        ]);
+      },
+    });
+    const cache = new Map<string, StructureDefinition>();
+    const availableProfiles = new Set<string>();
+
+    await warmUpProfilesFromDatabase({ cache, availableProfiles });
+
+    expect(cache.size).toBe(0);
+    expect(availableProfiles.size).toBe(0);
   });
 });

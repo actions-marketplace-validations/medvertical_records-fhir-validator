@@ -10,6 +10,89 @@ ship together; package-only changes are noted under each release.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-23
+
+Minor release from a differential-fix campaign: the validator was run against
+official IG package examples, live public FHIR servers, a mutation corpus, and
+the HL7 `fhir-test-cases` suite, and every divergence from the reference
+validator was arbitrated against it. Results become more precise in both
+directions — new detections appear, and several classes of false positive
+disappear. The public API only grows; there are no intentional breaking
+changes, but consumers gating CI on issue counts should expect movement.
+
+### Added
+
+- Added bounded public FHIR XML and NDJSON input adapters and CLI discovery for
+  `.json`, `.xml`, and `.ndjson` files. XML parsing is namespace-aware, rejects
+  DTD/entity declarations, preserves primitive extensions, contained
+  resources, XHTML narratives, and source locations; NDJSON applies total,
+  per-line, and record-count limits.
+- Added `resolveFhirReleaseContext()` so R4B keeps the explicit
+  `hl7.fhir.r4b.core#4.3.0` package identity and documents its current R4
+  validation/FHIRPath maintenance-adapter boundary.
+- Added the R4B core package to the default reproducible bundled-profile plan.
+
+- Validated extension usage against the `context` declared by the extension's
+  StructureDefinition (R4/R5 and legacy DSTU3 forms, wildcards, element paths,
+  and choice elements), reported as `profile-extension-context-wrong`.
+- Evaluated core datatype invariants (rng-2, qty-3, rat-1, sdd-1, tim-*, cpt-2
+  and siblings) during the complex-type walk.
+- Added the txt-2 narrative-content rule, plausibility lints for implausible
+  years and out-of-range decimals, BCP-47 language-code validation, attachment
+  content and att-1 checks, and a padded-string lint — each matched to the
+  reference validator's own bounds.
+- Emitted an informational signpost naming the profile a code-inferred
+  vital-signs application came from, and attributed the resulting findings to
+  the profile aspect instead of the base spec.
+- Detected elements matching more than one sibling slice
+  (`profile-slice-ambiguous-match`) with reference-validator wording.
+- Exported `BestPracticeValidator` / `validateBestPractices` and the
+  `matchCodeInferredProfile` helper.
+
+### Fixed
+
+- Restored the custom FHIRPath function table used by element constraints: two
+  invalid arity entries had silently invalidated the whole table since its
+  introduction, so `extension()`, `resolve()`, `memberOf()`, `conformsTo()` and
+  `subsumes()` never ran. `resolve()` on unresolvable references and the `is`
+  operator now propagate empty exactly as the reference validator does.
+- Closed eight independent slicing-discriminator gaps: value-set membership
+  semantics, type discriminators on `$this` and on paths, datatype-profile
+  discrimination, primitive-code bindings, profile ancestry, resliced repeats,
+  FHIRPath function segments, and integer-family value shapes.
+- Validated primitives under repeating inline components (`Dosage.doseAndRate`,
+  DataRequirement filters, R5 `Availability`) and inside
+  `Parameters.parameter.resource`, which the element walk had skipped.
+- Resolved `contentReference` targets in declared-profile walks, restoring type
+  information for recursive elements such as `QuestionnaireResponse.item.item`.
+- Honored IG dependency version pins when resolving unversioned canonicals, and
+  made package-store selection deterministic: exact pins win, cross-major
+  fallbacks are refused, configured stores outrank the user cache, and core
+  packages stay authoritative for core canonicals.
+- Kept locally resolvable terminology checks running while terminology servers
+  are unavailable, and degraded required-binding misses to unverified when a
+  value set's includes cannot be materialised locally.
+- Aligned severities and acceptance with the reference validator for unresolved
+  extensions, LOINC display designations, `<a name>` narrative anchors,
+  searchset `include` entries, relative URIs in plain-uri slots, bare-token
+  references (accepted standalone, rejected inside bundles), `fullUrl` REST
+  identity, cross-version extension URLs, and terminology-package precedence.
+- Replaced the remaining generic `invalid` issue codes with named ones.
+
+### Changed
+
+- Raised the custom-rule source load budget from 250ms to 2s. Cold tenant
+  rule loads traverse an organization-scoped transaction with several
+  database round trips on hosted infrastructure and regularly exceeded the
+  old budget, emitting false `custom-rule-source-unavailable` warnings; the
+  bound still fails the aspect closed when the source is genuinely
+  unavailable.
+
+### Security
+
+- Prevented XML DTD/entity expansion, foreign XML namespaces, unsafe object
+  property names, and unbounded XML/NDJSON input growth.
+
 ## [0.5.0] — 2026-07-23
 
 Minor release expanding reference-compatible profile, contained-resource,

@@ -1,5 +1,6 @@
 import type { CodeSystem, CodeSystemConcept } from './valueset-types';
 import { logger } from '../logger';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 
 export function applyConceptFilter(
     codeSystem: CodeSystem,
@@ -29,9 +30,9 @@ export function applyConceptFilter(
 
 export function extractCodesFromCodeSystem(codeSystem: CodeSystem): string[] {
     if (codeSystem.content === 'supplement') {
-        logger.debug(
-            `[ValueSetPackageLoader] Skipping supplement CodeSystem ${codeSystem.url} — codes must come from base system ${codeSystem.supplements}`,
-        );
+        logger.debug('[ValueSetPackageLoader] Skipping supplement CodeSystem', {
+            ...terminologyTargetMetadata(codeSystem.url, codeSystem.supplements),
+        });
         return [];
     }
 

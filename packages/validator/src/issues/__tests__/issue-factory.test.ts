@@ -107,6 +107,66 @@ describe('validation-issue-factory', () => {
             expect(issue.details?.system).toBe('http://example.org');
         });
 
+        it('rejects prototype-polluting detail and message parameter keys', () => {
+            const maliciousDetails = JSON.parse(
+                '{"__proto__":{"polluted":"details"},"constructor":"unsafe","safe":"kept"}',
+            ) as Record<string, unknown>;
+            const maliciousParams = JSON.parse(
+                '{"__proto__":{"polluted":"params"},"prototype":"unsafe"}',
+            ) as Record<string, unknown>;
+
+            const issue = createValidationIssue({
+                code: 'validation-error',
+                path: 'Patient.name',
+                resourceType: 'Patient',
+                details: maliciousDetails,
+                messageParams: maliciousParams,
+            });
+
+            expect(issue.details?.safe).toBe('kept');
+            expect(Object.prototype.hasOwnProperty.call(issue.details, '__proto__')).toBe(false);
+            expect(Object.prototype.hasOwnProperty.call(issue.details, 'constructor')).toBe(false);
+            expect(Object.prototype.hasOwnProperty.call(issue.details, 'prototype')).toBe(false);
+            expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+        });
+
+        it('creates a stable semantic target from structured details', () => {
+            const issue = createValidationIssue({
+                code: 'profile-extension-min-cardinality',
+                path: 'Patient.gender.extension',
+                resourceType: 'Patient',
+                messageParams: {
+                    url: 'https://example.test/StructureDefinition/gender-note',
+                },
+                details: { sliceName: 'genderNote' },
+            });
+
+            expect(issue.target).toEqual({
+                path: 'Patient.gender.extension',
+                elementId: 'Patient.gender.extension',
+                extensionUrl: 'https://example.test/StructureDefinition/gender-note',
+                sliceName: 'genderNote',
+            });
+        });
+
+        it('accepts an explicit sliced element target', () => {
+            const issue = createValidationIssue({
+                code: 'profile-slice-min-cardinality',
+                path: 'Patient.identifier',
+                resourceType: 'Patient',
+                target: {
+                    elementId: 'Patient.identifier:insuranceNumber',
+                    sliceName: 'insuranceNumber',
+                },
+            });
+
+            expect(issue.target).toMatchObject({
+                path: 'Patient.identifier',
+                elementId: 'Patient.identifier:insuranceNumber',
+                sliceName: 'insuranceNumber',
+            });
+        });
+
         it('generates deterministic IDs for the same issue identity', () => {
             const issue1 = createValidationIssue({
                 code: 'validation-error',

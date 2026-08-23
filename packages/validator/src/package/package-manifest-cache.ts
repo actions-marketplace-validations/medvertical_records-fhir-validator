@@ -24,9 +24,9 @@ export class PackageManifestCache {
   private cacheEvictions = 0;
   private staleEvictions = 0;
 
-  constructor(maxCacheEntries: number, cacheTTL = 60 * 60 * 1000) {
-    this.maxCacheEntries = Math.max(1, maxCacheEntries);
-    this.cacheTTL = cacheTTL;
+  constructor(maxCacheEntries = 128, cacheTTL = 60 * 60 * 1000) {
+    this.maxCacheEntries = normalizePositiveInteger(maxCacheEntries, 128, 4096);
+    this.cacheTTL = normalizePositiveInteger(cacheTTL, 60 * 60 * 1000, 24 * 60 * 60 * 1000);
   }
 
   get(packageId: string): PackageManifest | null {
@@ -35,7 +35,7 @@ export class PackageManifestCache {
       this.cache.delete(packageId);
       this.cache.set(packageId, cached);
       this.cacheHits++;
-      return cached.data;
+      return structuredClone(cached.data);
     }
 
     if (cached) {
@@ -54,7 +54,7 @@ export class PackageManifestCache {
       this.cache.delete(oldestKey);
       this.cacheEvictions++;
     }
-    this.cache.set(packageId, { data: manifest, timestamp: Date.now() });
+    this.cache.set(packageId, { data: structuredClone(manifest), timestamp: Date.now() });
   }
 
   clear(): void {
@@ -72,4 +72,10 @@ export class PackageManifestCache {
       staleEvictions: this.staleEvictions,
     };
   }
+}
+
+function normalizePositiveInteger(value: number, fallback: number, maximum: number): number {
+  return Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, maximum)
+    : fallback;
 }

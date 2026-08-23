@@ -1,4 +1,4 @@
-import { valueSetCache } from './valueset-cache';
+import { ValueSetCache } from './valueset-cache';
 import type { CodeSystem, CodeSystemConcept } from './valueset-types';
 
 const HL7_URL_PATTERNS = [
@@ -81,20 +81,26 @@ export function codeSystemDisplayFor(cs: CodeSystem | undefined, code: string): 
 export function countCodeSystemConcepts(concepts: CodeSystemConcept[] | undefined): number {
   if (!Array.isArray(concepts)) return 0;
   let count = 0;
-  const stack: CodeSystemConcept[] = [...concepts];
+  const stack: unknown[] = [...concepts];
+  const visited = new WeakSet<object>();
   while (stack.length > 0) {
-    const concept = stack.pop()!;
+    const concept = stack.pop();
+    if (!isRecord(concept) || visited.has(concept)) continue;
+    visited.add(concept);
     count++;
-    if (Array.isArray(concept?.concept)) stack.push(...concept.concept);
+    if (Array.isArray(concept.concept)) stack.push(...concept.concept);
   }
   return count;
 }
 
-export function getCachedCodeSystem(systemUrl: string | undefined): CodeSystem | undefined {
+export function getCachedCodeSystem(
+  systemUrl: string | undefined,
+  cache: ValueSetCache = new ValueSetCache(),
+): CodeSystem | undefined {
   if (!systemUrl) return undefined;
   return (
-    valueSetCache.getCodeSystem(systemUrl) ??
-    valueSetCache.getCodeSystemFile(systemUrl) ??
+    cache.getCodeSystem(systemUrl) ??
+    cache.getCodeSystemFile(systemUrl) ??
     undefined
   );
 }
@@ -126,11 +132,24 @@ function findCodeSystemConcept(
   code: string,
 ): CodeSystemConcept | undefined {
   if (!cs || !Array.isArray(cs.concept)) return undefined;
-  const stack: CodeSystemConcept[] = [...cs.concept];
+  const stack: unknown[] = [...cs.concept];
+  const visited = new WeakSet<object>();
   while (stack.length > 0) {
-    const concept = stack.pop()!;
-    if (concept?.code === code) return concept;
-    if (Array.isArray(concept?.concept)) stack.push(...concept.concept);
+    const concept = stack.pop();
+    if (!isRecord(concept) || visited.has(concept)) continue;
+    visited.add(concept);
+    if (isCodeSystemConcept(concept) && concept.code === code) return concept;
+    if (Array.isArray(concept.concept)) stack.push(...concept.concept);
   }
   return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isCodeSystemConcept(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & CodeSystemConcept {
+  return typeof value.code === 'string';
 }

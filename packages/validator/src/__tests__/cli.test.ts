@@ -14,6 +14,7 @@ interface CliRun {
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, '../../../..');
 const tsxBin = join(repoRoot, 'node_modules/tsx/dist/cli.mjs');
+const repoTsconfig = join(repoRoot, 'tsconfig.json');
 const cliEntry = join(repoRoot, 'packages/validator/src/cli.ts');
 const tempDirs: string[] = [];
 
@@ -25,7 +26,13 @@ async function createTempDir(): Promise<string> {
 
 function runCli(args: string[], cwd = repoRoot): Promise<CliRun> {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, [tsxBin, cliEntry, ...args], {
+    const child = spawn(process.execPath, [
+      tsxBin,
+      '--tsconfig',
+      repoTsconfig,
+      cliEntry,
+      ...args,
+    ], {
       cwd,
       env: {
         ...process.env,
@@ -135,7 +142,37 @@ describe('records-fhir-validator CLI', () => {
     expect(report).toContain('Validated 1 file(s):');
   }, 30_000);
 
-  it('exits with code 2 when include and exclude filters leave no JSON files', async () => {
+  it('normalizes XML and every NDJSON record through the CLI', async () => {
+    const root = await createTempDir();
+    await writeJsonFixture(
+      root,
+      'fixtures/patient.xml',
+      '<Patient xmlns="http://hl7.org/fhir"><id value="xml-1"/></Patient>',
+    );
+    await writeJsonFixture(
+      root,
+      'fixtures/export.ndjson',
+      [
+        '{"resourceType":"Patient","id":"ndjson-1"}',
+        '{"resourceType":"Observation","id":"ndjson-2","status":"final","code":{"text":"demo"}}',
+      ].join('\n'),
+    );
+
+    const result = await runCli([
+      'fixtures',
+      '--format=json',
+      '--summary-only',
+      '--fail-on=none',
+    ], root);
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({
+      summary: expect.objectContaining({ files: 3 }),
+    });
+  }, 30_000);
+
+  it('exits with code 2 when include and exclude filters leave no FHIR inputs', async () => {
     const root = await createTempDir();
     await writeJsonFixture(root, 'fixtures/drafts/skipped.json', '{}');
 
@@ -149,7 +186,7 @@ describe('records-fhir-validator CLI', () => {
 
     expect(result.code).toBe(2);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('No JSON files matched the include/exclude filters.');
+    expect(result.stderr).toContain('No FHIR input files matched the include/exclude filters.');
   });
 
   it('exits with code 2 for invalid CLI options before validation starts', async () => {

@@ -13,41 +13,42 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import {
   R4_ELEMENT_DEFINITION_ELEMENTS, R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS,
-  CHOICE_TYPE_BASES, VALID_CHOICE_TYPE_SUFFIXES,
 } from './sd-wg-mappings';
 import {
   validateStructureDefinitionStatusConsistency,
   validateStructureDefinitionWgConsistency,
 } from './structure-definition-metadata-rules';
+import type {
+  ElementDefinition,
+  StructureDefinition,
+} from '../core/structure-definition-types';
+import { validateStructureDefinitionPatterns } from './structure-definition-pattern-rules';
+import {
+  validateStructureDefinitionDifferentialPaths,
+  validateStructureDefinitionElementNames,
+} from './structure-definition-element-path-rules';
 
 // ============================================================================
 // Validator
 // ============================================================================
 
 export class StructureDefinitionValidator {
-  validate(resource: any): ValidationIssue[] {
-    const rt = resource?.resourceType;
-    if (!rt) return [];
+  validate(resource: unknown): ValidationIssue[] {
+    if (!isRecord(resource) || resource.resourceType !== 'StructureDefinition') return [];
+    const sd = resource as StructureDefinition;
 
     const issues: ValidationIssue[] = [];
-
-    if (rt === 'StructureDefinition') {
-      issues.push(...validateStructureDefinitionWgConsistency(resource));
-    }
-
-    if (rt === 'StructureDefinition') {
-      issues.push(...validateStructureDefinitionStatusConsistency(resource));
-      issues.push(...this.validateExtensionFixedUrl(resource));
-      issues.push(...this.validateContextValidity(resource));
-      issues.push(...this.validateExtensionContextType(resource));
-      issues.push(...this.validateRootSlicing(resource));
-      issues.push(...this.validateElementNames(resource));
-      issues.push(...this.validateDifferentialPaths(resource));
-      issues.push(...this.validateSliceMustSupport(resource));
-      issues.push(...this.validateBaseDefinition(resource));
-      issues.push(...this.validatePatternIdent1(resource));
-      issues.push(...this.validatePatternCodingCompleteness(resource));
-    }
+    issues.push(...validateStructureDefinitionWgConsistency(sd));
+    issues.push(...validateStructureDefinitionStatusConsistency(sd));
+    issues.push(...this.validateExtensionFixedUrl(sd));
+    issues.push(...this.validateContextValidity(sd));
+    issues.push(...this.validateExtensionContextType(sd));
+    issues.push(...this.validateRootSlicing(sd));
+    issues.push(...validateStructureDefinitionElementNames(sd));
+    issues.push(...validateStructureDefinitionDifferentialPaths(sd));
+    issues.push(...this.validateSliceMustSupport(sd));
+    issues.push(...this.validateBaseDefinition(sd));
+    issues.push(...validateStructureDefinitionPatterns(sd));
 
     return issues;
   }
@@ -58,12 +59,12 @@ export class StructureDefinitionValidator {
    * Case 1: fixedUri differs from the SD's own canonical URL.
    * Case 2: derived extension overrides fixedUri (violates fixed-value rule).
    */
-  private validateExtensionFixedUrl(sd: any): ValidationIssue[] {
-    if (sd.type !== 'Extension' || !sd.url) return [];
+  private validateExtensionFixedUrl(sd: StructureDefinition): ValidationIssue[] {
+    if (sd.type !== 'Extension' || typeof sd.url !== 'string' || !sd.url) return [];
     const issues: ValidationIssue[] = [];
 
-    for (const elem of sd.differential?.element || []) {
-      if (elem.path !== 'Extension.url' || !elem.fixedUri) continue;
+    for (const elem of getDifferentialElements(sd)) {
+      if (elem.path !== 'Extension.url' || typeof elem.fixedUri !== 'string') continue;
 
       if (elem.fixedUri !== sd.url) {
         issues.push(createValidationIssue({
@@ -78,6 +79,7 @@ export class StructureDefinitionValidator {
       } else if (
         sd.baseDefinition
         && sd.baseDefinition !== 'http://hl7.org/fhir/StructureDefinition/Extension'
+        && typeof sd.baseDefinition === 'string'
         && looksLikeStructureDefinitionCanonical(sd.baseDefinition)
         && sd.url !== sd.baseDefinition
       ) {
@@ -97,13 +99,13 @@ export class StructureDefinitionValidator {
   }
 
   /** Validate context expressions — e.g. ElementDefinition.targetProfile is not valid in R4. */
-  private validateContextValidity(sd: any): ValidationIssue[] {
-    if (!Array.isArray(sd.context)) return [];
+  private validateContextValidity(sd: StructureDefinition): ValidationIssue[] {
+    const contexts = getRecordArray(sd.context);
     const issues: ValidationIssue[] = [];
 
-    for (let i = 0; i < sd.context.length; i++) {
-      const ctx = sd.context[i];
-      if (ctx?.type !== 'element' || !ctx.expression) continue;
+    for (let i = 0; i < contexts.length; i++) {
+      const ctx = contexts[i];
+      if (ctx.type !== 'element' || typeof ctx.expression !== 'string') continue;
       if (ctx.expression.startsWith('ElementDefinition.')) {
         const sub = ctx.expression.replace('ElementDefinition.', '');
         if (
@@ -124,14 +126,16 @@ export class StructureDefinitionValidator {
   }
 
   /** Extension context type review — "Element" context is suspicious. */
-  private validateExtensionContextType(sd: any): ValidationIssue[] {
-    if (sd.type !== 'Extension' || !Array.isArray(sd.context)) return [];
+  private validateExtensionContextType(sd: StructureDefinition): ValidationIssue[] {
+    const contexts = getRecordArray(sd.context);
+    if (sd.type !== 'Extension') return [];
     const issues: ValidationIssue[] = [];
 
-    for (let i = 0; i < sd.context.length; i++) {
-      const ctx = sd.context[i];
-      if (ctx?.type === 'element' && ctx.expression === 'Element') {
-        const name = sd.name || sd.id || sd.url?.split('/').pop() || 'unknown';
+    for (let i = 0; i < contexts.length; i++) {
+      const ctx = contexts[i];
+      if (ctx.type === 'element' && ctx.expression === 'Element') {
+        const canonicalName = typeof sd.url === 'string' ? sd.url.split('/').pop() : undefined;
+        const name = sd.name || sd.id || canonicalName || 'unknown';
         issues.push(createValidationIssue({
           code: 'business-rule-extension-context-element',
           path: `StructureDefinition.context[${i}]`,
@@ -147,12 +151,12 @@ export class StructureDefinitionValidator {
   }
 
   /** sdf-20: No slicing on the root element. */
-  private validateRootSlicing(sd: any): ValidationIssue[] {
-    const diffElements = sd.differential?.element || [];
+  private validateRootSlicing(sd: StructureDefinition): ValidationIssue[] {
+    const diffElements = getDifferentialElements(sd);
     if (diffElements.length === 0) return [];
 
-    const root = diffElements[0];
-    if (!root?.slicing || root.path !== sd.type) return [];
+    const rootIndex = diffElements.findIndex((element) => element.path === sd.type && element.slicing);
+    if (rootIndex < 0) return [];
 
     return [
       createValidationIssue({
@@ -164,7 +168,7 @@ export class StructureDefinitionValidator {
       }),
       createValidationIssue({
         code: 'sd-root-slicing-invalid',
-        path: 'StructureDefinition.differential.element[0]',
+        path: `StructureDefinition.differential.element[${rootIndex}]`,
         resourceType: 'StructureDefinition',
         customMessage: 'Slicing is not allowed at the root of a profile',
         severityOverride: 'error',
@@ -172,98 +176,10 @@ export class StructureDefinitionValidator {
     ];
   }
 
-  /** eld-19 / eld-20: element name constraints in differential. */
-  private validateElementNames(sd: any): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-    for (let i = 0; i < (sd.differential?.element || []).length; i++) {
-      const elem = sd.differential.element[i];
-      if (!elem?.path) continue;
-
-      const hasEmptySegment = elem.path.includes('..');
-      const parts = elem.path.split('.');
-      let eld19 = hasEmptySegment;
-      let eld20 = false;
-
-      for (const part of parts) {
-        if (!part || part === '[x]' || part.endsWith('[x]')) continue;
-        if (!eld19 && /[^a-zA-Z0-9_[\]]/.test(part)) eld19 = true;
-        const clean = part.replace(/\[x\]$/, '');
-        if (clean && !/^[A-Za-z0-9_]{1,64}$/.test(clean)) eld20 = true;
-      }
-
-      if (eld19) {
-        issues.push(createValidationIssue({
-          code: 'sd-eld-19-element-name',
-          path: `StructureDefinition.differential.element[${i}]`,
-          resourceType: 'StructureDefinition',
-          customMessage: `Constraint failed: eld-19: 'Element names cannot include some special characters'`,
-          severityOverride: 'error',
-        }));
-      }
-      if (eld20) {
-        issues.push(createValidationIssue({
-          code: 'sd-eld-20-element-name',
-          path: `StructureDefinition.differential.element[${i}]`,
-          resourceType: 'StructureDefinition',
-          customMessage: `Constraint failed: eld-20: 'Element names should be simple alphanumerics with a max of 64 characters, or code generation tools may be broken'`,
-          severityOverride: 'warning',
-        }));
-      }
-    }
-    return issues;
-  }
-
-  /** Detect bad paths in differential that would cause snapshot generation errors. */
-  private validateDifferentialPaths(sd: any): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-    const baseType = sd.type;
-    if (!baseType) return issues;
-    const knownChoicePaths = collectKnownChoicePaths(sd, baseType);
-
-    for (const elem of sd.differential?.element || []) {
-      if (!elem?.path) continue;
-      if (elem.path.includes('..')) {
-        issues.push(createValidationIssue({
-          code: 'sd-snapshot-error-bad-path', path: 'StructureDefinition',
-          resourceType: 'StructureDefinition',
-          customMessage:
-            `Error generating Snapshot: Invalid path '${elem.path}' in differential` +
-            ` in ${sd.url || 'unknown'}: name portion missing ('..') ` +
-            `(this usually arises from a problem in the differential)`,
-          severityOverride: 'error',
-        }));
-      }
-      if (elem.path.startsWith(baseType + '.')) {
-        const sub = elem.path.slice(baseType.length + 1);
-        if (!sub.includes('.')) {
-          for (const base of CHOICE_TYPE_BASES) {
-            const choicePath = `${baseType}.${base}[x]`;
-            if (!knownChoicePaths.has(choicePath)) continue;
-            if (sub.startsWith(base) && sub !== base && sub !== `${base}[x]`) {
-              const suffix = sub.slice(base.length);
-              if (suffix.length > 0 && !VALID_CHOICE_TYPE_SUFFIXES.has(suffix)) {
-                issues.push(createValidationIssue({
-                  code: 'sd-snapshot-error-bad-choice', path: 'StructureDefinition',
-                  resourceType: 'StructureDefinition',
-                  customMessage:
-                    `Error generating Snapshot: The path must be '${baseType}.${base}[x]' ` +
-                    `not '${elem.path}' when the type list is not constrained ` +
-                    `(this usually arises from a problem in the differential)`,
-                  severityOverride: 'error',
-                }));
-              }
-            }
-          }
-        }
-      }
-    }
-    return issues;
-  }
-
   /** Must-support consistency: sliced elements with mustSupport=true expect slices to match. */
-  private validateSliceMustSupport(sd: any): ValidationIssue[] {
+  private validateSliceMustSupport(sd: StructureDefinition): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-    const diffElements = sd.differential?.element || [];
+    const diffElements = getDifferentialElements(sd);
 
     for (const elem of diffElements) {
       if (!elem?.slicing || elem.mustSupport !== true) continue;
@@ -287,70 +203,13 @@ export class StructureDefinitionValidator {
     return issues;
   }
 
-  /**
-   * Apply Identifier ident-1 ("Identifier with no value has limited
-   * utility") to any patternIdentifier / fixedIdentifier value declared
-   * on a differential element. Java raises this warning whenever the
-   * pattern carries only a system/use without value or extension —
-   * see R5.cw-slice-adds-base baseline. Hard-coded here rather than via
-   * a generic pattern-as-instance evaluator; expand this list as more
-   * pattern-typed constraints come up in conformance baselines.
-   */
-  private validatePatternIdent1(sd: any): ValidationIssue[] {
-    const elements = sd?.differential?.element || [];
-    const issues: ValidationIssue[] = [];
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-      const ident = el?.patternIdentifier || el?.fixedIdentifier;
-      if (!ident || typeof ident !== 'object') continue;
-      const hasValue = typeof ident.value === 'string' && ident.value.length > 0;
-      const hasExtension = Array.isArray(ident.extension) && ident.extension.length > 0;
-      if (hasValue || hasExtension) continue;
-      const fieldKey = el.patternIdentifier ? 'patternIdentifier' : 'fixedIdentifier';
-      issues.push(createValidationIssue({
-        code: 'sd-pattern-ident-1',
-        path: `StructureDefinition.differential.element[${i}].${fieldKey}`,
-        resourceType: 'StructureDefinition',
-        customMessage:
-          `Constraint failed: ident-1: 'Identifier with no value has limited utility.  ` +
-          `If communicating that an identifier value has been suppressed or missing, ` +
-          `the value element SHOULD be present with an extension indicating the missing ` +
-          `semantic - e.g. data-absent-reason' (defined in http://hl7.org/fhir/StructureDefinition/Identifier)`,
-        severityOverride: 'warning',
-      }));
-    }
-    return issues;
-  }
-
-  private validatePatternCodingCompleteness(sd: any): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-    const elements = [
-      ...(Array.isArray(sd?.differential?.element) ? sd.differential.element : []),
-      ...(Array.isArray(sd?.snapshot?.element) ? sd.snapshot.element : []),
-    ];
-
-    elements.forEach((element: any, elementIndex: number) => {
-      const concept = element?.patternCodeableConcept ?? element?.fixedCodeableConcept;
-      if (!concept || !Array.isArray(concept.coding)) return;
-
-      concept.coding.forEach((coding: any, codingIndex: number) => {
-        if (typeof coding?.system !== 'string' || coding.system.length === 0 || coding.code != null) return;
-        issues.push(createValidationIssue({
-          code: 'sd-pattern-coding-missing-code',
-          path: `StructureDefinition.differential.element[${elementIndex}].pattern.ofType(CodeableConcept).coding[${codingIndex}].code`,
-          resourceType: 'StructureDefinition',
-          customMessage: `No code provided for CodeSystem '${coding.system}'`,
-          severityOverride: 'warning',
-        }));
-      });
-    });
-
-    return issues;
-  }
-
   /** Detect self-referencing baseDefinition (circular). */
-  private validateBaseDefinition(sd: any): ValidationIssue[] {
-    if (!sd.baseDefinition || sd.baseDefinition !== sd.url) return [];
+  private validateBaseDefinition(sd: StructureDefinition): ValidationIssue[] {
+    if (
+      typeof sd.baseDefinition !== 'string' ||
+      typeof sd.url !== 'string' ||
+      sd.baseDefinition !== sd.url
+    ) return [];
     return [createValidationIssue({
       code: 'sd-base-circular',
       path: 'StructureDefinition',
@@ -362,30 +221,23 @@ export class StructureDefinitionValidator {
   }
 }
 
-function collectKnownChoicePaths(sd: any, baseType: string): Set<string> {
-  const paths = new Set<string>();
+function getDifferentialElements(sd: StructureDefinition): ElementDefinition[] {
+  return getElementArray(sd.differential);
+}
 
-  for (const element of [
-    ...(Array.isArray(sd?.snapshot?.element) ? sd.snapshot.element : []),
-    ...(Array.isArray(sd?.differential?.element) ? sd.differential.element : []),
-  ]) {
-    if (typeof element?.path === 'string' && element.path.includes('[x]')) {
-      paths.add(element.path);
-    }
-  }
+function getElementArray(section: unknown): ElementDefinition[] {
+  if (!isRecord(section) || !Array.isArray(section.element)) return [];
+  return section.element.filter(isRecord) as ElementDefinition[];
+}
 
-  if (baseType === 'Extension') {
-    paths.add('Extension.value[x]');
-  }
-  if (baseType === 'Observation') {
-    paths.add('Observation.value[x]');
-  }
+function getRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
 
-  return paths;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function looksLikeStructureDefinitionCanonical(value: string): boolean {
   return /\/StructureDefinition\/[^/]+$/.test(value);
 }
-
-export const structureDefinitionValidator = new StructureDefinitionValidator();

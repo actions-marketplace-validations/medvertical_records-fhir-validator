@@ -6,6 +6,9 @@ import { getKnownValueSetExpansion } from './valueset-known-expansions';
 import type { ValueSetCache } from './valueset-cache';
 import type { TerminologyApiClient } from './terminology-api-client';
 import type { ValueSetPackageLoader } from './valueset-package-loader';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
+import { canDelegateValueSetExpansion } from './valueset-delegation-policy';
 
 /**
  * ValueSet → code-set expansion, extracted from valueset-validator.ts.
@@ -41,17 +44,24 @@ export async function expandValueSet(
   const baseUrl = valueSetUrl.split('|')[0];
   const expandedCodes = new Set<string>();
   const strategy = resolutionConfig.strategy;
+  const canDelegate = canDelegateValueSetExpansion(resolutionConfig);
 
   try {
-    if (strategy === 'server-first') {
+    if (strategy === 'server-first' && canDelegate) {
       const serverExpansion = await apiClient.expandValueSet(baseUrl);
       if (serverExpansion && serverExpansion.size > 0) {
         serverExpansion.forEach(code => expandedCodes.add(code));
         cache.setExpandedCodes(cacheKey, expandedCodes);
-        logger.debug(`[ValueSetValidator] Server-First: Expanded ${valueSetUrl} with ${expandedCodes.size} codes from server`);
+        logger.debug('[ValueSetValidator] Server-first expansion succeeded', {
+          ...terminologyTargetMetadata(valueSetUrl),
+          codeCount: expandedCodes.size,
+        });
         return expandedCodes;
       }
-      logger.debug(`[ValueSetValidator] Server-First: Server failed, falling back to local for ${valueSetUrl}`);
+      logger.debug(
+        '[ValueSetValidator] Server-first expansion unavailable; falling back to local',
+        terminologyTargetMetadata(valueSetUrl),
+      );
     }
 
     // 1. Try known expansions
@@ -71,21 +81,29 @@ export async function expandValueSet(
     }
 
     // 3. Local-First only: Try server as fallback
-    if (strategy === 'local-first') {
+    if (strategy === 'local-first' && canDelegate) {
       const serverExpansion = await apiClient.expandValueSet(baseUrl);
       if (serverExpansion && serverExpansion.size > 0) {
         serverExpansion.forEach(code => expandedCodes.add(code));
         cache.setExpandedCodes(cacheKey, expandedCodes);
-        logger.debug(`[ValueSetValidator] Local-First: Used server fallback for ${valueSetUrl}, got ${expandedCodes.size} codes`);
+        logger.debug('[ValueSetValidator] Local-first server fallback succeeded', {
+          ...terminologyTargetMetadata(valueSetUrl),
+          codeCount: expandedCodes.size,
+        });
         return expandedCodes;
       }
     }
 
-    logger.debug(`[ValueSetValidator] ValueSet ${valueSetUrl} not found (strategy: ${strategy})`);
+    logger.debug('[ValueSetValidator] ValueSet not found', {
+      ...terminologyTargetMetadata(valueSetUrl),
+      strategy,
+    });
 
   } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn(`[ValueSetValidator] Failed to expand ${valueSetUrl}:`, err.message);
+    logger.warn(
+      '[ValueSetValidator] Failed to expand ValueSet',
+      validationFailureMetadata(error),
+    );
   }
 
   // Cache even if empty

@@ -15,6 +15,9 @@
 import { recordsValidator } from '../../index';
 import { logger as _logger } from '../../logger';
 
+const validateR4 = (resource: unknown, profileUrl?: string) =>
+  recordsValidator.validateRequest({ resource, profileUrl, fhirVersion: 'R4' });
+
 // Profile URLs
 const MII_PATIENT_PROFILE = 'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/Patient';
 const US_CORE_PATIENT_PROFILE = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient';
@@ -103,16 +106,15 @@ function _groupIssuesByCategory(issues: ValidationIssueNormalized[]): Map<string
 
 describe('Profile Validation Matrix', () => {
   beforeAll(async () => {
-    await recordsValidator.validate({ resourceType: 'Patient' }, undefined, 'R4').catch(() => {});
+    await validateR4({ resourceType: 'Patient' }).catch(() => {});
   }, 120000);
 
   describe('MII Patient Profile', () => {
     // Requires sub-element cardinality checking within complex types (not yet implemented)
     it('should report missing required sub-elements (name.family) and mustSupport (name.given)', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_MII_MISSING_REQUIRED,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
@@ -139,10 +141,9 @@ describe('Profile Validation Matrix', () => {
     }, 120000);
 
     it('should report missing mustSupport elements', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_MII_MISSING_REQUIRED,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
@@ -161,10 +162,9 @@ describe('Profile Validation Matrix', () => {
 
   describe('US Core Patient Profile', () => {
     it('should report missing required elements or mustSupport constraints', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_US_CORE_MISSING_REQUIRED,
         US_CORE_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
@@ -185,10 +185,9 @@ describe('Profile Validation Matrix', () => {
 
   describe('UK Core Patient Profile', () => {
     it('should report missing required elements', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_UK_CORE_MISSING_REQUIRED,
         UK_CORE_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
@@ -206,10 +205,9 @@ describe('Profile Validation Matrix', () => {
 
   describe('Issue Category Coverage', () => {
     it('should report all expected issue categories', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_MII_MISSING_REQUIRED,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);

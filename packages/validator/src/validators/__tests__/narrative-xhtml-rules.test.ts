@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { evaluateHtmlChecksConstraint } from '../fhirpath-html-checks';
 import { validateNarrativeDiv } from '../narrative-xhtml-rules';
 
 describe('Narrative XHTML attribute validation', () => {
@@ -57,6 +58,46 @@ describe('Narrative XHTML attribute validation', () => {
     }));
     expect(issues).toContainEqual(expect.objectContaining({
       code: 'narrative-txt1-violation',
+    }));
+  });
+});
+
+describe('htmlChecks() on non-narrative xhtml fragments', () => {
+  it('accepts a bare element fragment without demanding a narrative root div', () => {
+    const issues = evaluateHtmlChecksConstraint(
+      'htmlChecks()',
+      "<img src='data:image/png;base64,AAAA'/>",
+      'Questionnaire.item.answerOption.value[x].display.extension[0].valueString',
+      'Questionnaire',
+    );
+
+    expect(issues).toEqual([]);
+  });
+
+  it('still applies the full narrative contract to Narrative.div contexts', () => {
+    const issues = evaluateHtmlChecksConstraint(
+      'htmlChecks()',
+      '<p>no root div</p>',
+      'Questionnaire.text.div',
+      'Questionnaire',
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'narrative-invalid-root',
+    }));
+  });
+
+  it('keeps the content policy for fragments', () => {
+    const issues = evaluateHtmlChecksConstraint(
+      'htmlChecks()',
+      '<script>alert(1)</script>',
+      'Questionnaire.item.text.extension[0].valueString',
+      'Questionnaire',
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'narrative-forbidden-content',
+      path: 'Questionnaire.item.text.extension[0].valueString',
     }));
   });
 });

@@ -1,113 +1,51 @@
-import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
+import { getValidationTargets } from '../business-rules/element-validation-targets';
 
-export function getEvaluationContext(resource: any, elementPath: string): any {
-  if (elementPath === resource?.resourceType) return resource;
+export function getEvaluationContext(
+  resource: unknown,
+  elementPath: string,
+): unknown {
+  const values = getValidationTargets(resource, elementPath)
+    .map(target => target.value)
+    .filter(isPresent);
 
-  const segments = elementPath.split('.');
-  if (segments.length > 1 && segments[0] === resource.resourceType) segments.shift();
-  if (segments.length === 0) return resource;
-
-  let current: any = resource;
-  for (const segment of segments) {
-    if (!current || typeof current !== 'object') return resource;
-    const arrayMatch = segment.match(/^(.+)\[(\d+)\]$/);
-    if (arrayMatch) {
-      const fieldName = arrayMatch[1];
-      const index = parseInt(arrayMatch[2], 10);
-      if (!current[fieldName] || !Array.isArray(current[fieldName])) return resource;
-      if (index >= current[fieldName].length) return resource;
-      current = current[fieldName][index];
-    } else {
-      current = resolveFhirSegmentValue(current, segment);
-    }
-  }
-  return current === undefined || current === null ? undefined : current;
+  if (values.length === 0) return undefined;
+  return values.length === 1 ? values[0] : values;
 }
 
-export function elementExistsInResource(resource: any, elementPath: string): boolean {
-  if (!resource || !elementPath) return false;
-  if (elementPath === resource.resourceType) return true;
-
-  const segments = elementPath.split('.');
-  const resourceType = resource.resourceType;
-  if (segments.length > 1 && segments[0] === resourceType) segments.shift();
-  if (segments.length === 0) return true;
-
-  let current: any = resource;
-  for (const segment of segments) {
-    const arrayMatch = segment.match(/^(.+)\[(\d+)\]$/);
-    if (arrayMatch) {
-      const fieldName = arrayMatch[1];
-      const index = parseInt(arrayMatch[2], 10);
-
-      if (!current[fieldName] || !Array.isArray(current[fieldName])) {
-        return false;
-      }
-      if (index >= current[fieldName].length) {
-        return false;
-      }
-      current = current[fieldName][index];
-    } else {
-      const value = resolveFhirSegmentValue(current, segment);
-      if (value === undefined || value === null) {
-        return false;
-      }
-      current = value;
-    }
-  }
-
-  return true;
+export function elementExistsInResource(
+  resource: unknown,
+  elementPath: string,
+): boolean {
+  if (!elementPath) return false;
+  return getValidationTargets(resource, elementPath)
+    .some(target => isPresent(target.value));
 }
 
-export function hasEmptyBackboneElement(resource: any, elementPath: string): boolean {
-  if (!resource || !elementPath) return false;
-  const segments = elementPath.split('.');
-  if (segments.length > 1 && segments[0] === resource.resourceType) segments.shift();
-  if (segments.length === 0) return false;
+export function hasEmptyBackboneElement(
+  resource: unknown,
+  elementPath: string,
+): boolean {
+  if (!elementPath) return false;
+  return getValidationTargets(resource, elementPath)
+    .some(target => isEmptyBackboneValue(target.value));
+}
 
-  let current: any = resource;
-  for (let i = 0; i < segments.length - 1; i++) {
-    const segment = segments[i];
-    const arrayMatch = segment.match(/^(.+)\[(\d+)\]$/);
+function isEmptyBackboneValue(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 0 || keys.every(key => isEmptyChildValue(value[key]));
+}
 
-    if (arrayMatch) {
-      const fieldName = arrayMatch[1];
-      const index = parseInt(arrayMatch[2], 10);
-      if (!current[fieldName] || !Array.isArray(current[fieldName]) || index >= current[fieldName].length) {
-        return false;
-      }
-      current = current[fieldName][index];
-    } else {
-      if (current[segment] === undefined || current[segment] === null) {
-        return false;
-      }
-      current = current[segment];
-    }
-  }
+function isEmptyChildValue(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  return isRecord(value) && Object.keys(value).length === 0;
+}
 
-  const lastSegment = segments[segments.length - 1];
-  const value = current[lastSegment];
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== undefined && value !== null;
+}
 
-  if (value === undefined || value === null) {
-    return false;
-  }
-
-  if (Array.isArray(value)) {
-    return value.some(item => {
-      if (item === null || item === undefined) return false;
-      if (typeof item !== 'object') return false;
-      const keys = Object.keys(item);
-      return keys.length === 0 || keys.every(k =>
-        item[k] === undefined || item[k] === null ||
-        (typeof item[k] === 'object' && Object.keys(item[k]).length === 0)
-      );
-    });
-  }
-
-  if (typeof value === 'object') {
-    const keys = Object.keys(value);
-    return keys.length === 0;
-  }
-
-  return false;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

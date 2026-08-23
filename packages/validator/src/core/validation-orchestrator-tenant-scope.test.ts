@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TerminologyResourceValidator } from '../validators/terminology-resource-validator';
 import { runAllAspectValidations } from './validation-orchestrator';
 
 const disabledAspects = {
@@ -39,7 +40,8 @@ describe('custom-rule tenant scope', () => {
       settings: { aspects: disabledAspects },
       organizationId: 42,
     }, deps.structural as never, deps.profile as never, deps.terminology as never,
-    deps.invariant as never, deps.custom as never, deps.metadata as never, deps.reference as never);
+    deps.invariant as never, deps.custom as never, deps.metadata as never, deps.reference as never,
+    new TerminologyResourceValidator());
 
     expect(customValidate).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 42 }));
   });
@@ -56,7 +58,8 @@ describe('custom-rule tenant scope', () => {
       structureDef: {} as never,
       strictMode: false,
     }, deps.structural as never, deps.profile as never, deps.terminology as never,
-    deps.invariant as never, deps.custom as never, deps.metadata as never, deps.reference as never);
+    deps.invariant as never, deps.custom as never, deps.metadata as never, deps.reference as never,
+    new TerminologyResourceValidator());
 
     expect(customValidate).not.toHaveBeenCalled();
   });
@@ -96,7 +99,7 @@ describe('validation issue profile attribution', () => {
         },
       },
     }, structural as never, noop as never, noop as never, noop as never,
-    noop as never, noop as never, noop as never);
+    noop as never, noop as never, noop as never, new TerminologyResourceValidator());
 
     expect(result[0]).toMatchObject({ profile: profileUrl });
     expect(result[0].id).not.toBe('unscoped-id');
@@ -123,7 +126,7 @@ describe('validation issue profile attribution', () => {
       strictMode: false,
       settings: { aspects: { structural: { enabled: true } } },
     }, structural as never, noop as never, noop as never, noop as never,
-    noop as never, noop as never, noop as never);
+    noop as never, noop as never, noop as never, new TerminologyResourceValidator());
 
     expect(result[0].profile).toBe(extensionProfile);
   });

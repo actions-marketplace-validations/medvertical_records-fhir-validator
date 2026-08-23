@@ -6,13 +6,15 @@
 
 import type { ValidationIssue } from '../types';
 import { RESOURCE_METADATA_REQUIREMENTS } from './metadata-types';
+import { isObjectRecord } from './metadata-boundary-utils';
+import { createMetadataIssue } from './metadata-issue';
 
 /**
  * Validate required metadata based on resource type
  */
-export function validateRequiredMetadata(resource: any, resourceType: string): ValidationIssue[] {
+export function validateRequiredMetadata(resource: unknown, resourceType: string): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const meta = resource?.meta && typeof resource.meta === 'object' && !Array.isArray(resource.meta)
+  const meta = isObjectRecord(resource) && isObjectRecord(resource.meta)
     ? resource.meta
     : null;
 
@@ -53,27 +55,20 @@ export function validateRequiredMetadata(resource: any, resourceType: string): V
     }
 
     if (!isPresent) {
-      issues.push({
-        id: `metadata-required-field-missing-${resourceType}-${field}-${Date.now()}`,
-        aspect: 'metadata',
-        severity: severity,
+      issues.push(createMetadataIssue({
         code: `required-metadata-missing-${field}`,
+        severity,
         message: `${resourceType} resource is missing recommended metadata field: meta.${field}`,
         path: `meta.${field}`,
         humanReadable: reason,
-        details: {
-          fieldPath: `meta.${field}`,
-          resourceType: resourceType,
-          requiredField: field,
-          severity: severity,
-          reason: reason,
-          validationType: 'required-metadata-check'
-        },
+        resourceType,
         validationMethod: 'required-metadata-check',
-        timestamp: new Date().toISOString(),
-        resourceType: resourceType,
-        schemaVersion: 'R4'
-      });
+        details: {
+          requiredField: field,
+          severity,
+          reason,
+        },
+      }));
     }
   }
 

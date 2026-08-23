@@ -1,18 +1,56 @@
 import type { BatchValidationOptions } from './core/batch-validator';
 import type { FhirClientLike } from './core/profile-loader-utils';
 import type { ValidationIssue, ValidationSettings } from './types';
+import { computeValidationIssueId } from '@records-fhir/validation-types';
+import { createSafeValidationFailureMessage } from './utils/validation-execution-failure';
 
 type InternalFhirVersion = 'R4' | 'R5' | 'R6';
 
 /**
  * Public-API FHIR version literal. R4B is accepted on every entry point and
- * routed internally as R4, matching R4B's maintenance-release semantics.
+ * routed to the explicit R4 maintenance adapter while retaining its package
+ * identity through resolveFhirReleaseContext().
  */
 export type PublicFhirVersion = 'R4' | 'R4B' | 'R5' | 'R6';
 
+export interface FhirReleaseContext {
+  publicVersion: PublicFhirVersion;
+  engineVersion: InternalFhirVersion;
+  corePackage: string;
+  fhirPathModel: 'r4' | 'r5';
+  compatibilityMode: 'native' | 'r4b-maintenance-adapter';
+}
+
+/**
+ * Preserve the selected release and make the R4B compatibility boundary
+ * machine-readable instead of silently flattening it to R4.
+ */
+export function resolveFhirReleaseContext(v: PublicFhirVersion): FhirReleaseContext {
+  if (v === 'R4B') {
+    return {
+      publicVersion: 'R4B',
+      engineVersion: 'R4',
+      corePackage: 'hl7.fhir.r4b.core#4.3.0',
+      fhirPathModel: 'r4',
+      compatibilityMode: 'r4b-maintenance-adapter',
+    };
+  }
+  return {
+    publicVersion: v,
+    engineVersion: v,
+    corePackage: v === 'R4'
+      ? 'hl7.fhir.r4.core#4.0.1'
+      : v === 'R5'
+        ? 'hl7.fhir.r5.core#5.0.0'
+        : 'hl7.fhir.r6.core#6.0.0-ballot4',
+    fhirPathModel: v === 'R4' ? 'r4' : 'r5',
+    compatibilityMode: 'native',
+  };
+}
+
 /** Map a public-API FHIR version to the internal validator's accepted version. */
 export function toInternalFhirVersion(v: PublicFhirVersion): InternalFhirVersion {
-  return v === 'R4B' ? 'R4' : v;
+  return resolveFhirReleaseContext(v).engineVersion;
 }
 
 export interface PublicValidationRequest {
@@ -176,7 +214,7 @@ function validateIndividually(
           throw error;
         }
         return createPublicValidationResult(request, index, [
-          createValidationExecutionErrorIssue(error, index),
+          createValidationExecutionErrorIssue(index),
         ]);
       }
     },
@@ -213,8 +251,14 @@ function getIssueList(
   resultMap: Map<unknown, ValidationIssue[]> | Map<unknown, unknown>,
   resource: unknown,
 ): ValidationIssue[] {
+  if (!(resultMap instanceof Map) || !resultMap.has(resource)) {
+    throw new Error('Batch validation returned no result for an input resource');
+  }
   const result = resultMap.get(resource);
-  return Array.isArray(result) ? result as ValidationIssue[] : [];
+  if (!Array.isArray(result)) {
+    throw new Error('Batch validation returned a malformed issue list');
+  }
+  return result as ValidationIssue[];
 }
 
 function createPublicValidationResult(
@@ -245,16 +289,26 @@ function getResourceMetadata(resource: unknown): { resourceType?: string; id?: s
   };
 }
 
-function createValidationExecutionErrorIssue(error: unknown, index: number): ValidationIssue {
-  const message = error instanceof Error ? error.message : String(error);
+function createValidationExecutionErrorIssue(index: number): ValidationIssue {
+  const message = createSafeValidationFailureMessage('Validation');
+  const details = {
+    inputIndex: index,
+  };
   return {
-    id: `records-validation-execution-error-${index}`,
+    id: computeValidationIssueId({
+      aspect: 'general',
+      severity: 'error',
+      code: 'validation-execution-error',
+      message,
+      path: '',
+      details,
+    }),
     aspect: 'general',
     severity: 'error',
     code: 'validation-execution-error',
-    message: `Validation failed: ${message}`,
+    message,
     path: '',
     timestamp: new Date(),
-    details: { inputIndex: index },
+    details,
   };
 }

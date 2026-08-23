@@ -37,6 +37,11 @@ export const ProfileCodes = {
         severity: 'error',
         description: 'A matched slice does not satisfy a pattern',
     },
+    'profile-slice-ambiguous-match': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Element matches more than one slice',
+    },
     'profile-slice-min-cardinality': {
         aspect: 'profile',
         severity: 'error',
@@ -86,6 +91,11 @@ export const ProfileCodes = {
         aspect: 'profile',
         severity: 'warning',
         description: 'Extension not defined in profile',
+    },
+    'profile-extension-context-wrong': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Extension used outside the contexts its StructureDefinition declares',
     },
     'profile-extension-modifier-mismatch': {
         aspect: 'profile',

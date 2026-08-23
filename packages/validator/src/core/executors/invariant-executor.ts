@@ -10,13 +10,16 @@ import type { ValidationIssue } from '../../types';
 import type { StructureDefinition } from '../structure-definition-types';
 import { resourceSpecificConstraintsValidator } from '../../validators/resource-specific-constraints-validator';
 import { logger } from '../../logger';
+import { createExecutorFailureIssue } from './executor-failure-issue';
+import { profileCanonicalMetadata } from '../../utils/sensitive-logging-metadata';
+import { resourceTypeOf } from '../fhir-resource';
 
 // ============================================================================
 // Types
 // ============================================================================
 
 export interface InvariantValidationContext {
-  resource: any;
+  resource: unknown;
   structureDef: StructureDefinition;
   profileUrl: string;
   existingIssues?: ValidationIssue[];
@@ -46,7 +49,10 @@ export class InvariantExecutor {
     try {
       const { resource, profileUrl, existingIssues = [] } = context;
       
-      logger.debug(`[InvariantExecutor] Validating invariant aspect for ${resource.resourceType} against ${profileUrl}`);
+      logger.debug('[InvariantExecutor] Validating invariant aspect', {
+        resourceType: resourceTypeOf(resource),
+        ...profileCanonicalMetadata(profileUrl),
+      });
 
       // Resource-specific hand-coded constraint validators (obs-3/6/7, ait-1/2, cmp-1/2, etc.)
       // These replace FHIRPath evaluation for well-known constraints with more specific error codes.
@@ -55,17 +61,9 @@ export class InvariantExecutor {
 
       return issues;
 
-    } catch (error) {
-      logger.error('[InvariantExecutor] Validation error:', error);
-      return [{
-        id: `invariant-executor-error-${Date.now()}`,
-        aspect: 'invariant',
-        severity: 'error',
-        code: 'validation-error',
-        message: `Invariant validation failed: ${error instanceof Error ? error.message : String(error)}`,
-        path: '',
-        timestamp: new Date()
-      }];
+    } catch {
+      logger.error('[InvariantExecutor] Validation failed');
+      return [createExecutorFailureIssue('invariant', 'Invariant')];
     }
   }
 }

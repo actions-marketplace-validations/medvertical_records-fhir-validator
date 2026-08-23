@@ -110,16 +110,14 @@ export function normalizeElementPath(path: string): string {
 }
 
 export function identifyExtensionUrl(element: ElementDefinition): string | undefined {
-  const elementAny = element as ElementDefinition & { fixedUri?: string; patternUri?: string };
-
-  if (elementAny.fixedUri) {
-    return normalizeExtensionUrlForMatching(elementAny.fixedUri);
+  if (typeof element.fixedUri === 'string' && element.fixedUri.length > 0) {
+    return normalizeExtensionUrlForMatching(element.fixedUri);
   }
-  if (elementAny.patternUri) {
-    return normalizeExtensionUrlForMatching(elementAny.patternUri);
+  if (typeof element.patternUri === 'string' && element.patternUri.length > 0) {
+    return normalizeExtensionUrlForMatching(element.patternUri);
   }
 
-  const extensionType = elementAny.type?.find((t: any) => t.code === 'Extension');
+  const extensionType = element.type?.find(type => type.code === 'Extension');
   if (extensionType?.profile && extensionType.profile.length > 0) {
     return normalizeExtensionUrlForMatching(extensionType.profile[0]);
   }
@@ -132,8 +130,7 @@ export function normalizeExtensionUrlForMatching(url: string): string {
 }
 
 export function extractExtensionProfileUrl(element: ElementDefinition): string | undefined {
-  const elementAny = element as ElementDefinition & { type?: Array<{ code: string; profile?: string[] }> };
-  const extensionType = elementAny.type?.find((t: any) => t.code === 'Extension');
+  const extensionType = element.type?.find(type => type.code === 'Extension');
   if (extensionType?.profile && extensionType.profile.length > 0) {
     return extensionType.profile[0];
   }

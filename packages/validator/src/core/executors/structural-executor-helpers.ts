@@ -18,7 +18,8 @@ import { resolveFhirSegmentValue } from '../fhir-primitive-sidecar';
 const PRIMITIVE_TYPES = new Set([
     'boolean', 'integer', 'string', 'decimal', 'uri', 'url', 'canonical',
     'base64Binary', 'instant', 'date', 'dateTime', 'time', 'code',
-    'oid', 'id', 'markdown', 'unsignedInt', 'positiveInt'
+    'oid', 'id', 'markdown', 'unsignedInt', 'positiveInt',
+    'uuid', 'xhtml', 'integer64'
 ]);
 
 /**
@@ -35,15 +36,15 @@ export function isPrimitiveType(typeCode: string): boolean {
 /**
  * Get direct value from resource using simple path (for fallback checking)
  */
-export function getDirectValue(resource: any, path: string): any {
+export function getDirectValue(resource: unknown, path: string): unknown {
     const parts = path.split('.');
 
     // Remove resource type prefix
-    if (parts[0] === resource?.resourceType) {
+    if (parts[0] === resolveFhirSegmentValue(resource, 'resourceType')) {
         parts.shift();
     }
 
-    let current: any = resource;
+    let current: unknown = resource;
     for (const part of parts) {
         if (current === undefined || current === null) {
             return undefined;
@@ -75,7 +76,7 @@ export function getDirectValue(resource: any, path: string): any {
  * Get nested value from object using dot notation
  * Handles simple property access (e.g., "system" from { system: "..." })
  */
-export function getNestedValue(obj: any, path: string): any {
+export function getNestedValue(obj: unknown, path: string): unknown {
     if (!path || path === '.') {
         return obj;
     }
@@ -86,7 +87,7 @@ export function getNestedValue(obj: any, path: string): any {
         return obj;
     }
 
-    let current = obj;
+    let current: unknown = obj;
 
     for (const part of parts) {
         // If current is null/undefined, we can't continue
@@ -132,7 +133,7 @@ export function getNestedValue(obj: any, path: string): any {
 /**
  * Check if a value is empty (missing or has no meaningful content)
  */
-export function isValueEmpty(value: any): boolean {
+export function isValueEmpty(value: unknown): boolean {
     // Undefined or null is empty
     if (value === undefined || value === null) {
         return true;

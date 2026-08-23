@@ -49,6 +49,11 @@ describe('Element Path Resolver', () => {
       expect(result.parentPath).toBe('Patient.contact.name');
       expect(result.depth).toBe(3);
     });
+
+    it('rejects empty path segments', () => {
+      expect(() => parseElementPath('')).toThrow('Invalid element path');
+      expect(() => parseElementPath('Patient..name')).toThrow('Invalid element path');
+    });
   });
 
   describe('getParentPath', () => {
@@ -202,6 +207,21 @@ describe('Element Path Resolver', () => {
       };
       expect(hasParentElement(patient, 'Patient.communication.language')).toBe(true);
     });
+
+    it('resolves indexed parent paths emitted by validation targets', () => {
+      const patient = {
+        resourceType: 'Patient',
+        identifier: [{ value: 'first' }, { value: 'second' }],
+      };
+
+      expect(hasParentElement(patient, 'Patient.identifier[1].system')).toBe(true);
+      expect(hasParentElement(patient, 'Patient.identifier[2].system')).toBe(false);
+    });
+
+    it('returns false for malformed resources without throwing', () => {
+      expect(hasParentElement(null, 'Patient.name.given')).toBe(false);
+      expect(_hasAllAncestors(42, 'Patient.name.given')).toBe(false);
+    });
   });
 
   describe('shouldValidateRequired - Integration', () => {
@@ -239,6 +259,16 @@ describe('Element Path Resolver', () => {
         }]
       };
       expect(shouldValidateRequired(patient, 'Patient.contact.name.given')).toBe(true);
+    });
+
+    it('validates indexed children only when the selected parent exists', () => {
+      const patient = {
+        resourceType: 'Patient',
+        identifier: [{ value: 'first' }],
+      };
+
+      expect(shouldValidateRequired(patient, 'Patient.identifier[0].system')).toBe(true);
+      expect(shouldValidateRequired(patient, 'Patient.identifier[1].system')).toBe(false);
     });
 
     it('should return false for deeply nested when intermediate parent missing', () => {
@@ -325,6 +355,18 @@ describe('Element Path Resolver', () => {
         expect(isArrayAtPath(patient, 'Patient.name')).toBe(true);
         expect(isArrayAtPath(patient, 'Patient.gender')).toBe(false);
       });
+
+      it('checks every repeated parent instead of only the first entry', () => {
+        const patient = {
+          resourceType: 'Patient',
+          contact: [
+            { name: { family: 'No telecom here' } },
+            { telecom: [{ system: 'email' }] },
+          ],
+        };
+
+        expect(isArrayAtPath(patient, 'Patient.contact.telecom')).toBe(true);
+      });
     });
 
     describe('expandPathWithArrayIndex', () => {
@@ -378,6 +420,41 @@ describe('Element Path Resolver', () => {
         expect(targets[0].fullPath).toBe('Condition.abatementString');
         expect(targets[0].contextPath).toBe('Condition');
         expect(targets[0].isArrayElement).toBe(false);
+      });
+
+      it('does not treat ordinary properties with choice-like prefixes as value[x]', () => {
+        const observation = {
+          resourceType: 'Observation',
+          valueSet: 'http://example.org/ValueSet/not-a-choice',
+          valueString: 'resolved choice',
+        };
+
+        const targets = getValidationTargets(observation, 'Observation.value[x]');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].value).toBe('resolved choice');
+        expect(targets[0].fullPath).toBe('Observation.valueString');
+      });
+
+      it('traverses the concrete primitive choice sidecar despite prefix collisions', () => {
+        const extension = {
+          url: 'http://example.org/StructureDefinition/value-extension',
+        };
+        const observation = {
+          resourceType: 'Observation',
+          valueSet: 'http://example.org/ValueSet/not-a-choice',
+          valueString: 'resolved choice',
+          _valueString: { extension: [extension] },
+        };
+
+        const targets = getValidationTargets(
+          observation,
+          'Observation.value[x].extension',
+        );
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].value).toBe(extension);
+        expect(targets[0].fullPath).toBe('Observation.valueString.extension[0]');
       });
 
       it('should expand array into multiple targets', () => {

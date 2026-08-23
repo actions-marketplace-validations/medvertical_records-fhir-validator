@@ -1,5 +1,6 @@
 import type { ValidationIssue } from '../types';
 import type { StructureDefinition } from './structure-definition-types';
+import { createValidationErrorIssue } from './validation-utils';
 
 export function getStructureDefinitionResourceType(
   structureDef: StructureDefinition | null | undefined,
@@ -35,20 +36,18 @@ export function createProfileResourceTypeMismatchIssue(
   resourceType: string,
   profileResourceType: string,
 ): ValidationIssue {
-  return {
-    id: `records-profile-resource-type-mismatch-${Date.now()}`,
-    aspect: 'structural',
-    severity: 'error',
-    code: 'structural-resource-type-mismatch',
-    message:
+  return createValidationErrorIssue(
+    'structural',
+    'structural-resource-type-mismatch',
+    (
       `Profile ${profileUrl} is for ${profileResourceType}, but the resource is ${resourceType}; ` +
-      `validated against base ${resourceType} instead.`,
-    path: 'meta.profile',
-    timestamp: new Date(),
-    details: {
+      `validated against base ${resourceType} instead.`
+    ),
+    {
       profile: profileUrl,
       profileResourceType,
       resourceType,
     },
-  };
+    'meta.profile',
+  );
 }

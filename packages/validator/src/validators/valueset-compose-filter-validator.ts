@@ -7,23 +7,32 @@ import {
   isTxOnlySystem,
   parseSystemVersionCode,
 } from './terminology-resource-utils';
+import type {
+  CodeSystem,
+  CodeSystemFilterDefinition,
+  CodeSystemPropertyDefinition,
+} from './valueset-types';
+import { ValueSetCache } from './valueset-cache';
+
+type ObjectRecord = Record<string, unknown>;
 
 /**
  * Validate the `filter[]` array on a compose.include or compose.exclude entry.
  */
 export function validateValueSetComposeFilters(
-  entry: any,
+  entry: unknown,
   pathPrefix: string,
+  cache: ValueSetCache = new ValueSetCache(),
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  if (!entry || !Array.isArray(entry.filter)) return issues;
+  if (!isObjectRecord(entry) || !Array.isArray(entry.filter)) return issues;
 
   const systemUrl: string | undefined = typeof entry.system === 'string' ? entry.system : undefined;
-  const targetCs = getCachedCodeSystem(systemUrl);
+  const targetCs = getCachedCodeSystem(systemUrl, cache);
 
   for (let f = 0; f < entry.filter.length; f++) {
     const filter = entry.filter[f];
-    if (!filter || typeof filter !== 'object') continue;
+    if (!isObjectRecord(filter)) continue;
 
     const filterPath = `${pathPrefix}.filter[${f}]`;
     const op = typeof filter.op === 'string' ? filter.op : '';
@@ -36,6 +45,7 @@ export function validateValueSetComposeFilters(
     if (
       targetCs &&
       property &&
+      property !== 'concept' &&
       hasKnownDefs &&
       !propDef &&
       !filterDef &&
@@ -51,7 +61,7 @@ export function validateValueSetComposeFilters(
       }));
     }
 
-    issues.push(...validateFilterValue(op, property, value, propDef, filterPath));
+    issues.push(...validateFilterValue(op, property, value, propDef, filterPath, cache));
   }
 
   return issues;
@@ -72,14 +82,18 @@ function validateFilterOperator(op: string, filterPath: string): ValidationIssue
 }
 
 function resolveCodeSystemFilterDefinitions(
-  targetCs: any,
+  targetCs: CodeSystem | undefined,
   property: string,
-): { propDef: any; filterDef: any; hasKnownDefs: boolean } {
-  const csProperties: any[] = Array.isArray(targetCs?.property) ? targetCs.property : [];
-  const csFilters: any[] = Array.isArray(targetCs?.filter) ? targetCs.filter : [];
+): {
+  propDef: CodeSystemPropertyDefinition | undefined;
+  filterDef: CodeSystemFilterDefinition | undefined;
+  hasKnownDefs: boolean;
+} {
+  const csProperties = Array.isArray(targetCs?.property) ? targetCs.property : [];
+  const csFilters = Array.isArray(targetCs?.filter) ? targetCs.filter : [];
   return {
-    propDef: property ? csProperties.find((p: any) => p?.code === property) : undefined,
-    filterDef: property ? csFilters.find((f: any) => f?.code === property) : undefined,
+    propDef: property ? csProperties.find(definition => definition?.code === property) : undefined,
+    filterDef: property ? csFilters.find(definition => definition?.code === property) : undefined,
     hasKnownDefs: csProperties.length > 0 || csFilters.length > 0,
   };
 }
@@ -88,8 +102,9 @@ function validateFilterValue(
   op: string,
   property: string,
   value: string,
-  propDef: any,
+  propDef: CodeSystemPropertyDefinition | undefined,
   filterPath: string,
+  cache: ValueSetCache,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
@@ -109,7 +124,7 @@ function validateFilterValue(
   }
 
   if (op === '=' && propDef?.type === 'Coding' && value) {
-    issues.push(...validateCodingFilterValue(property, value, filterPath));
+    issues.push(...validateCodingFilterValue(property, value, filterPath, cache));
   }
 
   return issues;
@@ -119,6 +134,7 @@ function validateCodingFilterValue(
   property: string,
   value: string,
   filterPath: string,
+  cache: ValueSetCache,
 ): ValidationIssue[] {
   const parsed = parseSystemVersionCode(value);
   if (!parsed) {
@@ -133,7 +149,7 @@ function validateCodingFilterValue(
     })];
   }
 
-  const subCs = getCachedCodeSystem(parsed.system);
+  const subCs = getCachedCodeSystem(parsed.system, cache);
   if (!subCs || codeSystemHasCode(subCs, parsed.code)) return [];
 
   const subVersion = typeof subCs.version === 'string' ? subCs.version : 'null';
@@ -147,4 +163,8 @@ function validateCodingFilterValue(
       `'${parsed.system}' version '${subVersion}')`,
     severityOverride: 'error',
   })];
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -1,27 +1,31 @@
-import type { RecordsValidator } from './core/validator-engine';
+import { RecordsValidator } from './core/validator-engine';
 import type { FhirClientLike } from './core/profile-loader-utils';
 import type { ValidationIssue, ValidationSettings } from './types';
-import type { TerminologyResolutionConfig } from './validators/valueset-validator';
-import type { AnomalyDetectorConfig, AnomalyFinding } from './validators/anomaly-detector';
 import {
   toInternalFhirVersion,
   validateAllResources,
 } from './public-validation-api';
+import type { PublicFhirVersion } from './public-validation-api';
+import { logger } from './logger';
+import { emptyFHIRPathCacheStats } from './validators/fhirpath-cache-diagnostics';
+import { ValidatorRuntimeRegistry } from './validator-runtime-registry';
 import type {
-  PublicBatchValidationOptions,
-  PublicFhirVersion,
-  PublicValidationInput,
-  PublicValidationResult,
-} from './public-validation-api';
+  RecordsValidationRequest,
+  RecordsValidatorRuntimeLease,
+  RecordsValidatorSingleton,
+} from './validator-singleton-types';
+export type {
+  RecordsValidationRequest,
+  RecordsValidatorAdministration,
+  RecordsValidatorInspection,
+  RecordsValidatorRuntimeLease,
+  RecordsValidatorSingleton,
+  RecordsValidatorValidation,
+} from './validator-singleton-types';
 
-let validatorInstance: RecordsValidator | null = null;
-let validatorInstancePromise: Promise<RecordsValidator> | null = null;
-type ScopedValidatorEntry = {
-  promise: Promise<RecordsValidator>;
-  instance?: RecordsValidator;
-};
-const scopedValidatorInstances = new Map<string, ScopedValidatorEntry>();
-const MAX_SCOPED_VALIDATOR_INSTANCES = 32;
+const MAX_SCOPED_VALIDATOR_INSTANCES = 8;
+const DEFAULT_SCOPED_PROFILE_CACHE_MAX_ENTRIES = 192;
+const MAX_SCOPED_PROFILE_CACHE_MAX_ENTRIES = 4_096;
 
 const defaultAllowedPackages = [
   'hl7.fhir.r4.core',
@@ -29,6 +33,7 @@ const defaultAllowedPackages = [
   'de.gematik.*',
   'de.medizininformatikinitiative.*',
   'de.medizininformatik-initiative.*',
+  'de.einwilligungsmanagement',
   'kbv.*',
   'de.basisprofil.*',
   'rki.demis.*',
@@ -46,122 +51,80 @@ const defaultAllowedPackages = [
   'hl7.fhir.uv.*',
 ] as const;
 
-interface QuestionnaireItemLike {
-  answerValueSet?: unknown;
-  item?: unknown;
-}
-
-interface QuestionnaireLike {
-  item?: unknown;
-}
-
-async function createRecordsValidator(): Promise<RecordsValidator> {
-  const { RecordsValidator } = await import('./core/validator-engine.js');
-  const { logger } = await import('./logger.js');
+async function createRecordsValidator(scoped = false): Promise<RecordsValidator> {
   const instance = new RecordsValidator({
-      enableCaching: true,
-      strictMode: false,
-      timeout: 30000,
-      allowedPackages: [...defaultAllowedPackages],
+    enableCaching: true,
+    strictMode: false,
+    timeout: 30000,
+    allowedPackages: [...defaultAllowedPackages],
+    profileCacheMaxEntries: scoped ? resolveScopedProfileCacheMaxEntries() : undefined,
+    prewarmProfileSource: !scoped,
   });
   logger.info('[RecordsValidator] Validator initialized');
   return instance;
 }
 
+const runtimeRegistry = new ValidatorRuntimeRegistry(
+  createRecordsValidator,
+  MAX_SCOPED_VALIDATOR_INSTANCES,
+);
+
 async function getRecordsValidator(runtimeScopeKey?: string): Promise<RecordsValidator> {
-  if (!runtimeScopeKey) {
-    validatorInstancePromise ??= createRecordsValidator().then((instance) => {
-      validatorInstance = instance;
-      return instance;
-    });
-    return validatorInstancePromise;
-  }
-
-  const existing = scopedValidatorInstances.get(runtimeScopeKey);
-  if (existing) {
-    scopedValidatorInstances.delete(runtimeScopeKey);
-    scopedValidatorInstances.set(runtimeScopeKey, existing);
-    return existing.promise;
-  }
-
-  const entry = {} as ScopedValidatorEntry;
-  entry.promise = createRecordsValidator().then((instance) => {
-    entry.instance = instance;
-    return instance;
-  });
-  scopedValidatorInstances.set(runtimeScopeKey, entry);
-  while (scopedValidatorInstances.size > MAX_SCOPED_VALIDATOR_INSTANCES) {
-    const oldestKey = scopedValidatorInstances.keys().next().value;
-    if (oldestKey === undefined) break;
-    scopedValidatorInstances.delete(oldestKey);
-  }
-  return entry.promise;
+  return runtimeRegistry.get(runtimeScopeKey);
 }
 
-async function prewarmAnswerValueSets(questionnaire: QuestionnaireLike): Promise<void> {
-  const urls = new Set<string>();
-  const walk = (items: unknown): void => {
-    if (!Array.isArray(items)) return;
-    for (const item of items) {
-      const candidate = item as QuestionnaireItemLike;
-      if (typeof candidate.answerValueSet === 'string') {
-        urls.add(candidate.answerValueSet);
-      }
-      walk(candidate.item);
-    }
+export function acquireRecordsValidatorRuntime(
+  runtimeScopeKey?: string,
+): RecordsValidatorRuntimeLease {
+  const lease = runtimeRegistry.acquire(runtimeScopeKey);
+  let released = false;
+
+  return {
+    async ready() {
+      const instance = await lease.promise;
+      await instance.waitForInitialization();
+    },
+    async loadProfileWithSnapshot(profileUrl, fhirVersion = 'R4') {
+      const instance = await lease.promise;
+      await instance.waitForInitialization();
+      return instance.loadProfileWithSnapshot(
+        profileUrl,
+        toInternalFhirVersion(fhirVersion),
+      );
+    },
+    async resetProfileWarmupState() {
+      const instance = await lease.promise;
+      instance.resetProfileWarmupState();
+    },
+    release() {
+      if (released) return;
+      released = true;
+      lease.release();
+    },
   };
-  walk(questionnaire.item);
-  if (urls.size === 0) return;
-
-  try {
-    const { ValueSetPackageLoader } = await import('./validators/valueset-package-loader.js');
-    const { valueSetCache } = await import('./validators/valueset-cache.js');
-    const loader = new ValueSetPackageLoader(valueSetCache);
-    for (const url of urls) {
-      await loader.loadValueSet(url);
-    }
-  } catch {
-    // Best-effort prewarm: failures degrade the display check to a cache miss.
-  }
 }
 
-export interface RecordsValidatorSingleton {
-  validate(
-    resource: unknown,
-    profileUrl?: string,
-    fhirVersion?: PublicFhirVersion,
-    settings?: ValidationSettings,
-    fhirClient?: FhirClientLike,
-    referenceResolver?: Parameters<RecordsValidator['validate']>[5],
-    organizationId?: number,
-    runtimeScopeKey?: string,
-    serverId?: number,
-  ): Promise<ValidationIssue[]>;
-  validateMetadata(...args: Parameters<RecordsValidator['validateMetadata']>): ReturnType<RecordsValidator['validateMetadata']>;
-  validateStructure(...args: Parameters<RecordsValidator['validateStructure']>): ReturnType<RecordsValidator['validateStructure']>;
-  validateBatch(...args: Parameters<RecordsValidator['validateBatch']>): ReturnType<RecordsValidator['validateBatch']>;
-  validateAll(inputs: PublicValidationInput[], options?: PublicBatchValidationOptions): Promise<PublicValidationResult[]>;
-  isCreated(): boolean;
-  isInitialized(): Promise<boolean>;
-  isAvailable(): boolean;
-  isProfileSupported(...args: Parameters<RecordsValidator['isProfileSupported']>): ReturnType<RecordsValidator['isProfileSupported']>;
-  waitForInitialization(): ReturnType<RecordsValidator['waitForInitialization']>;
-  getSdLoader(): Promise<ReturnType<RecordsValidator['getSdLoader']>>;
-  loadProfileWithSnapshot(...args: Parameters<RecordsValidator['loadProfileWithSnapshot']>): ReturnType<RecordsValidator['loadProfileWithSnapshot']>;
-  registerQuestionnaire(questionnaire: QuestionnaireLike): Promise<boolean>;
-  getQuestionnaire(...args: Parameters<RecordsValidator['getQuestionnaire']>): ReturnType<RecordsValidator['getQuestionnaire']>;
-  configureTerminologyResolution(config: TerminologyResolutionConfig): Promise<ReturnType<RecordsValidator['configureTerminologyResolution']>>;
-  clearTerminologyCache(): Promise<ReturnType<RecordsValidator['clearTerminologyCache']>>;
-  getConstraintDiagnostics(): Promise<ReturnType<RecordsValidator['getConstraintDiagnostics']>>;
-  clearConstraintDiagnostics(): Promise<ReturnType<RecordsValidator['clearConstraintDiagnostics']>>;
-  clearProfileCache(): Promise<ReturnType<RecordsValidator['clearProfileCache']> | undefined>;
-  evictProfile(...args: Parameters<RecordsValidator['evictProfile']>): ReturnType<RecordsValidator['evictProfile']> | undefined;
-  setPinnedCanonicals(...args: Parameters<RecordsValidator['setPinnedCanonicals']>): Promise<ReturnType<RecordsValidator['setPinnedCanonicals']>>;
-  getPinnedCanonicalCount(): ReturnType<RecordsValidator['getPinnedCanonicalCount']>;
-  detectAnomalies(resources: unknown[], config?: Partial<AnomalyDetectorConfig>): Promise<AnomalyFinding[]>;
+async function validateRecordsRequest(
+  request: RecordsValidationRequest,
+): Promise<ValidationIssue[]> {
+  const instance = await getRecordsValidator(request.runtimeScopeKey);
+  const mapped = request.fhirVersion
+    ? toInternalFhirVersion(request.fhirVersion)
+    : undefined;
+  return instance.validate(
+    request.resource,
+    request.profileUrl,
+    mapped,
+    request.settings,
+    request.fhirClient,
+    request.referenceResolver,
+    request.organizationId,
+    request.serverId,
+  );
 }
 
 export const recordsValidator: RecordsValidatorSingleton = {
+  validateRequest: validateRecordsRequest,
   async validate(
     resource: unknown,
     profileUrl?: string,
@@ -173,18 +136,17 @@ export const recordsValidator: RecordsValidatorSingleton = {
     runtimeScopeKey?: string,
     serverId?: number,
   ) {
-    const instance = await getRecordsValidator(runtimeScopeKey);
-    const mapped = fhirVersion ? toInternalFhirVersion(fhirVersion) : undefined;
-    return instance.validate(
+    return validateRecordsRequest({
       resource,
       profileUrl,
-      mapped,
+      fhirVersion,
       settings,
       fhirClient,
       referenceResolver,
       organizationId,
+      runtimeScopeKey,
       serverId,
-    );
+    });
   },
   async validateMetadata(...args) {
     const instance = await getRecordsValidator();
@@ -198,27 +160,32 @@ export const recordsValidator: RecordsValidatorSingleton = {
     const instance = await getRecordsValidator(args[1]?.runtimeScopeKey);
     return instance.validateBatch(...args);
   },
+  async validateAspects(...args) {
+    const instance = await getRecordsValidator(args[1]?.runtimeScopeKey);
+    return instance.validateAspects(...args);
+  },
   async validateAll(inputs, options) {
     const instance = await getRecordsValidator();
     return validateAllResources({
       validate: (resource, profileUrl, fhirVersion, settings, fhirClient) =>
         instance.validate(resource, profileUrl, fhirVersion, settings, fhirClient),
       validateBatch: (resources, batchOptions) =>
-        instance.validateBatch(resources as any[], batchOptions),
+        instance.validateBatch(resources, batchOptions),
     }, inputs, options);
   },
   isCreated() {
-    return validatorInstance !== null;
+    return runtimeRegistry.peekDefault() !== null;
   },
   async isInitialized() {
-    return validatorInstance?.isAvailable() ?? false;
+    return runtimeRegistry.peekDefault()?.isAvailable() ?? false;
   },
   isAvailable() {
-    return validatorInstance !== null;
+    return runtimeRegistry.peekDefault() !== null;
   },
   async isProfileSupported(...args) {
-    if (!validatorInstance) return false;
-    return validatorInstance.isProfileSupported(...args);
+    const instance = runtimeRegistry.peekDefault();
+    if (!instance) return false;
+    return instance.isProfileSupported(...args);
   },
   async waitForInitialization() {
     const instance = await getRecordsValidator();
@@ -238,7 +205,7 @@ export const recordsValidator: RecordsValidatorSingleton = {
     const instance = await getRecordsValidator();
     await instance.waitForInitialization();
     const ok = instance.registerQuestionnaire(questionnaire);
-    if (ok) await prewarmAnswerValueSets(questionnaire);
+    if (ok) await instance.prewarmQuestionnaireAnswerValueSets(questionnaire);
     return ok;
   },
   async getQuestionnaire(canonicalOrRef: string | undefined | null) {
@@ -254,23 +221,39 @@ export const recordsValidator: RecordsValidatorSingleton = {
     const instance = await getRecordsValidator();
     return instance.clearTerminologyCache();
   },
+  async registerTerminologyResource(...args) {
+    const instance = await getRecordsValidator();
+    return instance.registerTerminologyResource(...args);
+  },
   async getConstraintDiagnostics() {
     const instance = await getRecordsValidator();
     return instance.getConstraintDiagnostics();
+  },
+  getFHIRPathCacheStats() {
+    return runtimeRegistry.peekDefault()?.getFHIRPathCacheStats() ?? emptyFHIRPathCacheStats();
   },
   async clearConstraintDiagnostics() {
     const instance = await getRecordsValidator();
     return instance.clearConstraintDiagnostics();
   },
+  async clearFHIRPathCaches() {
+    await Promise.all(runtimeRegistry.currentPromises().map(async pending => {
+      (await pending).clearFHIRPathCaches();
+    }));
+  },
   async clearProfileCache() {
-    validatorInstance?.clearProfileCache();
-    await Promise.all([...scopedValidatorInstances.values()].map(async (entry) => {
-      (await entry.promise).clearProfileCache();
+    await Promise.all(runtimeRegistry.currentPromises().map(async pending => {
+      (await pending).clearProfileCache();
+    }));
+  },
+  async resetProfileWarmupState() {
+    await Promise.all(runtimeRegistry.currentPromises().map(async pending => {
+      (await pending).resetProfileWarmupState();
     }));
   },
   evictProfile(profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6' = 'R4') {
-    validatorInstance?.evictProfile(profileUrl, fhirVersion);
-    for (const entry of scopedValidatorInstances.values()) {
+    runtimeRegistry.peekDefault()?.evictProfile(profileUrl, fhirVersion);
+    for (const entry of runtimeRegistry.currentScopedEntries()) {
       if (entry.instance) {
         entry.instance.evictProfile(profileUrl, fhirVersion);
       } else {
@@ -283,7 +266,14 @@ export const recordsValidator: RecordsValidatorSingleton = {
     return instance.setPinnedCanonicals(...args);
   },
   getPinnedCanonicalCount(): number {
-    return validatorInstance?.getPinnedCanonicalCount() ?? 0;
+    return runtimeRegistry.peekDefault()?.getPinnedCanonicalCount() ?? 0;
+  },
+  getPinnedCanonicalFingerprint() {
+    return runtimeRegistry.peekDefault()?.getPinnedCanonicalFingerprint() ?? {
+      algorithm: 'sha256-sorted-canonical-v1',
+      count: 0,
+      sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    };
   },
   async detectAnomalies(resources, config) {
     const instance = await getRecordsValidator();
@@ -291,12 +281,25 @@ export const recordsValidator: RecordsValidatorSingleton = {
   },
 };
 
+export function getCombinedFHIRPathCacheStats() {
+  return recordsValidator.getFHIRPathCacheStats();
+}
+
 export async function ensureRecordsValidatorReady(): Promise<void> {
   const instance = await getRecordsValidator();
   await instance.waitForInitialization();
 }
 
 export async function getRecordsValidatorClass() {
-  const { RecordsValidator } = await import('./core/validator-engine.js');
   return RecordsValidator;
+}
+
+export function resolveScopedProfileCacheMaxEntries(): number {
+  const parsed = Number.parseInt(
+    process.env.VALIDATION_SCOPED_PROFILE_CACHE_MAX_ENTRIES ?? '',
+    10,
+  );
+  return Number.isInteger(parsed) && parsed > 0
+    ? Math.min(parsed, MAX_SCOPED_PROFILE_CACHE_MAX_ENTRIES)
+    : DEFAULT_SCOPED_PROFILE_CACHE_MAX_ENTRIES;
 }

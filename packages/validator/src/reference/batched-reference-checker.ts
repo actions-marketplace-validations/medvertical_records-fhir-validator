@@ -1,7 +1,4 @@
 import type { AxiosInstance } from 'axios';
-import { parseReference, type ReferenceParseResult } from './reference-type-extractor';
-import { extractReferencesFromBundle, extractReferencesFromResource } from './reference-extraction';
-import { asSummaryUrl, buildReferenceProbeUrl, extractUrlHost } from './reference-probe-url';
 import { ReferenceCircuitBreaker } from './reference-circuit-breaker';
 import {
   createReferenceHttpClient,
@@ -12,28 +9,20 @@ import {
 import { ReferenceCheckCache } from './reference-check-cache';
 import { summarizeReferenceBatch } from './reference-batch-result';
 import { logger } from '../logger';
+import {
+  extractBundleReferenceBatch,
+  extractResourceReferenceBatch,
+  parseReferenceBatch,
+} from './reference-batch-input';
+import type {
+  BatchCheckResult,
+  ParsedReferenceCheck,
+  ReferenceExistenceCheck,
+} from './reference-batch-types';
+import { executeReferenceProbe } from './reference-probe-execution';
 
 export type { BatchCheckConfig } from './reference-http-client';
-
-export interface ReferenceExistenceCheck {
-  reference: string;
-  parseResult: ReferenceParseResult;
-  exists: boolean;
-  statusCode?: number;
-  errorMessage?: string;
-  responseTimeMs?: number;
-  fromCache?: boolean;
-}
-
-export interface BatchCheckResult {
-  results: ReferenceExistenceCheck[];
-  existCount: number;
-  notExistCount: number;
-  failedCount: number;
-  cacheHitCount: number;
-  totalTimeMs: number;
-  averageResponseTimeMs: number;
-}
+export type { BatchCheckResult, ReferenceExistenceCheck } from './reference-batch-types';
 
 export class BatchedReferenceChecker {
   private cache = new ReferenceCheckCache();
@@ -64,12 +53,9 @@ export class BatchedReferenceChecker {
 
     logger.info(`[BatchedReferenceChecker] Checking ${references.length} references (max concurrent: ${fullConfig.maxConcurrent})`);
 
-    const parsedRefs = references.map(ref => ({
-      reference: ref,
-      parseResult: parseReference(ref),
-    }));
+    const parsedRefs = parseReferenceBatch(references);
 
-    const uncachedRefs: typeof parsedRefs = [];
+    const uncachedRefs: ParsedReferenceCheck[] = [];
     const results: ReferenceExistenceCheck[] = [];
     let cacheHits = 0;
 
@@ -115,8 +101,8 @@ export class BatchedReferenceChecker {
   }
 
   private async checkReferencesInParallel(
-    refs: Array<{ reference: string; parseResult: ReferenceParseResult }>,
-    config: Required<BatchCheckConfig>
+    refs: ParsedReferenceCheck[],
+    config: ResolvedBatchCheckConfig,
   ): Promise<ReferenceExistenceCheck[]> {
     const results: ReferenceExistenceCheck[] = [];
     const maxConcurrent = config.maxConcurrent;
@@ -135,106 +121,30 @@ export class BatchedReferenceChecker {
 
   private async checkWithDeduplication(
     reference: string,
-    parseResult: ReferenceParseResult,
-    config: Required<BatchCheckConfig>
+    parseResult: ParsedReferenceCheck['parseResult'],
+    config: ResolvedBatchCheckConfig,
   ): Promise<ReferenceExistenceCheck> {
     let pendingCheck = this.pendingChecks.get(reference);
 
     if (!pendingCheck) {
-      pendingCheck = this.checkSingleReference(reference, parseResult, config)
+      pendingCheck = executeReferenceProbe({
+        reference,
+        parseResult,
+        config,
+        httpClient: this.httpClient,
+        cache: this.cache,
+        circuitBreaker: this.circuitBreaker,
+      })
         .finally(() => {
           this.pendingChecks.delete(reference);
         });
 
       this.pendingChecks.set(reference, pendingCheck);
     } else {
-      logger.info(`[BatchedReferenceChecker] Task 10.9: Reusing in-flight check for ${reference}`);
+      logger.debug('[BatchedReferenceChecker] Reusing in-flight reference check');
     }
 
     return pendingCheck;
-  }
-
-  private async checkSingleReference(
-    reference: string,
-    parseResult: ReferenceParseResult,
-    config: Required<BatchCheckConfig>
-  ): Promise<ReferenceExistenceCheck> {
-    const startTime = Date.now();
-
-    const url = buildReferenceProbeUrl(reference, parseResult, config);
-    if (!url) {
-      return {
-        reference,
-        parseResult,
-        exists: false,
-        errorMessage: 'Cannot build URL for reference',
-      };
-    }
-
-    const host = extractUrlHost(url);
-
-    if (host && this.circuitBreaker.isOpen(host)) {
-      return {
-        reference,
-        parseResult,
-        exists: false,
-        errorMessage: `Circuit breaker open for ${host} (degraded mode)`,
-        responseTimeMs: Date.now() - startTime,
-        fromCache: false,
-      };
-    }
-
-    const useHead = this.circuitBreaker.supportsHead(host);
-
-    try {
-      const response = useHead
-        ? await this.httpClient.head(url)
-        : await this.httpClient.get(asSummaryUrl(url));
-      let finalResponse = response;
-      const responseTime = Date.now() - startTime;
-
-      if (useHead && finalResponse.status === 405) {
-        this.circuitBreaker.markHeadUnsupported(host);
-        finalResponse = await this.httpClient.get(asSummaryUrl(url));
-      }
-
-      const exists =
-        finalResponse.status >= 200 && finalResponse.status < 400;
-      const isServerReachable = finalResponse.status < 500;
-
-      if (isServerReachable && host) {
-        this.circuitBreaker.recordSuccess(host);
-      } else if (!isServerReachable && host) {
-        this.circuitBreaker.recordFailure(host);
-      }
-
-      if (config.enableCache) {
-        this.cache.set(reference, exists, finalResponse.status);
-      }
-
-      return {
-        reference,
-        parseResult,
-        exists,
-        statusCode: finalResponse.status,
-        responseTimeMs: responseTime,
-        fromCache: false,
-      };
-    } catch (error) {
-      const responseTime = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-      if (host) this.circuitBreaker.recordFailure(host);
-
-      return {
-        reference,
-        parseResult,
-        exists: false,
-        errorMessage,
-        responseTimeMs: responseTime,
-        fromCache: false,
-      };
-    }
   }
 
   public resetCircuits(): void {
@@ -253,12 +163,12 @@ export class BatchedReferenceChecker {
     return this.cache.getStats();
   }
 
-  extractReferences(resource: any): string[] {
-    return extractReferencesFromResource(resource);
+  extractReferences(resource: unknown): string[] {
+    return extractResourceReferenceBatch(resource);
   }
 
   async checkResourceReferences(
-    resource: any,
+    resource: unknown,
     config?: Partial<BatchCheckConfig>
   ): Promise<BatchCheckResult> {
     const references = this.extractReferences(resource);
@@ -266,10 +176,10 @@ export class BatchedReferenceChecker {
   }
 
   async checkBundleReferences(
-    bundle: any,
+    bundle: unknown,
     config?: Partial<BatchCheckConfig>
   ): Promise<BatchCheckResult> {
-    return this.checkBatch(extractReferencesFromBundle(bundle), config);
+    return this.checkBatch(extractBundleReferenceBatch(bundle), config);
   }
 
   async filterExistingReferences(
@@ -332,15 +242,10 @@ export class BatchedReferenceChecker {
 
 }
 
-let checkerInstance: BatchedReferenceChecker | null = null;
-
 export function getBatchedReferenceChecker(config?: Partial<BatchCheckConfig>): BatchedReferenceChecker {
-  if (!checkerInstance) {
-    checkerInstance = new BatchedReferenceChecker(config);
-  }
-  return checkerInstance;
+  return new BatchedReferenceChecker(config);
 }
 
 export function resetBatchedReferenceChecker(): void {
-  checkerInstance = null;
+  // Compatibility no-op: checker instances and their caches are caller-owned.
 }

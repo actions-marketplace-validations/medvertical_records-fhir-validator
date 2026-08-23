@@ -56,6 +56,20 @@ describe('custom rule source consistency', () => {
     })]);
   });
 
+  it('allows a cold rule load to finish inside the two-second budget', async () => {
+    vi.useFakeTimers();
+    setCustomRulesSource({
+      getRulesByResourceType: () => new Promise((resolve) => {
+        setTimeout(() => resolve([]), 500);
+      }),
+    });
+    const validation = new CustomRuleExecutor().validate(context);
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(validation).resolves.toEqual([]);
+  });
+
   it('marks validation incomplete when rule loading exceeds its bound', async () => {
     vi.useFakeTimers();
     setCustomRulesSource({
@@ -63,7 +77,7 @@ describe('custom rule source consistency', () => {
     });
     const validation = new CustomRuleExecutor().validate(context);
 
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(2000);
 
     await expect(validation).resolves.toEqual([expect.objectContaining({
       code: 'custom-rule-source-unavailable',

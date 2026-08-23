@@ -18,12 +18,19 @@ export interface StructureDefinition {
   abstract: boolean;
   type: string;
   baseDefinition?: string;
+  extension?: StructureDefinitionExtension[];
   differential?: {
     element: ElementDefinition[];
   };
   snapshot?: {
     element: ElementDefinition[];
   };
+}
+
+export interface StructureDefinitionExtension {
+  url?: string;
+  valueCanonical?: string;
+  [key: string]: unknown;
 }
 
 export interface ElementDefinition {
@@ -45,12 +52,12 @@ export interface ElementDefinition {
   // Additional properties used by deep-profile-validator
   maxLength?: number;
   // Fixed values (polymorphic - fixedString, fixedCode, etc.)
-  [key: `fixed${string}`]: any;
+  [key: `fixed${string}`]: unknown;
   // Pattern values (polymorphic - patternCodeableConcept, etc.)
-  [key: `pattern${string}`]: any;
+  [key: `pattern${string}`]: unknown;
   // Min/max values (polymorphic - minValueInteger, maxValueDecimal, etc.)
-  [key: `minValue${string}`]: any;
-  [key: `maxValue${string}`]: any;
+  [key: `minValue${string}`]: unknown;
+  [key: `maxValue${string}`]: unknown;
 }
 
 export interface SlicingDefinition {
@@ -84,4 +91,5 @@ export interface Binding {
   strength: 'required' | 'extensible' | 'preferred' | 'example';
   valueSet?: string;
   description?: string;
+  extension?: Array<Record<string, unknown>>;
 }

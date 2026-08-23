@@ -10,36 +10,52 @@ import {
   isHl7Url,
   validateUrnUuid,
 } from './terminology-resource-utils';
+import { ValueSetCache } from './valueset-cache';
 
-export function validateCodeSystemResource(
-  cs: any,
-  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
-): ValidationIssue[] {
-  const issues: ValidationIssue[] = [];
-  const url = typeof cs.url === 'string' ? cs.url : '';
-  const hl7 = isHl7Url(url);
+type FhirRecord = Record<string, unknown>;
 
-  issues.push(...validateCodeSystemUuid(url, 'CodeSystem.url', 'CodeSystem'));
-  issues.push(...validateCodeSystemCaseSensitive(cs, 'CodeSystem', 'CodeSystem', hl7));
-  issues.push(...validateCodeSystemSupplementContent(cs));
-  issues.push(...validateCompleteCodeSystem(cs));
-  issues.push(...validateHl7ConceptDefinitions(cs, 'CodeSystem.concept', 'CodeSystem', hl7));
-  issues.push(...validateCodeSystemPropertyDeclarations(cs, fhirVersion));
-
-  if (Array.isArray(cs.concept)) {
-    for (let i = 0; i < cs.concept.length; i++) {
-      issues.push(...validateConceptPropertyValueCodes(cs.concept[i], i, 'CodeSystem'));
-    }
-  }
-
-  return issues;
+interface ConceptNode {
+  concept: FhirRecord;
+  path: string;
 }
 
-export function validateContainedCodeSystemResource(cs: any, index: number): ValidationIssue[] {
-  const issues: ValidationIssue[] = [];
-  const url = typeof cs.url === 'string' ? cs.url : '';
+export function validateCodeSystemResource(
+  value: unknown,
+  fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
+  cache: ValueSetCache = new ValueSetCache(),
+): ValidationIssue[] {
+  const codeSystem = toRecord(value);
+  if (!codeSystem) return [];
+
+  const url = getString(codeSystem.url) ?? '';
+  const hl7 = isHl7Url(url);
+  return [
+    ...validateCodeSystemUuid(url, 'CodeSystem.url', 'CodeSystem'),
+    ...validateCodeSystemCaseSensitive(codeSystem, 'CodeSystem', 'CodeSystem', hl7),
+    ...validateCodeSystemSupplementContent(codeSystem),
+    ...validateCompleteCodeSystem(codeSystem),
+    ...validateHl7ConceptDefinitions(
+      codeSystem,
+      'CodeSystem.concept',
+      'CodeSystem',
+      hl7,
+    ),
+    ...validateCodeSystemPropertyDeclarations(codeSystem, fhirVersion),
+    ...validateConceptPropertyValueCodes(codeSystem, 'CodeSystem.concept', cache),
+  ];
+}
+
+export function validateContainedCodeSystemResource(
+  value: unknown,
+  index: number,
+): ValidationIssue[] {
+  const codeSystem = toRecord(value);
+  if (!codeSystem) return [];
+
+  const url = getString(codeSystem.url) ?? '';
   const pathPrefix = `ValueSet.contained[${index}]`;
   const hl7 = isHl7Url(url);
+  const issues: ValidationIssue[] = [];
 
   if (url && !isAbsoluteUri(url)) {
     issues.push(createValidationIssue({
@@ -52,10 +68,16 @@ export function validateContainedCodeSystemResource(cs: any, index: number): Val
     }));
   }
 
-  issues.push(...validateCodeSystemUuid(url, `${pathPrefix}.url`, 'ValueSet'));
-  issues.push(...validateCodeSystemCaseSensitive(cs, pathPrefix, 'ValueSet', hl7));
-  issues.push(...validateHl7ConceptDefinitions(cs, `${pathPrefix}.concept`, 'ValueSet', hl7));
-
+  issues.push(
+    ...validateCodeSystemUuid(url, `${pathPrefix}.url`, 'ValueSet'),
+    ...validateCodeSystemCaseSensitive(codeSystem, pathPrefix, 'ValueSet', hl7),
+    ...validateHl7ConceptDefinitions(
+      codeSystem,
+      `${pathPrefix}.concept`,
+      'ValueSet',
+      hl7,
+    ),
+  );
   return issues;
 }
 
@@ -65,7 +87,6 @@ function validateCodeSystemUuid(
   resourceType: string,
 ): ValidationIssue[] {
   if (!url.startsWith('urn:uuid:')) return [];
-
   const { valid, uuid } = validateUrnUuid(url);
   if (valid) return [];
 
@@ -79,202 +100,234 @@ function validateCodeSystemUuid(
 }
 
 function validateCodeSystemCaseSensitive(
-  cs: any,
+  codeSystem: FhirRecord,
   path: string,
   resourceType: string,
   hl7: boolean,
 ): ValidationIssue[] {
-  const contentDefinesCodes = cs.content === 'complete' || cs.content === 'example' || cs.content === 'supplement';
-  if (
-    cs.caseSensitive !== undefined && cs.caseSensitive !== null ||
-    (!hl7 && !contentDefinesCodes)
-  ) return [];
+  const contentDefinesCodes =
+    codeSystem.content === 'complete'
+    || codeSystem.content === 'example'
+    || codeSystem.content === 'supplement';
+  const caseSensitivePresent =
+    codeSystem.caseSensitive !== undefined
+    && codeSystem.caseSensitive !== null;
+  if (caseSensitivePresent || (!hl7 && !contentDefinesCodes)) return [];
 
-  const severity = hl7 ? 'warning' : 'information';
-  const prefix = hl7 ? 'HL7 Defined ' : '';
   return [createValidationIssue({
     code: 'tx-codesystem-missing-casesensitive',
     path,
     resourceType,
     customMessage:
-      `${prefix}CodeSystems SHOULD have a stated value for the caseSensitive element ` +
-      `so that users know the status and meaning of the code system clearly`,
-    severityOverride: severity,
+      `${hl7 ? 'HL7 Defined ' : ''}CodeSystems SHOULD have a stated value ` +
+      'for the caseSensitive element so that users know the status and meaning ' +
+      'of the code system clearly',
+    severityOverride: hl7 ? 'warning' : 'information',
   })];
 }
 
-function validateCodeSystemSupplementContent(cs: any): ValidationIssue[] {
-  if (!cs.supplements || cs.content === 'supplement') return [];
-
+function validateCodeSystemSupplementContent(
+  codeSystem: FhirRecord,
+): ValidationIssue[] {
+  if (!getString(codeSystem.supplements) || codeSystem.content === 'supplement') {
+    return [];
+  }
   return [createValidationIssue({
     code: 'tx-codesystem-supplement-content',
     path: 'CodeSystem.content',
     resourceType: 'CodeSystem',
-    customMessage:
-      `CodeSystem Supplements SHALL have a content value of 'supplement'`,
+    customMessage: `CodeSystem Supplements SHALL have a content value of 'supplement'`,
     severityOverride: 'error',
   })];
 }
 
-function validateCompleteCodeSystem(cs: any): ValidationIssue[] {
-  const issues: ValidationIssue[] = [];
-  if (cs.content !== 'complete') return issues;
+function validateCompleteCodeSystem(
+  codeSystem: FhirRecord,
+): ValidationIssue[] {
+  if (codeSystem.content !== 'complete') return [];
 
-  const concepts = cs.concept;
-  const hasConcepts = Array.isArray(concepts) && concepts.length > 0;
-  if (!hasConcepts) {
+  const concepts = Array.isArray(codeSystem.concept) ? codeSystem.concept : [];
+  const actualCount = countCodeSystemConcepts(concepts);
+  const issues: ValidationIssue[] = [];
+  if (actualCount === 0) {
     issues.push(createValidationIssue({
       code: 'tx-codesystem-complete-no-concepts',
       path: 'CodeSystem',
       resourceType: 'CodeSystem',
       customMessage:
-        `When a CodeSystem has content = 'complete', it doesnt make sense for there to be no concepts defined`,
+        `When a CodeSystem has content = 'complete', it doesnt make sense ` +
+        'for there to be no concepts defined',
       severityOverride: 'warning',
     }));
   }
 
-  if (typeof cs.count === 'number' && hasConcepts) {
-    const actualCount = countCodeSystemConcepts(concepts);
-    if (cs.count !== actualCount) {
-      issues.push(createValidationIssue({
-        code: 'tx-codesystem-count-mismatch',
-        path: 'CodeSystem.count',
-        resourceType: 'CodeSystem',
-        customMessage:
-          `The code system is complete, but the number of concepts (${actualCount}) ` +
-          `does not match the stated total number (${cs.count})`,
-        severityOverride: 'error',
-      }));
-    }
+  if (
+    typeof codeSystem.count === 'number'
+    && Number.isFinite(codeSystem.count)
+    && actualCount > 0
+    && codeSystem.count !== actualCount
+  ) {
+    issues.push(createValidationIssue({
+      code: 'tx-codesystem-count-mismatch',
+      path: 'CodeSystem.count',
+      resourceType: 'CodeSystem',
+      customMessage:
+        `The code system is complete, but the number of concepts (${actualCount}) ` +
+        `does not match the stated total number (${codeSystem.count})`,
+      severityOverride: 'error',
+    }));
   }
-
   return issues;
 }
 
 function validateHl7ConceptDefinitions(
-  cs: any,
+  codeSystem: FhirRecord,
   conceptPathPrefix: string,
   resourceType: string,
   hl7: boolean,
 ): ValidationIssue[] {
-  if (!hl7 || !Array.isArray(cs.concept)) return [];
-
-  for (let i = 0; i < cs.concept.length; i++) {
-    const concept = cs.concept[i];
-    if (concept && !concept.definition) {
-      return [createValidationIssue({
+  if (!hl7) return [];
+  return walkConcepts(codeSystem.concept, conceptPathPrefix).flatMap(node =>
+    getString(node.concept.definition)
+      ? []
+      : [createValidationIssue({
         code: 'tx-codesystem-concept-no-definition',
-        path: `${conceptPathPrefix}[${i}]`,
+        path: node.path,
         resourceType,
         customMessage:
           `HL7 Defined CodeSystems should ensure that every concept has a definition`,
         severityOverride: 'warning',
-      })];
-    }
-  }
-
-  return [];
+      })]
+  );
 }
 
 function validateCodeSystemPropertyDeclarations(
-  cs: any,
+  codeSystem: FhirRecord,
   fhirVersion: 'R4' | 'R5' | 'R6',
 ): ValidationIssue[] {
+  if (!Array.isArray(codeSystem.property)) return [];
   const issues: ValidationIssue[] = [];
-  if (!Array.isArray(cs.property)) return issues;
 
-  for (let i = 0; i < cs.property.length; i++) {
-    const prop = cs.property[i];
-    if (prop?.code && !prop.uri) {
+  for (let index = 0; index < codeSystem.property.length; index++) {
+    const property = toRecord(codeSystem.property[index]);
+    if (!property) continue;
+    const code = getString(property.code);
+    const uri = getString(property.uri);
+    const path = `CodeSystem.property[${index}]`;
+
+    if (code && !uri) {
       issues.push(createValidationIssue({
         code: 'tx-codesystem-property-no-uri',
-        path: `CodeSystem.property[${i}]`,
+        path,
         resourceType: 'CodeSystem',
         customMessage:
-          `This property has only a code ('${prop.code}') and not a URI, ` +
+          `This property has only a code ('${code}') and not a URI, ` +
           `so it has no clearly defined meaning in the terminology ecosystem`,
         severityOverride: 'information',
       }));
     }
 
-    if (typeof prop?.uri === 'string' && prop.uri.startsWith(HL7_CONCEPT_PROPERTY_NAMESPACE)) {
-      const suffix = prop.uri.slice(HL7_CONCEPT_PROPERTY_NAMESPACE.length);
-      if (!HL7_KNOWN_CONCEPT_PROPERTIES.has(suffix)) {
-        if (fhirVersion !== 'R4') {
-          issues.push(createValidationIssue({
-            code: 'tx-codesystem-property-uri-unresolvable',
-            path: `CodeSystem.property[${i}]`,
-            resourceType: 'CodeSystem',
-            customMessage:
-              `The uri '${prop.uri}' for the property '${prop.code || suffix}' implies ` +
-              'a property exists in the referenced HL7 CodeSystem, but none was found',
-            severityOverride: 'warning',
-          }));
-        }
-        issues.push(createValidationIssue({
-          code: 'business-rule-cs-unknown-hl7-property',
-          path: `CodeSystem.property[${i}]`,
-          resourceType: 'CodeSystem',
-          customMessage:
-            `Unknown CodeSystem Property '${prop.uri}'. ` +
-            `If you are creating your own property, do not create it in the HL7 namespace`,
-          severityOverride: 'error',
-        }));
-      }
-    }
-  }
+    if (!uri?.startsWith(HL7_CONCEPT_PROPERTY_NAMESPACE)) continue;
+    const suffix = uri.slice(HL7_CONCEPT_PROPERTY_NAMESPACE.length);
+    if (HL7_KNOWN_CONCEPT_PROPERTIES.has(suffix)) continue;
 
+    if (fhirVersion !== 'R4') {
+      issues.push(createValidationIssue({
+        code: 'tx-codesystem-property-uri-unresolvable',
+        path,
+        resourceType: 'CodeSystem',
+        customMessage:
+          `The uri '${uri}' for the property '${code ?? suffix}' implies ` +
+          'a property exists in the referenced HL7 CodeSystem, but none was found',
+        severityOverride: 'warning',
+      }));
+    }
+    issues.push(createValidationIssue({
+      code: 'business-rule-cs-unknown-hl7-property',
+      path,
+      resourceType: 'CodeSystem',
+      customMessage:
+        `Unknown CodeSystem Property '${uri}'. ` +
+        `If you are creating your own property, do not create it in the HL7 namespace`,
+      severityOverride: 'error',
+    }));
+  }
   return issues;
 }
 
 function validateConceptPropertyValueCodes(
-  concept: any,
-  index: number,
-  pathPrefix: string,
+  codeSystem: FhirRecord,
+  conceptPathPrefix: string,
+  cache: ValueSetCache,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  if (!concept || typeof concept !== 'object') return issues;
 
-  const conceptPath = `${pathPrefix}.concept[${index}]`;
-
-  if (Array.isArray(concept.property)) {
-    for (let p = 0; p < concept.property.length; p++) {
-      const prop = concept.property[p];
-      const coding = prop?.valueCoding;
-      if (!coding || typeof coding !== 'object') continue;
-      const system = typeof coding.system === 'string' ? coding.system : undefined;
-      const code = typeof coding.code === 'string' ? coding.code : undefined;
+  for (const node of walkConcepts(codeSystem.concept, conceptPathPrefix)) {
+    const properties = Array.isArray(node.concept.property)
+      ? node.concept.property
+      : [];
+    for (let index = 0; index < properties.length; index++) {
+      const property = toRecord(properties[index]);
+      const coding = toRecord(property?.valueCoding);
+      const system = getString(coding?.system);
+      const code = getString(coding?.code);
       if (!system || !code) continue;
 
-      const targetCs = getCachedCodeSystem(system);
-      if (!targetCs || codeSystemHasCode(targetCs, code)) continue;
+      const targetCodeSystem = getCachedCodeSystem(system, cache);
+      if (!targetCodeSystem || codeSystemHasCode(targetCodeSystem, code)) continue;
 
-      const version = typeof targetCs.version === 'string' ? targetCs.version : 'null';
+      const version = getString(targetCodeSystem.version) ?? 'null';
+      const path = `${node.path}.property[${index}].value.ofType(Coding).code`;
       issues.push(createValidationIssue({
         code: 'tx-codesystem-concept-property-code-invalid',
-        path: `${conceptPath}.property[${p}].value.ofType(Coding).code`,
+        path,
         resourceType: 'CodeSystem',
         customMessage:
           `Unknown code '${code}' in the CodeSystem '${system}' version '${version}'`,
         severityOverride: 'error',
-        details: {
-          code,
-          system,
-          fieldPath: `${conceptPath}.property[${p}].value.ofType(Coding).code`,
-        },
+        details: { code, system },
       }));
     }
   }
+  return issues;
+}
 
-  if (Array.isArray(concept.concept)) {
-    for (let j = 0; j < concept.concept.length; j++) {
-      issues.push(...validateConceptPropertyValueCodes(
-        concept.concept[j],
-        j,
-        conceptPath,
-      ));
+function walkConcepts(
+  value: unknown,
+  pathPrefix: string,
+): ConceptNode[] {
+  if (!Array.isArray(value)) return [];
+  const nodes: ConceptNode[] = [];
+  const pending: Array<{ value: unknown; path: string }> = [];
+  for (let index = value.length - 1; index >= 0; index--) {
+    pending.push({ value: value[index], path: `${pathPrefix}[${index}]` });
+  }
+  const visited = new WeakSet<object>();
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    const concept = toRecord(current?.value);
+    if (!current || !concept || visited.has(concept)) continue;
+    visited.add(concept);
+    nodes.push({ concept, path: current.path });
+
+    const children = Array.isArray(concept.concept) ? concept.concept : [];
+    for (let index = children.length - 1; index >= 0; index--) {
+      pending.push({
+        value: children[index],
+        path: `${current.path}.concept[${index}]`,
+      });
     }
   }
+  return nodes;
+}
 
-  return issues;
+function toRecord(value: unknown): FhirRecord | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as FhirRecord
+    : undefined;
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }

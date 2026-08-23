@@ -21,7 +21,7 @@ export function resolveContainedPackagePath(cachePath: string, packageId: string
 
 export function resolveContainedTemporaryPath(cachePath: string, packageId: string): string {
   const root = path.resolve(cachePath);
-  const target = path.resolve(root, `.temp-${packageId}-${Date.now()}`);
+  const target = path.resolve(root, `.temp-${packageId}-`);
   if (path.dirname(target) !== root) throw new Error('Temporary package path escapes the cache root');
   return target;
 }

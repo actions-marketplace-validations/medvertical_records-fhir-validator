@@ -22,6 +22,15 @@ describe('compareVersions', () => {
     expect(compareVersions('1.0.0-alpha', '1.0.0')).toBeLessThan(0);
   });
 
+  it('compares dotted numeric prerelease identifiers numerically', () => {
+    expect(compareVersions('1.0.0-beta.10', '1.0.0-beta.2')).toBeGreaterThan(0);
+    expect(compareVersions('1.0.0-beta.2', '1.0.0-beta.10')).toBeLessThan(0);
+  });
+
+  it('ignores build metadata for precedence', () => {
+    expect(compareVersions('1.0.0+build.2', '1.0.0+build.1')).toBe(0);
+  });
+
   it('compares year-based semver versions (2024.1.0 < 2025.1.0)', () => {
     // Detected as semver since it matches X.Y.Z pattern
     expect(detectVersionAlgorithm('2024.1.0')).toBe('semver');

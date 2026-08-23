@@ -14,6 +14,7 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { logger } from '../logger';
 import { KNOWN_FHIR_RESOURCE_TYPES } from '../reference/reference-resource-types';
+import { sensitiveValueMetadata } from '../utils/sensitive-logging-metadata';
 
 // ============================================================================
 // Reference Format Patterns
@@ -49,6 +50,13 @@ const REFERENCE_PATTERNS = {
 
     // Conditional reference: ResourceType?search-params (used in transaction bundles)
     conditional: /^([A-Z][a-zA-Z]+)\?.+$/,
+
+    // Opaque single-segment relative URL (no '/' and no scheme). RFC 3986
+    // makes these valid relative references and the HL7 validator accepts
+    // them (UK Core examples reference plain ids like
+    // 'UKCore-Location-...-Example'). Mirrors isBareRelativeReference in
+    // reference/reference-format-validator.ts.
+    relativeOpaque: /^[A-Za-z0-9\-._~%]+$/,
 };
 
 // ============================================================================
@@ -60,7 +68,7 @@ export class ReferenceFormatValidator {
      * Validate a reference string format
      */
     validateReferenceString(
-        reference: string,
+        reference: unknown,
         path: string,
         resourceType: string
     ): ValidationIssue[] {
@@ -82,17 +90,36 @@ export class ReferenceFormatValidator {
         const isUrnGeneral = REFERENCE_PATTERNS.urnGeneral.test(ref) &&
             !ref.toLowerCase().startsWith('urn:uuid:');
         const isConditional = REFERENCE_PATTERNS.conditional.test(ref);
+        const isRelativeOpaque = REFERENCE_PATTERNS.relativeOpaque.test(ref);
 
-        const isValid = isRelative || isAbsolute || isContained || isUrnUuid || isUrnOid || isUrnGeneral || isConditional;
+        const isValid = isRelative || isAbsolute || isContained || isUrnUuid || isUrnOid ||
+            isUrnGeneral || isConditional || isRelativeOpaque;
+
+        const onlyOpaqueMatched = isRelativeOpaque &&
+            !(isRelative || isAbsolute || isContained || isUrnUuid || isUrnOid || isUrnGeneral || isConditional);
+        if (onlyOpaqueMatched && isInsideBundleEntryResource(path)) {
+            // Java parity: a bare single-segment token is a valid relative URL
+            // on a standalone resource, but inside a Bundle entry it can never
+            // resolve against entry fullUrls, so the HL7 validator rejects it
+            // ("Relative URLs must be of the format [ResourceName]/[id]" —
+            // see the bundle-ea-testcase baseline).
+            issues.push(createValidationIssue({
+                code: 'reference-invalid-bundle-relative',
+                severityOverride: 'error',
+                path: `${path}.reference`,
+                resourceType,
+                customMessage: `Relative URLs must be of the format [ResourceName]/[id]. Encountered ${ref}`,
+                details: { reference: ref },
+            }));
+        }
 
         if (!isValid) {
-            // Bare logical ID (e.g. "example-resource-name") — technically
-            // non-conformant (FHIR expects ResourceType/id) but commonly
-            // used in IG example resources. Downgrade to warning.
-            const isBareId = /^[A-Za-z0-9\-.]+$/.test(ref);
             const isNonCanonicalUuidUrn = ref.toLowerCase().startsWith('urn:uuid:') && REFERENCE_PATTERNS.urnGeneral.test(ref);
-            const severity = isBareId || isNonCanonicalUuidUrn ? 'warning' : 'error';
-            logger.debug(`[ReferenceFormatValidator] Invalid reference format: ${ref}`);
+            const severity = isNonCanonicalUuidUrn ? 'warning' : 'error';
+            logger.debug(
+                '[ReferenceFormatValidator] Invalid reference format',
+                sensitiveValueMetadata(ref),
+            );
             issues.push(createValidationIssue({
                 code: 'reference-invalid-format',
                 severityOverride: severity,
@@ -134,13 +161,16 @@ export class ReferenceFormatValidator {
      * Validate all Reference elements in a resource
      */
     validateAllReferences(
-        resource: any,
+        resource: unknown,
         path: string = ''
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
-        const resourceType = resource.resourceType || 'Unknown';
+        const record = asRecord(resource);
+        const resourceType = typeof record?.resourceType === 'string'
+            ? record.resourceType
+            : 'Unknown';
 
-        this.traverseAndValidate(resource, path || resourceType, resourceType, issues);
+        this.traverseAndValidate(resource, path || resourceType, resourceType, issues, new WeakSet());
 
         return issues;
     }
@@ -149,43 +179,50 @@ export class ReferenceFormatValidator {
      * Recursively traverse resource and validate reference fields
      */
     private traverseAndValidate(
-        obj: any,
+        obj: unknown,
         path: string,
         resourceType: string,
-        issues: ValidationIssue[]
+        issues: ValidationIssue[],
+        visited: WeakSet<object>,
     ): void {
-        if (obj === null || obj === undefined) {
-            return;
-        }
+        if (obj === null || typeof obj !== 'object') return;
+        if (visited.has(obj)) return;
+        visited.add(obj);
 
         if (Array.isArray(obj)) {
             obj.forEach((item, index) => {
-                this.traverseAndValidate(item, `${path}[${index}]`, resourceType, issues);
+                this.traverseAndValidate(item, `${path}[${index}]`, resourceType, issues, visited);
             });
             return;
         }
 
-        if (typeof obj === 'object') {
-            // Check if this is a Reference object
-            if (obj.reference !== undefined && !isFhirExpression(obj)) {
-                const refIssues = this.validateReferenceString(
-                    obj.reference,
-                    path,
-                    resourceType
-                );
-                issues.push(...refIssues);
-            }
+        const record = asRecord(obj);
+        if (!record) return;
+        if (typeof record.reference === 'string' && !isFhirExpression(record)) {
+            issues.push(...this.validateReferenceString(record.reference, path, resourceType));
+        }
 
-            // Recurse into child properties
-            for (const key of Object.keys(obj)) {
-                // Skip certain fields that can't contain references
-                if (key === 'resourceType' || key === 'id' || key === 'meta') {
-                    continue;
-                }
-                this.traverseAndValidate(obj[key], `${path}.${key}`, resourceType, issues);
+        for (const key of Object.keys(record)) {
+            if (key === 'resourceType' || key === 'id' || key === 'meta') {
+                continue;
             }
+            this.traverseAndValidate(record[key], `${path}.${key}`, resourceType, issues, visited);
         }
     }
+}
+
+// Bundle.entry.resource is the only FHIR element pair where an `entry` node
+// carries a `resource` child, so this path shape reliably identifies
+// references that belong to a resource inside a Bundle entry — including
+// bundles nested via contained resources.
+function isInsideBundleEntryResource(path: string): boolean {
+    return /\.entry\[\d+\]\.resource\./.test(path);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
 }
 
 function isFhirExpression(obj: Record<string, unknown>): boolean {
@@ -196,6 +233,3 @@ function isFhirExpression(obj: Record<string, unknown>): boolean {
         || typeof obj.name === 'string'
         || typeof obj.description === 'string';
 }
-
-// Export singleton instance
-export const referenceFormatValidator = new ReferenceFormatValidator();

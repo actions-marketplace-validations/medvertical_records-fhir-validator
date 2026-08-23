@@ -1,143 +1,55 @@
 /** Loads and caches FHIR StructureDefinitions from bundled, local, and remote sources. */
 
-import { PackageDownloader } from '../package/package-downloader.js';
-import { PackageRegistryClient, packageRegistryClient } from '../package/package-registry-client.js';
-import { logger } from '../logger';
 import type { StructureDefinition } from './structure-definition-types';
 import type { ProfileSourcesConfig, ValidationSettings } from '../types';
 import type { ProfileSourceContext } from '../persistence';
-import { normalizeProfileSourcesConfig } from '@records-fhir/validation-types';
-import { isRelevantPackage as _isRelevantPackage } from './sd-loader-filesystem';
-import { parseAllowedPackages, isPackageAllowed as _isPackageAllowed } from './sd-loader-package-config';
-import {
-  cacheKeyForProfile,
-  fhirVersionFamily,
-} from './sd-loader-version-utils';
-import { resolveDefaultBundledProfilesPath } from './sd-loader-bundled-path';
-import { sanitizeProfile } from './sd-loader-profile-sanitizer';
 import { loadIGPackageIntoAvailableProfiles } from './sd-loader-ig-package';
+import { cacheLoadedIGPackage } from './sd-loader-ig-package-cache';
 import { loadProfilesBatchWithCache } from './sd-loader-batch-loader';
-import { scanProfileSources, warmUpProfilesFromDatabase } from './sd-loader-initialization';
-import { loadProfile, type LoadProfileContext } from './sd-loader-load';
+import { getCachedBaseResourceType } from './sd-loader-base-resource-type';
+import { storeExternalProfile } from './sd-loader-external-profile-cache';
+import type { PinnedCanonicalFingerprint } from './sd-loader-pinned-canonical';
+import {
+  StructureDefinitionLoaderRuntime,
+  type StructureDefinitionLoaderOptions,
+} from './sd-loader-runtime';
 export { normalizeKnownStructureDefinitionCanonicalUrl } from './sd-loader-version-utils';
 
-export type {
-  StructureDefinition,
-  ElementDefinition,
-  ElementType,
-  Constraint,
-  Binding
-} from './structure-definition-types';
+export type { Binding, Constraint, ElementDefinition, ElementType, StructureDefinition } from './structure-definition-types';
 
 export class StructureDefinitionLoader {
-  private cachePath: string;
-  private bundledPath: string | null;
-  private cache: Map<string, StructureDefinition> = new Map();
-  private availableProfiles: Set<string> = new Set();
-  private packageSources: string[] = [];
-  private packageDownloader: PackageDownloader;
-  private registryClient: PackageRegistryClient;
-  private autoDownload: boolean;
-  private profileSourcesConfig: ProfileSourcesConfig;
-  private allowedPackages: string[];
-  private packageVersionPins: Record<string, string>;
-  private initializationPromise: Promise<void>;
-  private dbCacheNotFound: Set<string> = new Set(); // Negative cache for DB lookups
-  private profileNotFound: Set<string> = new Set(); // Negative cache for full loadProfile misses
-  private profileLoadPromises = new Map<string, Promise<StructureDefinition | null>>();
-  private initializationComplete: boolean = false; // Guard against re-initialization
-  private pinnedCanonicals: Map<string, string> | null = null; // url → url|version
-  private readonly maxCacheEntries: number;
-  // External registrations have no durable reload source. The cache budget
-  // therefore applies only to entries the loader can reconstruct.
-  private readonly externalProfileCacheKeys = new Set<string>();
+  private readonly runtime: StructureDefinitionLoaderRuntime;
   private profileSourceContext?: ProfileSourceContext;
   private profileResolutionSettings?: ValidationSettings;
 
   constructor(
     cachePath: string,
     bundledPath?: string | null,
-    options?: {
-      autoDownload?: boolean;
-      profileSourcesConfig?: ProfileSourcesConfig;
-      allowedPackages?: string[];
-      packageVersionPins?: Record<string, string>;
-      packageDownloader?: PackageDownloader;
-      registryClient?: PackageRegistryClient;
-      maxCacheEntries?: number;
-    }
+    options?: StructureDefinitionLoaderOptions,
   ) {
-    this.cachePath = cachePath;
-    this.bundledPath = bundledPath ?? resolveDefaultBundledProfilesPath();
-    this.autoDownload = options?.autoDownload ?? (process.env.FHIR_AUTO_DOWNLOAD_PACKAGES === 'true');
-    this.profileSourcesConfig = normalizeProfileSourcesConfig(options?.profileSourcesConfig);
-    this.allowedPackages = options?.allowedPackages ?? parseAllowedPackages();
-    this.registryClient = options?.registryClient ?? packageRegistryClient;
-    this.packageVersionPins = { ...(options?.packageVersionPins ?? {}) };
-    this.packageDownloader = options?.packageDownloader ?? new PackageDownloader(this.cachePath, this.registryClient);
-    this.maxCacheEntries = Math.max(1, Math.trunc(options?.maxCacheEntries ?? 192));
-
-    this.packageSources = [
-      ...(this.bundledPath ? [this.bundledPath] : []),
-      this.cachePath
-    ];
-
-    logger.info(`[SDLoader] Package sources: ${this.packageSources.join(', ')}`);
-    logger.info(`[SDLoader] Auto-download: ${this.autoDownload ? 'enabled' : 'disabled'}`);
-    if (this.autoDownload) {
-      logger.debug(`[SDLoader] Allowed packages: ${this.allowedPackages.join(', ')}`);
-    }
-
-    this.initializationPromise = this.initializeCache();
+    this.runtime = new StructureDefinitionLoaderRuntime(cachePath, bundledPath, options);
   }
 
   async waitForInitialization(): Promise<void> {
-    await this.initializationPromise;
+    await this.runtime.waitForInitialization();
   }
 
-  /**
-   * Set pinned canonical map from the package resolver. When set,
-   * loadProfile() resolves unversioned URLs to their pinned version
-   * before looking up caches, eliminating runtime ambiguity.
-   */
+  /** Package store directories this loader resolves profiles from. */
+  getPackageSources(): string[] {
+    return [...this.runtime.packageSources];
+  }
+
+  /** Pin unversioned canonical URLs before cache lookup. */
   setPinnedCanonicals(pinned: Map<string, string>): void {
-    this.pinnedCanonicals = pinned;
-    logger.info(`[SDLoader] Pinned ${pinned.size} canonical(s) — runtime resolution is now deterministic`);
+    this.runtime.policy.setPinnedCanonicals(pinned);
   }
 
   getPinnedCanonicalCount(): number {
-    return this.pinnedCanonicals?.size ?? 0;
+    return this.runtime.policy.getPinnedCanonicalCount();
   }
 
-  private async initializeCache(): Promise<void> {
-    if (this.initializationComplete) {
-      logger.debug('[SDLoader] Already initialized, skipping');
-      return;
-    }
-
-    const startTime = Date.now();
-
-    try {
-      await scanProfileSources({
-        packageSources: this.packageSources,
-        availableProfiles: this.availableProfiles,
-        packageVersionPins: this.packageVersionPins,
-      });
-
-      await warmUpProfilesFromDatabase({
-        cache: this.cache,
-        availableProfiles: this.availableProfiles,
-      });
-      this.pruneProfileCache();
-
-      const elapsed = Date.now() - startTime;
-      logger.info(`[SDLoader] ✅ Initialization complete in ${elapsed}ms (bundled: ${this.availableProfiles.size}, cached: ${this.cache.size})`);
-
-      this.initializationComplete = true;
-
-    } catch (error) {
-      logger.warn('[SDLoader] Error initializing cache:', error);
-    }
+  getPinnedCanonicalFingerprint(): PinnedCanonicalFingerprint {
+    return this.runtime.policy.getPinnedCanonicalFingerprint();
   }
 
   /**
@@ -159,11 +71,11 @@ export class StructureDefinitionLoader {
     const profiles = await loadProfilesBatchWithCache({
       urls,
       fhirVersion,
-      cache: this.cache,
-      resolvePinnedCanonical: url => this.resolvePinnedCanonical(url),
+      cache: this.runtime.cache,
+      resolvePinnedCanonical: url => this.runtime.policy.resolvePinnedCanonical(url),
       loadProfile: (url, version) => this.loadProfile(url, version),
     });
-    this.pruneProfileCache();
+    this.runtime.pruneProfileCache();
     return profiles;
   }
 
@@ -189,59 +101,16 @@ export class StructureDefinitionLoader {
     url: string,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
   ): Promise<StructureDefinition | null> {
-    return loadProfile(this.loadContext(), url, fhirVersion).finally(() => {
-      this.pruneProfileCache();
-    });
-  }
-
-  private pruneProfileCache(): void {
-    while (this.cache.size > this.maxCacheEntries) {
-      const oldestEvictableKey = this.oldestEvictableCacheKey();
-      if (oldestEvictableKey === undefined) break;
-      this.cache.delete(oldestEvictableKey);
-    }
-  }
-
-  private oldestEvictableCacheKey(): string | undefined {
-    for (const cacheKey of this.cache.keys()) {
-      if (!this.externalProfileCacheKeys.has(cacheKey)) return cacheKey;
-    }
-    return undefined;
-  }
-
-  private loadContext(): LoadProfileContext {
-    return {
-      availableProfiles: this.availableProfiles,
-      packageSources: this.packageSources,
-      cache: this.cache,
-      profileNotFound: this.profileNotFound,
-      dbCacheNotFound: this.dbCacheNotFound,
-      profileLoadPromises: this.profileLoadPromises,
-      autoDownload: this.autoDownload,
-      registryClient: this.registryClient,
-      packageDownloader: this.packageDownloader,
-      allowedPackages: this.allowedPackages,
-      packageVersionPins: this.packageVersionPins,
-      profileSourcesConfig: this.profileSourcesConfig,
-      profileSourceContext: this.profileSourceContext,
-      profileResolutionSettings: this.profileResolutionSettings,
-      resolvePinnedCanonical: (candidateUrl: string) => this.resolvePinnedCanonical(candidateUrl),
-    };
+    return this.runtime.loadProfile(
+      url,
+      fhirVersion,
+      this.profileSourceContext,
+      this.profileResolutionSettings,
+    );
   }
 
   async hasBaseProfiles(): Promise<boolean> {
-    const baseProfiles = [
-      'http://hl7.org/fhir/StructureDefinition/Patient',
-      'http://hl7.org/fhir/StructureDefinition/Observation',
-    ];
-
-    for (const profileUrl of baseProfiles) {
-      if (this.availableProfiles.has(profileUrl)) {
-        return true;
-      }
-    }
-
-    return false;
+    return this.runtime.hasBaseProfiles();
   }
 
   /**
@@ -250,143 +119,104 @@ export class StructureDefinitionLoader {
    * Returns null if the profile is not in the in-memory cache.
    */
   getBaseResourceType(canonicalUrl: string): string | null {
-    // Try version-specific keys first (R4, R5), then bare URL
-    for (const suffix of [':R4', ':R5', '']) {
-      const sd = this.cache.get(canonicalUrl + suffix);
-      if (sd?.type) return sd.type;
-    }
-    return null;
+    return getCachedBaseResourceType(this.runtime.cache, canonicalUrl);
   }
 
   isProfileAvailable(url: string): boolean {
-    return this.availableProfiles.has(url) || this.cache.has(url);
+    return this.runtime.availableProfiles.has(url) || this.runtime.cache.has(url);
   }
 
   getAvailableProfiles(): string[] {
-    return Array.from(this.availableProfiles);
+    return Array.from(this.runtime.availableProfiles);
   }
 
-  async loadIGPackage(
-    packageId: string,
-    version?: string
-  ): Promise<void> {
-    return loadIGPackageIntoAvailableProfiles(this.cachePath, this.availableProfiles, packageId, version);
+  async loadIGPackage(packageId: string, version?: string): Promise<void> {
+    await this.waitForInitialization();
+    const loaded = await loadIGPackageIntoAvailableProfiles(
+      this.runtime.cachePath,
+      this.runtime.availableProfiles,
+      packageId,
+      version,
+    );
+    if (!loaded) return;
+    if (loaded.version) {
+      this.setPackageVersionPins({
+        ...this.runtime.policy.packagePins,
+        [loaded.packageId]: loaded.version,
+      });
+    }
+    cacheLoadedIGPackage({
+      loaded,
+      cache: this.runtime.cache,
+      availableProfiles: this.runtime.availableProfiles,
+      profileLoadPromises: this.runtime.profileLoadPromises,
+    });
+    this.runtime.pruneProfileCache();
   }
 
   setAutoDownload(enabled: boolean): void {
-    this.autoDownload = enabled;
-    logger.info(`[SDLoader] Auto-download ${enabled ? 'enabled' : 'disabled'}`);
+    this.runtime.policy.setAutoDownload(enabled);
   }
 
   /**
    * Update which remote sources are allowed for profile resolution.
    */
   setProfileSourcesConfig(config: ProfileSourcesConfig): void {
-    this.profileSourcesConfig = normalizeProfileSourcesConfig(config);
-    logger.info(
-      `[SDLoader] Profile sources updated: ` +
-      `Simplifier=${this.profileSourcesConfig.simplifier}, Registry=${this.profileSourcesConfig.packageRegistry}`
-    );
+    this.runtime.policy.setProfileSourcesConfig(config);
   }
 
   getProfileSourcesConfig(): ProfileSourcesConfig {
-    return { ...this.profileSourcesConfig };
+    return this.runtime.policy.getProfileSourcesConfig();
   }
 
   isAutoDownloadEnabled(): boolean {
-    return this.autoDownload;
+    return this.runtime.policy.autoDownloadEnabled;
   }
 
   setAllowedPackages(packages: string[]): void {
-    this.allowedPackages = packages;
-    logger.info(`[SDLoader] Allowed packages updated: ${packages.join(', ')}`);
+    this.runtime.policy.setAllowedPackages(packages);
   }
 
   getAllowedPackages(): string[] {
-    return [...this.allowedPackages];
+    return this.runtime.policy.getAllowedPackages();
   }
 
   /**
    * Pin package versions used by auto-download.
    */
   setPackageVersionPins(pins: Record<string, string>): void {
-    this.packageVersionPins = { ...pins };
-    logger.info(`[SDLoader] Package version pins updated: ${Object.keys(pins).length} package(s)`);
+    this.runtime.policy.setPackageVersionPins(pins);
   }
 
   getPackageVersionPins(): Record<string, string> {
-    return { ...this.packageVersionPins };
+    return this.runtime.policy.getPackageVersionPins();
   }
 
-  /**
-   * Cache a profile from external source (e.g., FHIR client)
-   * This ensures profiles loaded from the FHIR server are reused in subsequent validation runs
-   */
   cacheProfile(url: string, profile: StructureDefinition, fhirVersion?: 'R4' | 'R5' | 'R6'): void {
-    if (!profile || !url) return;
-
-    const family = fhirVersionFamily(profile) ?? fhirVersion ?? 'R4';
-    const cacheKey = cacheKeyForProfile(url, family);
-    this.cache.set(cacheKey, profile);
-    this.externalProfileCacheKeys.add(cacheKey);
-    this.availableProfiles.add(url);
-    this.profileNotFound.delete(cacheKey);
-    this.profileLoadPromises.delete(cacheKey);
-    logger.debug(`[SDLoader] Externally cached profile: ${url} (${family})`);
+    storeExternalProfile({
+      url, profile, fhirVersion,
+      cache: this.runtime.cache,
+      externalProfileCacheKeys: this.runtime.externalProfileCacheKeys,
+      availableProfiles: this.runtime.availableProfiles,
+      profileLoadPromises: this.runtime.profileLoadPromises,
+    });
   }
 
-  private resolvePinnedCanonical(url: string): string {
-    if (this.pinnedCanonicals && !url.includes('|')) {
-      const pinned = this.pinnedCanonicals.get(url);
-      if (pinned) {
-        logger.debug(`[SDLoader] Pinned: ${url} → ${pinned}`);
-        return pinned;
-      }
-    }
-    return url;
-  }
-
-  /**
-   * Register an external StructureDefinition with the loader.
-   *
-   * Unlike cacheProfile(), this method caches using the same version-specific
-   * cache key format that loadProfile() uses (`${url}:${fhirVersion}`), so the
-   * registered profile is actually discoverable by the main validation path.
-   *
-   * Used by:
-   * - Conformance test harness (case-runner) to preload supporting profiles
-   * - External callers that want to inject a profile without filesystem/download
-   */
   registerExternalProfile(
     sd: StructureDefinition,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4'
   ): boolean {
-    if (!sd || !sd.url) {
-      logger.warn('[SDLoader] registerExternalProfile: SD has no url, skipping');
-      return false;
-    }
-
-    const sanitized = sanitizeProfile(sd);
-    const cacheKey = `${sd.url}:${fhirVersion}`;
-
-    this.cache.set(cacheKey, sanitized);
-    this.externalProfileCacheKeys.add(cacheKey);
-    this.availableProfiles.add(sd.url);
-    this.dbCacheNotFound.delete(sd.url);
-    this.dbCacheNotFound.delete(cacheKey);
-    this.profileNotFound.delete(cacheKey);
-    this.profileLoadPromises.delete(cacheKey);
-
-    logger.debug(`[SDLoader] Registered external profile: ${sd.url} (${fhirVersion})`);
-    return true;
+    return storeExternalProfile({
+      url: sd?.url, profile: sd, fhirVersion,
+      cache: this.runtime.cache,
+      externalProfileCacheKeys: this.runtime.externalProfileCacheKeys,
+      availableProfiles: this.runtime.availableProfiles,
+      profileLoadPromises: this.runtime.profileLoadPromises,
+    });
   }
 
   clearCache(): void {
-    this.cache.clear();
-    this.externalProfileCacheKeys.clear();
-    this.profileNotFound.clear();
-    this.profileLoadPromises.clear();
-    logger.info('[SDLoader] Cache cleared');
+    this.runtime.clearCache();
   }
 
 }

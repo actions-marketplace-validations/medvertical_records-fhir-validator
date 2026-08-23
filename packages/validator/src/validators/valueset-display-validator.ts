@@ -12,9 +12,10 @@ import {
   type CodeInfo,
 } from './valueset-display-utils';
 import { type FhirVersion, versionedExpansionCacheKey } from './valueset-expansion-cache-key';
+import { codeSystemCanonicalsEquivalent } from './code-system-canonical-aliases';
 
 export async function validateDisplayMatchesCodeSystem(
-  rawCode: any,
+  rawCode: unknown,
   codeInfo: CodeInfo,
   valueSetUrl: string,
   elementPath: string,
@@ -75,7 +76,7 @@ async function resolveAcceptedDisplays(
     ?? context.cache.getValueSetFile(valueSetUrl)
     ?? context.cache.getValueSetFile(valueSetUrl.split('|')[0]);
   const include = valueSet?.compose?.include?.find(entry =>
-    entry.system === codeInfo.system
+    codeSystemCanonicalsEquivalent(entry.system, codeInfo.system)
   );
   const cacheKey = include?.version ? `${codeInfo.system}|${include.version}` : codeInfo.system;
   let codeSystem = context.cache.getCodeSystem(cacheKey)
@@ -113,8 +114,11 @@ function findCodeSystemConcept(
   return null;
 }
 
-function resolveDisplayPath(rawCode: any, elementPath: string, codeInfo: CodeInfo): string {
-  if (rawCode?.coding && Array.isArray(rawCode.coding)) {
+function resolveDisplayPath(rawCode: unknown, elementPath: string, codeInfo: CodeInfo): string {
+  const code = rawCode !== null && typeof rawCode === 'object' && !Array.isArray(rawCode)
+    ? rawCode as Record<string, unknown>
+    : undefined;
+  if (Array.isArray(code?.coding)) {
     return `${elementPath}.coding[${codeInfo.codingIndex ?? 0}].display`;
   }
   return `${elementPath}.display`;

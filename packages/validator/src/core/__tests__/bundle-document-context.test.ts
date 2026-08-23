@@ -13,6 +13,62 @@ const terminologyBindingIssue: ValidationIssue = {
 };
 
 describe('buildBundleDocumentContextIssues', () => {
+  it('turns an unresolved profile required by a Bundle entry slice into a parent conformance error', () => {
+    const requiredProfile = 'http://example.org/StructureDefinition/required-condition';
+    const bundleProfile: StructureDefinition = {
+      resourceType: 'StructureDefinition',
+      url: 'http://example.org/StructureDefinition/condition-bundle',
+      type: 'Bundle',
+      snapshot: {
+        element: [
+          {
+            id: 'Bundle.entry:condition',
+            path: 'Bundle.entry',
+            sliceName: 'condition',
+            min: 1,
+            max: '*',
+          },
+          {
+            id: 'Bundle.entry:condition.resource',
+            path: 'Bundle.entry.resource',
+            min: 1,
+            max: '1',
+            type: [{ code: 'Condition', profile: [requiredProfile] }],
+          } as any,
+        ],
+      },
+    } as StructureDefinition;
+    const condition = { resourceType: 'Condition', id: 'condition-1' };
+    const bundle = {
+      resourceType: 'Bundle',
+      meta: { profile: [bundleProfile.url] },
+      entry: [{ resource: condition }],
+    };
+    const unresolvedProfileIssue: ValidationIssue = {
+      aspect: 'profile',
+      severity: 'warning',
+      code: 'profile-not-resolved',
+      message: 'Profile unavailable',
+      path: 'Condition.meta.profile',
+      profile: requiredProfile,
+    };
+
+    const issues = buildBundleDocumentContextIssues(bundle, [{
+      index: 0,
+      entryResource: condition,
+      resourceType: 'Condition',
+      issues: [unresolvedProfileIssue],
+    }], bundleProfile);
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      severity: 'error',
+      code: 'profile-not-found',
+      ruleId: 'bundle-entry-required-profile-not-resolved',
+      path: 'Bundle.entry[0].resource/*Condition/condition-1*/',
+      details: expect.objectContaining({ requiredProfile }),
+    }));
+  });
+
   it('does not treat targetProfile Resource as a failed child conformance match', () => {
     const compositionProfile: StructureDefinition = {
       resourceType: 'StructureDefinition',

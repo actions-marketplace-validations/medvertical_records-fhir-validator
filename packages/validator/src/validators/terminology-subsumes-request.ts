@@ -1,0 +1,96 @@
+import axios from 'axios';
+import type { CircuitBreaker } from '../terminology';
+import { logger } from '../logger';
+import { isTransientTerminologyFailure } from './terminology-api-error-policy';
+import {
+  DEFAULT_REMOTE_TERMINOLOGY_TIMEOUT_MS,
+  getRemoteTerminologyTimeoutMs,
+  recordTerminologyResponse,
+} from './terminology-api-remote-policy';
+import type { TerminologyRequestConfigBuilder } from './terminology-api-request-config';
+import type { SubsumptionOutcome } from './terminology-api-types';
+import { extractSubsumptionOutcome } from './terminology-parameters';
+import type {
+  TerminologyResolutionConfig,
+  TerminologyServerOverride,
+} from './valueset-types';
+import type { TerminologyOperationCache } from './terminology-operation-cache';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+
+interface SubsumesRequestOptions {
+  cacheKey: string;
+  circuitBreaker: CircuitBreaker;
+  codeA: string;
+  codeB: string;
+  config: TerminologyResolutionConfig;
+  override?: TerminologyServerOverride;
+  operationCache: TerminologyOperationCache;
+  requestConfigBuilder: TerminologyRequestConfigBuilder;
+  serverUrl: string;
+  system: string;
+}
+
+export async function executeSubsumesRequest({
+  cacheKey,
+  circuitBreaker,
+  codeA,
+  codeB,
+  config,
+  override,
+  operationCache,
+  requestConfigBuilder,
+  serverUrl,
+  system,
+}: SubsumesRequestOptions): Promise<SubsumptionOutcome> {
+  try {
+    const startedAt = Date.now();
+    const response = await axios.get(
+      `${serverUrl}/CodeSystem/$subsumes`,
+      await requestConfigBuilder.build(
+        override?.auth,
+        getRemoteTerminologyTimeoutMs(
+          config,
+          DEFAULT_REMOTE_TERMINOLOGY_TIMEOUT_MS,
+        ),
+        {
+          system,
+          codeA,
+          codeB,
+          _format: 'json',
+        },
+      ),
+    );
+
+    const outcome = extractSubsumptionOutcome(response.data);
+    if (outcome) {
+      recordTerminologyResponse(
+        circuitBreaker,
+        config,
+        'CodeSystem/$subsumes',
+        serverUrl,
+        startedAt,
+      );
+      operationCache.storeSubsumes(cacheKey, outcome);
+      return outcome;
+    }
+    recordTerminologyResponse(
+      circuitBreaker,
+      config,
+      'CodeSystem/$subsumes',
+      serverUrl,
+      startedAt,
+    );
+  } catch (error: unknown) {
+    if (isTransientTerminologyFailure(error)) {
+      circuitBreaker.recordFailure();
+    } else {
+      circuitBreaker.recordSuccess();
+    }
+    logger.debug(
+      '[TerminologyApiClient] Server $subsumes failed',
+      validationFailureMetadata(error),
+    );
+  }
+
+  return 'unknown';
+}

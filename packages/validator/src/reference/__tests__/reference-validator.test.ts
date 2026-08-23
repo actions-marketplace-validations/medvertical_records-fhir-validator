@@ -83,4 +83,72 @@ describe('ReferenceValidator', () => {
 
     expect(issues.some(issue => issue.code === 'reference-unresolved')).toBe(false);
   });
+
+  it('marks recursive validation failures as incomplete without exposing exception text', async () => {
+    const validator = new ReferenceValidator({
+      recursiveValidator: {
+        validateRecursively: async () => {
+          throw new Error('https://user:secret@internal.example/private');
+        },
+      } as never,
+    });
+
+    const issues = await validator.validateInternal(
+      {
+        resourceType: 'Observation',
+        id: 'obs-1',
+        subject: { reference: 'Patient/patient-1' },
+      },
+      'Observation',
+      'R4',
+      {
+        recursiveReferenceValidation: {
+          enabled: true,
+          maxDepth: 2,
+          validateExternal: true,
+          maxReferencesPerResource: 10,
+        },
+      } as any,
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'reference-validation-error',
+      severity: 'error',
+      details: expect.objectContaining({
+        resourceType: 'Observation',
+        stage: 'recursive',
+      }),
+    }));
+    expect(JSON.stringify(issues)).not.toContain('secret');
+  });
+
+  it('maps direct validation failures without exposing exception text', async () => {
+    const validator = new ReferenceValidator({
+      constraintValidator: {
+        validateReferenceType: () => {
+          throw new Error('https://user:secret@internal.example/private');
+        },
+      } as never,
+    });
+
+    const issues = await validator.validateInternal(
+      {
+        resourceType: 'Observation',
+        id: 'obs-1',
+        subject: { reference: 'Patient/patient-1' },
+      },
+      'Observation',
+      'R4',
+    );
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'reference-validation-error',
+      severity: 'error',
+      details: expect.objectContaining({
+        resourceType: 'Observation',
+        stage: 'reference',
+      }),
+    }));
+    expect(JSON.stringify(issues)).not.toContain('secret');
+  });
 });

@@ -6,6 +6,7 @@ import {
   normalizeVersionedCoreStructureDefinitionUrl,
   urlMatchesRequestedFhirVersion,
 } from './sd-loader-version-utils';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
 interface LoadProfilesBatchArgs {
   urls: string[];
@@ -41,8 +42,10 @@ export async function loadProfilesBatchWithCache({
           results.set(url, sd);
         }
       } catch (error: unknown) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        logger.warn(`[SDLoader] Failed to load profile ${url}:`, err.message || error);
+        logger.warn(
+          '[SDLoader] Batch profile load failed',
+          validationFailureMetadata(error),
+        );
       }
     }));
 
@@ -55,7 +58,7 @@ export async function loadProfilesBatchWithCache({
 
     return results;
   } catch (error) {
-    logger.error('[SDLoader] Batch load error:', error);
+    logger.error('[SDLoader] Batch load failed', validationFailureMetadata(error));
     return results;
   }
 }

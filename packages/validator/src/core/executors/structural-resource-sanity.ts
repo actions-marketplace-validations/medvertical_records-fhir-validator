@@ -1,7 +1,9 @@
 import type { ValidationIssue } from '../../types';
+import { validateResourceLanguage } from '../../validators/language-code-validator';
 import {
   validateContainedResourceIdsPresent,
   validateContainedResourcesReferenced,
+  validateIllegalXmlCharacterPrimitives,
   validateNoEmptyArrays,
   validateOrphanPrimitiveSidecars,
   validatePrimitiveSidecarArrayAlignment,
@@ -13,24 +15,24 @@ import {
 
 interface ResourceSanityValidators {
   attachment: {
-    validate(resource: any): ValidationIssue[];
+    validate(resource: unknown): ValidationIssue[];
   };
   canonicalResourceInvariant: {
-    validate(resource: any): ValidationIssue[];
+    validate(resource: unknown): ValidationIssue[];
   };
   structureDefinition: {
-    validate(resource: any): ValidationIssue[];
+    validate(resource: unknown): ValidationIssue[];
   };
   stringSecurity: {
-    validate(resource: any): ValidationIssue[];
+    validate(resource: unknown): ValidationIssue[];
   };
   narrative: {
-    validateNarrative(resource: any, resourceType: string): ValidationIssue[];
+    validateNarrative(resource: unknown, resourceType: string): ValidationIssue[];
   };
   questionnaire: {
     validateAnyResource(
-      resource: any,
-      contextQuestionnaire?: any,
+      resource: unknown,
+      contextQuestionnaire?: unknown,
       options?: ResourceSanityOptions,
       fhirVersion?: 'R4' | 'R5' | 'R6',
     ): ValidationIssue[];
@@ -42,13 +44,13 @@ interface ResourceSanityOptions {
 }
 
 export function validateResourceSanity(
-  resource: any,
+  resource: unknown,
   validators: ResourceSanityValidators,
-  contextQuestionnaire?: any,
+  contextQuestionnaire?: unknown,
   options: ResourceSanityOptions = {},
   fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
 ): ValidationIssue[] {
-  const resourceType = resource?.resourceType || 'Resource';
+  const resourceType = getResourceType(resource);
   const issues = [
     ...validateResourceId(resource, resourceType),
     ...validateContainedResourceIdsPresent(resource, resourceType),
@@ -61,7 +63,9 @@ export function validateResourceSanity(
     ...validators.structureDefinition.validate(resource),
     ...validators.stringSecurity.validate(resource),
     ...validators.narrative.validateNarrative(resource, resourceType),
+    ...validateResourceLanguage(resource, resourceType),
     ...validateWhitespaceOnlyPrimitives(resource, resourceType),
+    ...validateIllegalXmlCharacterPrimitives(resource, resourceType),
     ...validateOrphanPrimitiveSidecars(resource, resourceType),
     ...validatePrimitiveSidecarArrayAlignment(resource, resourceType),
   ];
@@ -76,4 +80,14 @@ export function validateResourceSanity(
   }
 
   return issues;
+}
+
+function getResourceType(resource: unknown): string {
+  if (typeof resource !== 'object' || resource === null || Array.isArray(resource)) {
+    return 'Resource';
+  }
+  const resourceType = (resource as Record<string, unknown>).resourceType;
+  return typeof resourceType === 'string' && resourceType.length > 0
+    ? resourceType
+    : 'Resource';
 }
