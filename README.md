@@ -70,7 +70,7 @@ The `validator-v<semver>` tag is the npm mirror/release-page tag. Use
 ### npm Package
 
 ```sh
-npm install @records-fhir/validator@0.6.1 @records-fhir/validation-types@0.1.7
+npm install @records-fhir/validator@0.6.1 @records-fhir/validation-types@0.1.8
 ```
 
 Run the CLI against one file or a folder:
@@ -141,7 +141,7 @@ includes `file`, `resourceType`, `profileUrl`, and `issues`. With
 ## What Is Included
 
 - `@records-fhir/validator` 0.6.1 - Apache-2.0 validation engine.
-- `@records-fhir/validation-types` 0.1.7 - Apache-2.0 validation-domain types.
+- `@records-fhir/validation-types` 0.1.8 - Apache-2.0 validation-domain types.
 - Composite GitHub Action at repository root.
 - Standalone examples under `packages/validator/examples/`.
 - Boundary audit and smoke-test scripts.

@@ -11,6 +11,33 @@ captures changes that affect type-package consumers directly.
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-08-24
+
+Released alongside `@records-fhir/validator` 0.6.1.
+
+### Surface
+
+- `string-whitespace-padding` no longer carries a patch template. The
+  trimmed value is deliberately absent from validator 0.6.1's issue
+  details — a padded `Patient.name.family` is clinical content — so the
+  template could no longer resolve, and `resolvePatch` returned `null`
+  for it. Removing it makes the catalog say what the validator does.
+  Consumers that read `suggestion.patch` directly should treat its
+  absence as "trim locally"; the `fix` and `example` text is unchanged.
+
+## [0.1.7] — 2026-08-19
+
+Released alongside `@records-fhir/validator` 0.6.0. Documented
+retroactively — the version shipped without an entry here.
+
+### Surface
+
+- Added fix-suggestion catalog entries for the checks introduced in
+  validator 0.6.0: `attachment-att1-violation`, `attachment-no-content`,
+  `narrative-txt2-violation`, `date-year-implausible`,
+  `string-whitespace-padding`, `decimal-value-out-of-range`, and
+  `language-code-invalid`.
+
 ## [0.1.6] — 2026-07-23
 
 Released alongside `@records-fhir/validator` 0.5.0.
