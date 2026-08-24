@@ -165,7 +165,9 @@ export const CATALOG_CORE: Record<string, FixSuggestion> = {
         why: 'Leading or trailing whitespace in string values is usually accidental and breaks exact matching and display.',
         fix: 'Trim the whitespace from the start and end of the value.',
         example: 'Use "Smith" instead of " Smith ".',
-        patch: { action: 'replace', path: '{{fieldPath}}', value: '{{suggestedValue}}' },
+        // No patch template: the trimmed value is deliberately absent from the
+        // finding (a padded name is clinical content), and the client already
+        // holds the resource to trim it locally.
     },
     'decimal-value-out-of-range': {
         why: 'The decimal needs more than 18 digits, which is outside the range commonly supported by FHIR systems and usually indicates a data entry or unit error.',

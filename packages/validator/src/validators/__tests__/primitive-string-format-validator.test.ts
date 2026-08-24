@@ -9,8 +9,16 @@ describe('validatePrimitiveStringFormat string whitespace lint', () => {
       code: 'string-whitespace-padding',
       severity: 'warning',
       path: 'Patient.name[0].family',
-      details: expect.objectContaining({ suggestedValue: 'padded' }),
+      details: expect.objectContaining({
+        leadingWhitespace: 1,
+        trailingWhitespace: 1,
+        valueLength: 8,
+      }),
     });
+    // A padded name is well-formed clinical content and both message and
+    // details are persisted, so the value must never appear in either.
+    expect(issue?.message).not.toContain('padded');
+    expect(JSON.stringify(issue?.details ?? {})).not.toContain('padded');
   });
 
   it('accepts a clean string value', () => {

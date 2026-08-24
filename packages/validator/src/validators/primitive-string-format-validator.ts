@@ -97,10 +97,12 @@ export function validateDateYearPlausibility(
     path,
     resourceType: normalizeResourceType('Unknown', path),
     profile: profileUrl,
-    customMessage: `The value '${value}' is outside the range of reasonable years - check for data entry error`,
+    // The year carries the whole finding, the rest of the value does not — and
+    // a full date (a birthDate above all) is identifying, so it stays out of
+    // the message and details that persistence writes to the database.
+    customMessage: `The year ${year} is outside the range of reasonable years (${MIN_PLAUSIBLE_YEAR}-${maxPlausibleYear}) - check for data entry error`,
     severityOverride: 'warning',
     details: {
-      value,
       year,
       minPlausibleYear: MIN_PLAUSIBLE_YEAR,
       maxPlausibleYear,
@@ -124,17 +126,25 @@ function createStringWhitespacePaddingIssue(
   if (isWhitespaceOnlyString(value)) return null;
   const trimmed = value.trim();
   if (trimmed === value) return null;
+  // Unlike a malformed lexical token, a padded string is well-formed clinical
+  // content (Patient.name.family, Organization.name). Message and details are
+  // persisted verbatim, so the finding describes the padding instead of
+  // quoting the value: position and width locate it without copying data.
+  const leading = value.length - value.trimStart().length;
+  const trailing = value.length - value.trimEnd().length;
+  const where = leading > 0 && trailing > 0 ? 'leading and trailing' : leading > 0 ? 'leading' : 'trailing';
   return createValidationIssue({
     code: 'string-whitespace-padding',
     path,
     resourceType: normalizeResourceType('Unknown', path),
     profile: profileUrl,
     customMessage:
-      `String value should not start or finish with whitespace: ${formatInvalidValueForMessage(value)}`,
+      `String value has ${where} whitespace (${leading} leading, ${trailing} trailing of ${value.length} characters)`,
     severityOverride: 'warning',
     details: {
-      valuePreview: truncateInvalidFormatValue(value),
-      ...(trimmed.length <= INVALID_FORMAT_VALUE_PREVIEW_LIMIT ? { suggestedValue: trimmed } : {}),
+      leadingWhitespace: leading,
+      trailingWhitespace: trailing,
+      valueLength: value.length,
       fixHint: 'Remove the leading/trailing whitespace from the string value.',
     },
   });

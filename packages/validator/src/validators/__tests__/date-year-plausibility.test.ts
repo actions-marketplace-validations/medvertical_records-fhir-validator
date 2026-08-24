@@ -16,8 +16,13 @@ describe('validateDateYearPlausibility', () => {
       code: 'date-year-implausible',
       severity: 'warning',
       message:
-        "The value '2140-03-26T13:57:27.779Z' is outside the range of reasonable years - check for data entry error",
+        'The year 2140 is outside the range of reasonable years '
+        + `(1800-${new Date().getUTCFullYear() + 80}) - check for data entry error`,
     }));
+    // The finding must not carry the date itself: message and details are
+    // persisted, and a full date (a birthDate above all) is identifying.
+    expect(issue?.message).not.toContain('2140-03-26');
+    expect(JSON.stringify(issue?.details ?? {})).not.toContain('2140-03-26');
   });
 
   it('accepts a contemporary date (2020-01-01)', () => {

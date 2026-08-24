@@ -10,6 +10,26 @@ ship together; package-only changes are noted under each release.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-24
+
+Patch release keeping clinical content out of persisted findings.
+
+### Fixed
+
+- Removed the offending value from `string-whitespace-padding` and
+  `date-year-implausible`. Both findings are persisted verbatim in the issue
+  message and details, so a padded `Patient.name.family` stored a patient name
+  and an implausible `birthDate` stored a full date. The padding finding now
+  reports where the whitespace sits and how wide it is, and the year finding
+  reports the year and the plausible range — enough to locate and fix the
+  defect without copying the data. Values are deliberately kept for
+  `decimal-value-out-of-range`, `language-code-invalid` and the terminology
+  codes: those are malformed numbers, language tags and codings rather than
+  well-formed clinical text, and the value is the finding.
+- Dropped the `string-whitespace-padding` patch template, which filled itself
+  from the removed trimmed value; the guidance remains and clients hold the
+  resource needed to trim it.
+
 ## [0.6.0] — 2026-08-23
 
 Minor release from a differential-fix campaign: the validator was run against

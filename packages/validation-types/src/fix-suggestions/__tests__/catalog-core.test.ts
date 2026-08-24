@@ -28,15 +28,12 @@ describe('fix-suggestion catalog (core)', () => {
     });
   });
 
-  it('resolves the whitespace-padding patch only when a trimmed value is available', () => {
+  it('offers whitespace-padding guidance without a value-bearing patch', () => {
     const suggestion = getFixSuggestion('string-whitespace-padding');
-    expect(suggestion?.patch).toBeDefined();
-    const resolved = resolvePatch(suggestion!.patch!, {
-      fieldPath: 'Patient.name[0].family',
-      suggestedValue: 'Smith',
-    });
-    expect(resolved).toEqual({ action: 'replace', path: 'Patient.name[0].family', value: 'Smith' });
-    // Long values omit suggestedValue from details — the patch must stay unresolved.
-    expect(resolvePatch(suggestion!.patch!, { fieldPath: 'Patient.name[0].family' })).toBeNull();
+    expect(suggestion?.fix).toBeDefined();
+    // The finding carries no trimmed value on purpose — a padded name is
+    // clinical content and both message and details are persisted — so there
+    // is nothing for a replace patch to fill.
+    expect(suggestion?.patch).toBeUndefined();
   });
 });
