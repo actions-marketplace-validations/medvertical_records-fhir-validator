@@ -29,6 +29,7 @@ export async function validateCodeSystemRemotely(
   system: string,
   display?: string,
   override?: TerminologyServerOverride,
+  codeSystemVersion?: string,
 ): Promise<CodeSystemValidationResult> {
   const serverUrl = override?.url ?? context.config.serverUrl;
   if (!serverUrl) {
@@ -39,7 +40,14 @@ export async function validateCodeSystemRemotely(
     return { valid: true };
   }
   const serverScope = getTerminologyServerScope(serverUrl, override?.auth ?? context.config.auth);
-  const cacheKey = makeCodeSystemValidateCodeCacheKey(serverScope, system, code, display);
+  const cacheKey = makeCodeSystemValidateCodeCacheKey(
+    serverScope,
+    system,
+    code,
+    display,
+    codeSystemVersion,
+    override?.authoritativeSnomedEdition === true,
+  );
   const cached = context.operationCache.getCodeSystemValidateCode<CodeSystemValidationResult>(cacheKey);
   if (cached) {
     logger.debug('[TerminologyApiClient] CodeSystem validate-code cache hit', terminologyTargetMetadata(system, code));
@@ -76,6 +84,7 @@ export async function validateCodeSystemRemotely(
           cacheKey,
           circuitBreaker,
           code,
+          codeSystemVersion,
           config: context.config,
           display,
           override,

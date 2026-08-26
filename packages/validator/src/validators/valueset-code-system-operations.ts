@@ -6,10 +6,12 @@ import type { SubsumptionOutcome } from './terminology-api-types';
 import {
   type TerminologyResolutionConfig,
   type TerminologyServerOverride,
+  type CodeBindingOutcome,
   isExternalCodeSystem,
 } from './valueset-types';
 import {
   hasTerminologyServer,
+  isSnomedEditionRouteMissing,
   resolveTerminologyServerForSystem,
 } from './valueset-server-routing';
 import { validateCodeViaTerminologyServerWithFilters } from './valueset-terminology-server-validation';
@@ -30,13 +32,23 @@ export class ValueSetCodeSystemOperations {
     return isExternalCodeSystem(system);
   }
 
-  resolveServer(system?: string): TerminologyServerOverride | undefined {
-    return resolveTerminologyServerForSystem(this.dependencies.getResolutionConfig(), system);
+  resolveServer(
+    system?: string,
+    fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
+  ): TerminologyServerOverride | undefined {
+    return resolveTerminologyServerForSystem(
+      this.dependencies.getResolutionConfig(),
+      system,
+      codeSystemVersion,
+      fhirVersion,
+    );
   }
 
-  hasServer(override?: { url: string }): boolean {
+  hasServer(override?: { url: string }, fhirVersion?: FhirVersion): boolean {
     const config = this.dependencies.getResolutionConfig();
-    return canDelegateCodeValidation(config) && hasTerminologyServer(config, override);
+    return canDelegateCodeValidation(config)
+      && hasTerminologyServer(config, override, fhirVersion);
   }
 
   async validateViaServer(options: {
@@ -46,21 +58,20 @@ export class ValueSetCodeSystemOperations {
     bindingStrength?: 'required' | 'extensible' | 'preferred' | 'example';
     override?: TerminologyServerOverride;
     fhirVersion?: FhirVersion;
-  }): Promise<boolean> {
-    const valid = await validateCodeViaTerminologyServerWithFilters({
+    codeSystemVersion?: string;
+  }): Promise<CodeBindingOutcome> {
+    return validateCodeViaTerminologyServerWithFilters({
       apiClient: this.dependencies.apiClient,
       packageLoader: this.dependencies.packageLoader,
-      hasTerminologyServer: this.hasServer.bind(this),
+      hasTerminologyServer: candidate => this.hasServer(candidate, options.fhirVersion),
       code: options.code,
       system: options.system,
       valueSetUrl: options.valueSetUrl,
       bindingStrength: options.bindingStrength,
       override: options.override,
       fhirVersion: options.fhirVersion,
+      codeSystemVersion: options.codeSystemVersion,
     });
-    return this.dependencies.apiClient.isValueSetNotResolvable(options.valueSetUrl, options.override)
-      ? false
-      : valid;
   }
 
   async validate(
@@ -68,24 +79,52 @@ export class ValueSetCodeSystemOperations {
     system: string,
     display?: string,
     fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
   ): Promise<CodeSystemValidationResult> {
-    const localResult = await this.validateLocal(code, system, display, fhirVersion);
+    const localResult = await this.validateLocal(
+      code,
+      system,
+      display,
+      fhirVersion,
+      codeSystemVersion,
+    );
     const resolutionConfig = this.dependencies.getResolutionConfig();
     if (localResult) {
-      return buildUnverifiableCodeSystemResult(code, system, localResult, resolutionConfig) ?? localResult;
+      return buildUnverifiableCodeSystemResult(
+        code, system, localResult, resolutionConfig, codeSystemVersion, fhirVersion,
+      ) ?? localResult;
     }
     if (!this.isExternal(system)) return { valid: true };
     if (!canDelegateCodeValidation(resolutionConfig)) return { valid: true };
 
+    const primaryOverride = this.resolveServer(system, fhirVersion, codeSystemVersion);
+    if (
+      isSnomedEditionRouteMissing(system, codeSystemVersion, primaryOverride)
+      || !this.hasServer(primaryOverride, fhirVersion)
+    ) {
+      return buildUnverifiableCodeSystemResult(
+        code,
+        system,
+        { valid: false, reason: 'code-unknown' },
+        resolutionConfig,
+        codeSystemVersion,
+        fhirVersion,
+      ) ?? { valid: true };
+    }
+
     const result = await validateCodeInCodeSystemWithFallbacks({
       apiClient: this.dependencies.apiClient,
       code,
+      codeSystemVersion,
       display,
-      primaryOverride: this.resolveServer(system),
+      fhirVersion,
+      primaryOverride,
       resolutionConfig,
       system,
     });
-    return buildUnverifiableCodeSystemResult(code, system, result, resolutionConfig) ?? result;
+    return buildUnverifiableCodeSystemResult(
+      code, system, result, resolutionConfig, codeSystemVersion, fhirVersion,
+    ) ?? result;
   }
 
   validateLocal(
@@ -93,6 +132,7 @@ export class ValueSetCodeSystemOperations {
     system: string,
     display?: string,
     fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
   ): Promise<CodeSystemValidationResult | null> {
     return validateCodeInLocalCodeSystem(
       { cache: this.dependencies.cache, packageLoader: this.dependencies.packageLoader },
@@ -100,6 +140,7 @@ export class ValueSetCodeSystemOperations {
       system,
       display,
       fhirVersion,
+      codeSystemVersion,
     );
   }
 

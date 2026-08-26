@@ -11,6 +11,17 @@ import { executeValueSetValidateCodeRequest } from './terminology-valueset-valid
 import type { TerminologyValueSetOperationsContext } from './terminology-valueset-operation-context';
 import { canDelegateCodeValidation } from './valueset-delegation-policy';
 import type { TerminologyServerOverride } from './valueset-types';
+import type { RemoteValueSetValidationResult } from './terminology-api-types';
+
+const UNVERIFIED_REJECTION: RemoteValueSetValidationResult = {
+  accepted: false,
+  outcome: 'unverified',
+};
+
+const UNVERIFIED_ACCEPTANCE: RemoteValueSetValidationResult = {
+  accepted: true,
+  outcome: 'unverified',
+};
 
 export interface RemoteValueSetValidationInput {
   code: string;
@@ -18,16 +29,17 @@ export interface RemoteValueSetValidationInput {
   valueSetUrl: string;
   bindingStrength?: 'required' | 'extensible' | 'preferred' | 'example';
   override?: TerminologyServerOverride;
+  codeSystemVersion?: string;
 }
 
 export async function validateCodeAgainstRemoteValueSet(
   context: TerminologyValueSetOperationsContext,
   input: RemoteValueSetValidationInput,
-): Promise<boolean> {
+): Promise<RemoteValueSetValidationResult> {
   const config = context.getConfig();
-  if (!canDelegateCodeValidation(config)) return false;
+  if (!canDelegateCodeValidation(config)) return UNVERIFIED_REJECTION;
   const serverUrl = input.override?.url ?? config.serverUrl;
-  if (!serverUrl) return false;
+  if (!serverUrl) return UNVERIFIED_REJECTION;
   const serverScope = getTerminologyServerScope(
     serverUrl,
     input.override?.auth ?? config.auth,
@@ -36,13 +48,15 @@ export async function validateCodeAgainstRemoteValueSet(
   const valueSetNotResolvableKey = makeValueSetNotResolvableCacheKey(
     serverScope,
     input.valueSetUrl,
+    input.system,
+    input.codeSystemVersion,
   );
   if (context.operationCache.getValueSetNotResolvable(valueSetNotResolvableKey)) {
     logger.debug(
       '[TerminologyApiClient] validate-code ValueSet not-resolvable cache hit',
       terminologyTargetMetadata(input.valueSetUrl),
     );
-    return true;
+    return UNVERIFIED_ACCEPTANCE;
   }
 
   const cacheKey = makeValidateCodeCacheKey(
@@ -51,6 +65,7 @@ export async function validateCodeAgainstRemoteValueSet(
     input.code,
     input.valueSetUrl,
     input.bindingStrength,
+    input.codeSystemVersion,
   );
   const cached = context.operationCache.getValidateCode(cacheKey);
   if (cached !== undefined) {
@@ -78,7 +93,7 @@ export async function validateCodeAgainstRemoteValueSet(
           '[TerminologyApiClient] $validate-code circuit open',
           terminologyTargetMetadata(serverUrl, input.system, input.code, input.valueSetUrl),
         );
-        return false;
+        return UNVERIFIED_REJECTION;
       }
       const requestConfig = context.getConfig();
       return executeValueSetValidateCodeRequest({
@@ -86,6 +101,7 @@ export async function validateCodeAgainstRemoteValueSet(
         cacheKey,
         circuitBreaker,
         code: input.code,
+        codeSystemVersion: input.codeSystemVersion,
         config: requestConfig,
         override: input.override,
         requestConfigBuilder: context.requestConfigBuilder,

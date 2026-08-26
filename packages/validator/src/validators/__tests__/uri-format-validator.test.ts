@@ -19,7 +19,7 @@ describe('validateUriFormat', () => {
     }));
   });
 
-  it.each(['urn:oid:1.2', 'urn:oid:1.7', 'urn:oid:1.40.3', 'urn:oid:2.03.4'])(
+  it.each(['urn:oid:1', 'urn:oid:1.40.3', 'urn:oid:2.03.4'])(
     'rejects syntactically invalid OID URIs: %s',
     (value) => {
       expect(validateUriFormat(
@@ -49,11 +49,23 @@ describe('validateUriFormat', () => {
       'DocumentReference.identifier[0].system',
       'DocumentReference',
     )).toBeNull();
+
+    expect(validateUriFormat(
+      'urn:oid:1.2',
+      'DocumentReference.contained[1].identifier[0].system',
+      'DocumentReference',
+    )).toBeNull();
+
+    expect(validateUriFormat(
+      'urn:oid:1.1',
+      'List.contained[1].identifier[0].system',
+      'List',
+    )).toBeNull();
   });
 
   it('does not hide invalid OIDs in Coding.system relative-URI paths', () => {
     expect(validateUriFormat(
-      'urn:oid:1.2',
+      'urn:oid:1',
       'Observation.code.coding[0].system',
       'Observation',
     )).toEqual(expect.objectContaining({

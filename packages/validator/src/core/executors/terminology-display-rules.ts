@@ -82,7 +82,7 @@ const KNOWN_EXTERNAL_DISPLAYS: Record<string, Record<string, string[]>> = {
     C106643: ['Manufactures human prescription drug products'],
   },
   'http://snomed.info/sct': {
-    '6736007': ['Midgrade', 'Moderate (severity modifier)', 'Moderate severity'],
+    '6736007': ['Moderate', 'Midgrade', 'Moderate (severity modifier)', 'Moderate severity'],
     '322236009': ['Paracetamol 500mg tablet', 'Acetaminophen 500mg tablet'],
     '329652003': ['Ibuprofen 200mg tablet'],
   },

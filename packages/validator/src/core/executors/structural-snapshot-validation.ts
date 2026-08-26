@@ -25,6 +25,7 @@ import {
   groupTargetsByContext,
   retargetIssuePath,
 } from './structural-snapshot-targets';
+import { validatePrimitiveValuePresence } from './primitive-value-presence-rules';
 
 type FhirVersion = 'R4' | 'R5' | 'R6';
 type ValidationTarget = ReturnType<typeof getValidationTargets>[number];
@@ -253,7 +254,8 @@ async function validateExistingValue(params: {
 }): Promise<ValidationIssue[]> {
   const { value, elementDef, path, effectiveProfileUrl, structureDef, fhirVersion, deps, skipSiblingSliceRules } = params;
   const profileUrl = effectiveProfileUrl || '';
-  const issues = await deps.typeValidator.validate(value, elementDef.type || [], path, profileUrl);
+  const issues = validatePrimitiveValuePresence(value, elementDef, path, profileUrl);
+  issues.push(...await deps.typeValidator.validate(value, elementDef.type || [], path, profileUrl));
 
   if (!skipSiblingSliceRules) {
     issues.push(...deps.elementRulesValidator.validate(value, elementDef, path, profileUrl));

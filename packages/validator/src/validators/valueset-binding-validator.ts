@@ -44,6 +44,7 @@ export interface BindingValidationDeps {
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
     elementPath?: string,
+    codeSystemVersion?: string,
   ): Promise<CodeBindingOutcome>;
   isValueSetAvailable(valueSetUrl: string, fhirVersion?: FhirVersion): Promise<boolean>;
 }
@@ -173,6 +174,7 @@ async function validateExtractedCodeBindings(
       binding.strength as BindingStrength,
       options?.fhirVersion,
       elementPath,
+      codeInfo.version,
     );
 
     if (outcome === 'valid') {

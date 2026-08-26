@@ -3,6 +3,9 @@ export function makeCodeSystemValidateCodeCacheKey(
   system: string,
   code: string,
   display?: string,
+  codeSystemVersion?: string,
+  authoritativeSnomedEdition = false,
 ): string {
-  return `${serverUrl}|${system}|${code}|${display ?? ''}`;
+  return `${serverUrl}|${system}|${codeSystemVersion ?? ''}|${code}|${display ?? ''}`
+    + `|snomed-authority:${authoritativeSnomedEdition ? 'yes' : 'no'}`;
 }

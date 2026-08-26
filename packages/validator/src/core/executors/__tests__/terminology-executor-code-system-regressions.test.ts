@@ -108,6 +108,175 @@ describe("TerminologyExecutor CodeSystem regressions", () => {
     );
   });
 
+  it("forwards Coding.version for edition-aware CodeSystem validation", async () => {
+    const edition =
+      "http://snomed.info/sct/999000041000000102/version/20250701";
+    mockStructureDef.snapshot!.element = [
+      {
+        path: "Observation.code",
+        min: 1,
+        max: "1",
+        type: [{ code: "CodeableConcept" }],
+      } as ElementDefinition,
+    ];
+    mockContext.resource.code = {
+      coding: [{
+        system: "http://snomed.info/sct",
+        version: edition,
+        code: "999000001",
+      }],
+    };
+
+    await executor.validate(mockContext);
+
+    expect(validatorInstance.validateCodeInCodeSystem).toHaveBeenCalledWith(
+      "999000001",
+      "http://snomed.info/sct",
+      undefined,
+      "R4",
+      edition,
+    );
+  });
+
+  it("keeps Bundle-profile code-system checks when entry recursion is unavailable", async () => {
+    // uapi-as-enrollment-bundle constrains Bundle.entry.resource.identifier.type,
+    // so the Bundle's own snapshot walk reaches an element that belongs to the
+    // entry resource. Recursive entry validation is optional, so the parent
+    // pass must retain coverage; parent/child duplicates are removed only after
+    // both issue sets have been combined.
+    mockStructureDef.type = "Bundle";
+    mockStructureDef.url =
+      "http://dev.gene.com/fhir/uapi/StructureDefinition/uapi-as-enrollment-bundle";
+    mockStructureDef.snapshot!.element = [
+      {
+        path: "Bundle.entry.resource.identifier.type",
+        min: 0,
+        max: "1",
+        type: [{ code: "CodeableConcept" }],
+      } as ElementDefinition,
+    ];
+    mockContext.resource = {
+      resourceType: "Bundle",
+      type: "message",
+      entry: [
+        {
+          resource: {
+            resourceType: "Practitioner",
+            id: "695d0991-5e03-46df-934a-85a28acd95c1",
+            identifier: [
+              {
+                type: {
+                  coding: [
+                    {
+                      system: "http://terminology.hl7.org/CodeSystem/v2-0203",
+                      code: "PRN",
+                      display: "Provider identifier",
+                    },
+                  ],
+                },
+                value: "1234567890",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    validatorInstance.validateCodeInCodeSystem.mockResolvedValue({
+      valid: false,
+      reason: "display-mismatch",
+      display: "Provider number",
+      message:
+        "Wrong Display Name 'Provider identifier' for " +
+        "http://terminology.hl7.org/CodeSystem/v2-0203#PRN",
+      issues: [
+        {
+          severity: "error",
+          code: "invalid-display",
+          message:
+            "Wrong Display Name 'Provider identifier' for " +
+            "http://terminology.hl7.org/CodeSystem/v2-0203#PRN",
+        },
+      ],
+    });
+
+    const issues = await executor.validate(mockContext);
+
+    expect(validatorInstance.validateCodeInCodeSystem).toHaveBeenCalledWith(
+      "PRN",
+      "http://terminology.hl7.org/CodeSystem/v2-0203",
+      "Provider identifier",
+      "R4",
+    );
+    expect(
+      issues.filter((issue) => issue.code === "terminology-display-mismatch"),
+    ).toEqual([
+      expect.objectContaining({
+        severity: "warning",
+        path:
+          "Bundle.entry[0].resource.identifier[0].type.coding[0].display",
+      }),
+    ]);
+  });
+
+  it("validates bindings reached through Bundle entry resources", async () => {
+    mockStructureDef.type = "Bundle";
+    mockStructureDef.snapshot!.element = [
+      {
+        path: "Bundle.entry.resource.identifier.type",
+        min: 0,
+        max: "1",
+        type: [{ code: "CodeableConcept" }],
+        binding: {
+          strength: "required",
+          valueSet: "http://hl7.org/fhir/ValueSet/identifier-type",
+        },
+      } as ElementDefinition,
+    ];
+    const identifierType = {
+      coding: [{
+        system: "http://terminology.hl7.org/CodeSystem/v2-0203",
+        code: "PRN",
+      }],
+    };
+    mockContext.resource = {
+      resourceType: "Bundle",
+      type: "message",
+      entry: [{
+        resource: {
+          resourceType: "Practitioner",
+          identifier: [{ type: identifierType, value: "1234567890" }],
+        },
+      }],
+    };
+    validatorInstance.validateBinding.mockResolvedValue([
+      {
+        id: "invalid-identifier-type",
+        aspect: "terminology",
+        severity: "error",
+        code: "terminology-binding-required",
+        message: "Code is not in required ValueSet",
+        path: "Bundle.entry[0].resource.identifier[0].type",
+        timestamp: new Date(),
+      },
+    ]);
+
+    const issues = await executor.validate(mockContext);
+
+    expect(validatorInstance.validateBinding).toHaveBeenCalledWith(
+      identifierType,
+      expect.objectContaining({
+        strength: "required",
+        valueSet: "http://hl7.org/fhir/ValueSet/identifier-type",
+      }),
+      "Bundle.entry[0].resource.identifier[0].type",
+      expect.objectContaining({ fhirVersion: "R4" }),
+    );
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: "terminology-binding-required",
+      path: "Bundle.entry[0].resource.identifier[0].type",
+    }));
+  });
+
   it("rejects the undefined legacy Observation category URL and suggests the canonical CodeSystem", async () => {
     mockStructureDef.snapshot!.element = [
       {

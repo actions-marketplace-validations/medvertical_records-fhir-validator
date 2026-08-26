@@ -81,12 +81,13 @@ export class UniversalConstraintsValidator {
         // meaningful FHIR content such as id or extensions.
         const record = obj as Record<string, unknown>;
         const keys = Object.keys(record).filter(k => !k.startsWith('_'));
+        const contentKeys = keys.filter(key => key !== 'id');
         const primitiveSidecarKeys = Object.keys(record).filter(k =>
             k.startsWith('_') && k.length > 1 && getPrimitiveSidecar(record, k.slice(1)) !== undefined
         );
 
         // Empty object check
-        if (keys.length === 0 && primitiveSidecarKeys.length === 0 && !path.endsWith(']')) {
+        if (contentKeys.length === 0 && primitiveSidecarKeys.length === 0) {
             // Allow empty at root level or in certain contexts
             if (path !== resourceType && !path.includes('.extension')) {
                 issues.push(createValidationIssue({

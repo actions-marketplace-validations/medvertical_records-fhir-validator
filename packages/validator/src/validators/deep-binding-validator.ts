@@ -93,8 +93,9 @@ function validatePresentBindingValue(
     resourceType: string,
 ): ValidationIssue | null {
     const record = isRecord(value) ? value : undefined;
+    const targetTypeCodes = resolveTargetTypeCodes(binding, path);
     const isCodeableConcept =
-        binding.typeCodes.includes('CodeableConcept')
+        targetTypeCodes.includes('CodeableConcept')
         || Array.isArray(record?.coding);
     if (isCodeableConcept) {
         const codings = Array.isArray(record?.coding) ? record.coding : [];
@@ -114,7 +115,7 @@ function validatePresentBindingValue(
     }
 
     const isCoding =
-        binding.typeCodes.includes('Coding')
+        targetTypeCodes.includes('Coding')
         || record?.system !== undefined
         || record?.code !== undefined;
     if (isCoding) {
@@ -129,7 +130,7 @@ function validatePresentBindingValue(
             );
     }
 
-    if (binding.typeCodes.includes('code') && value === '') {
+    if (targetTypeCodes.includes('code') && value === '') {
         return createMissingCodeIssue(
             'deep-binding-empty-code',
             path,
@@ -140,6 +141,24 @@ function validatePresentBindingValue(
     }
 
     return null;
+}
+
+function resolveTargetTypeCodes(
+    binding: RequiredBindingElement,
+    targetPath: string,
+): string[] {
+    const choiceSegment = binding.path.split('.').at(-1);
+    if (!choiceSegment?.endsWith('[x]')) return binding.typeCodes;
+
+    const choiceBase = choiceSegment.slice(0, -3);
+    const targetSegment = targetPath.replace(/\[\d+\]/g, '').split('.').at(-1);
+    if (!targetSegment?.startsWith(choiceBase)) return binding.typeCodes;
+
+    const selectedSuffix = targetSegment.slice(choiceBase.length);
+    const selectedType = binding.typeCodes.find(typeCode =>
+        `${typeCode.charAt(0).toUpperCase()}${typeCode.slice(1)}` === selectedSuffix
+    );
+    return selectedType ? [selectedType] : binding.typeCodes;
 }
 
 function createMissingCodeIssue(

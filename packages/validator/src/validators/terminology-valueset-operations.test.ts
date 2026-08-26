@@ -42,7 +42,7 @@ describe('terminology ValueSet operations', () => {
       requestBroker: {},
       requestConfigBuilder: {},
     } as unknown as TerminologyValueSetOperationsContext;
-    requestMocks.execute.mockResolvedValueOnce(true);
+    requestMocks.execute.mockResolvedValueOnce({ accepted: true, outcome: 'valid' });
 
     const result = validateCodeAgainstRemoteValueSet(context, {
       code: '123',
@@ -54,7 +54,7 @@ describe('terminology ValueSet operations', () => {
     config = updatedConfig;
     releaseCircuitBreaker(true);
 
-    await expect(result).resolves.toBe(true);
+    await expect(result).resolves.toEqual({ accepted: true, outcome: 'valid' });
     expect(requestMocks.execute).toHaveBeenCalledWith(
       expect.objectContaining({ config: updatedConfig }),
       context.requestBroker,

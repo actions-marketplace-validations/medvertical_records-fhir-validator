@@ -40,7 +40,9 @@ export const DEFAULT_TERMINOLOGY_SERVERS: TerminologyServer[] = [
     responseTimeAvg: 0,
     testScore: 0,
     // SNOMED-specialist — routes SNOMED lookups here first when enabled.
-    preferredSystems: ['http://snomed.info/sct']
+    preferredSystems: ['http://snomed.info/sct'],
+    // SNOMED CT International Edition module identifier.
+    snomedEditions: ['900000000000207008']
   },
   {
     id: 'tx-fhir-org-r4',

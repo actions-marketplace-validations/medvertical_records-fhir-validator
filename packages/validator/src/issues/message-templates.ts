@@ -229,6 +229,10 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
         "Constraint '{key}' violated: {message}",
     'profile-fixed-value-mismatch':
         "Element {path} must match the fixed profile value {expected}; found {actual}",
+    'profile-primitive-value-required':
+        "Element {path} requires a primitive value; an extension-only representation is not allowed",
+    'profile-primitive-value-alternative-required':
+        "Element {path} has no primitive value and must use one of these replacement extensions: {alternatives}",
     'profile-slice-min-cardinality':
         "Slice '{slice}' minimum cardinality not met: expected at least {min}, found {actual}",
     'profile-slice-max-cardinality':

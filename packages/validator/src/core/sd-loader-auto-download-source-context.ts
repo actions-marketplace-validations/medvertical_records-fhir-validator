@@ -10,6 +10,8 @@ export interface AutoDownloadSourceContext {
   packageDownloader: PackageDownloader;
   allowedPackages: string[];
   packageVersionPins?: Record<string, string>;
+  /** Explicit release-selected core package; never infer R4B from a mixed lock. */
+  selectedCorePackageId?: string;
   packageSources: string[];
   cache: Map<string, StructureDefinition>;
   availableProfiles: Set<string>;

@@ -1,6 +1,6 @@
 {
   "name": "@records-fhir/validator",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Pure-TypeScript FHIR R4/R4B/R5/R6 validation engine. Validates resources against StructureDefinitions, terminology, references, and custom rules with no database required.",
   "type": "module",
   "license": "Apache-2.0",
@@ -138,7 +138,7 @@
   },
   "dependencies": {
     "@lhncbc/ucum-lhc": "^5.0.0",
-    "@records-fhir/validation-types": "^0.1.7",
+    "@records-fhir/validation-types": "^0.1.9",
     "axios": "^1.16.1",
     "date-fns": "^4.4.0",
     "fhirpath": "^4.11.0",

@@ -178,6 +178,13 @@ export const KNOWN_VALUE_SET_EXPANSIONS: Record<string, string[]> = {
     'http://hl7.org/fhir/document-reference-status|superseded',
     'http://hl7.org/fhir/document-reference-status|entered-in-error',
     'current', 'superseded', 'entered-in-error'
+  ],
+
+  'http://hl7.org/fhir/ValueSet/allergyintolerance-clinical': [
+    'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical|active',
+    'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical|inactive',
+    'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical|resolved',
+    'active', 'inactive', 'resolved'
   ]
 };
 

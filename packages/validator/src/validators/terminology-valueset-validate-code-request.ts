@@ -17,12 +17,14 @@ import type { TerminologyResolutionConfig, TerminologyServerOverride } from './v
 import type { TerminologyOperationCache } from './terminology-operation-cache';
 import { validationFailureMetadata } from '../utils/validation-execution-failure';
 import type { TerminologyRequestBroker } from './terminology-request-broker';
+import type { RemoteValueSetValidationResult } from './terminology-api-types';
 
 interface ValueSetValidateCodeRequest {
   bindingStrength?: 'required' | 'extensible' | 'preferred' | 'example';
   cacheKey: string;
   circuitBreaker: CircuitBreaker;
   code: string;
+  codeSystemVersion?: string;
   config: TerminologyResolutionConfig;
   override?: TerminologyServerOverride;
   operationCache: TerminologyOperationCache;
@@ -37,12 +39,13 @@ export async function executeValueSetValidateCodeRequest(
   request: ValueSetValidateCodeRequest,
   broker: TerminologyRequestBroker,
   maxConcurrency: number,
-): Promise<boolean> {
+): Promise<RemoteValueSetValidationResult> {
   const {
     bindingStrength,
     cacheKey,
     circuitBreaker,
     code,
+    codeSystemVersion,
     config,
     override,
     operationCache,
@@ -55,6 +58,7 @@ export async function executeValueSetValidateCodeRequest(
   try {
     const params: Record<string, string> = { url: valueSetUrl, code, _format: 'json' };
     if (system) params.system = system;
+    if (codeSystemVersion) params.systemVersion = codeSystemVersion;
     let startedAt = Date.now();
     const response = await broker.run(
       serverScope,
@@ -73,6 +77,10 @@ export async function executeValueSetValidateCodeRequest(
     );
 
     const valid = validateCodeSucceeded(response.data);
+    const result: RemoteValueSetValidationResult = {
+      accepted: valid,
+      outcome: valid ? 'valid' : 'invalid',
+    };
     recordTerminologyResponse(
       circuitBreaker,
       config,
@@ -80,8 +88,8 @@ export async function executeValueSetValidateCodeRequest(
       serverUrl,
       startedAt,
     );
-    operationCache.storeValidateCode(cacheKey, valid);
-    return valid;
+    operationCache.storeValidateCode(cacheKey, result);
+    return result;
   } catch (error: unknown) {
     const axiosResponse = isAxiosError(error) ? error.response : undefined;
     logger.debug('[TerminologyApiClient] Server $validate-code failed', {
@@ -95,13 +103,22 @@ export async function executeValueSetValidateCodeRequest(
       const failOpen = cannotResolve || bindingStrength !== 'required';
       if (cannotResolve) {
         operationCache.storeValueSetNotResolvable(
-          makeValueSetNotResolvableCacheKey(serverScope, valueSetUrl),
+          makeValueSetNotResolvableCacheKey(
+            serverScope,
+            valueSetUrl,
+            system,
+            codeSystemVersion,
+          ),
         );
       }
-      operationCache.storeValidateCode(cacheKey, failOpen);
-      return failOpen;
+      const result: RemoteValueSetValidationResult = {
+        accepted: failOpen,
+        outcome: cannotResolve ? 'unverified' : 'invalid',
+      };
+      operationCache.storeValidateCode(cacheKey, result);
+      return result;
     }
     circuitBreaker.recordFailure();
-    return false;
+    return { accepted: false, outcome: 'unverified' };
   }
 }

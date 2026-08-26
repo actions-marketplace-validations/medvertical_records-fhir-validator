@@ -17,6 +17,7 @@ export interface CodingValue {
   system: string;
   code: string;
   display?: string;
+  version?: string;
 }
 
 interface LoincCheckDigitDiagnostic {

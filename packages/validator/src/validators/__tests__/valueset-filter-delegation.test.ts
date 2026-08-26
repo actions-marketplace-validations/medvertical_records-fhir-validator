@@ -203,7 +203,71 @@ describe('ValueSet filtered include server delegation', () => {
     );
   });
 
-  it('fails open for non-required SNOMED national-extension codes in filtered ValueSets', async () => {
+  it('does not use a versionless filter fallback for a versioned Coding', async () => {
+    const version = 'http://snomed.info/sct/999000041000000102/version/20250701';
+    const get = vi.fn(async (url: string) => {
+      if (url.endsWith('/ValueSet/$validate-code')) {
+        return {
+          data: {
+            resourceType: 'Parameters',
+            parameter: [{ name: 'result', valueBoolean: false }],
+          },
+        };
+      }
+      if (url.endsWith('/CodeSystem/$subsumes')) {
+        return {
+          data: {
+            resourceType: 'Parameters',
+            parameter: [{ name: 'outcome', valueCode: 'subsumes' }],
+          },
+        };
+      }
+      throw new Error(`Unexpected terminology request: ${url}`);
+    });
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: { ...actual.default, get },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { ValueSetValidator } = await import('../valueset-validator');
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      servers: [{
+        id: 'uk-edition',
+        url: 'https://uk-snomed.example/fhir',
+        enabled: true,
+        fhirVersions: ['R4'],
+        snomedEditions: ['999000041000000102'],
+      }],
+      reportUnverifiedBindings: true,
+      strictUnverifiedRequiredBindings: true,
+    });
+
+    await expect(validator.validateBinding(
+      { system: SNOMED, version, code: 'descendant-code' },
+      { strength: 'required', valueSet: VALUE_SET_URL },
+      'Observation.code',
+      { fhirVersion: 'R4' },
+    )).resolves.toContainEqual(expect.objectContaining({
+      code: 'terminology-binding-required',
+      severity: 'error',
+    }));
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith(
+      'https://uk-snomed.example/fhir/ValueSet/$validate-code',
+      expect.objectContaining({
+        params: expect.objectContaining({ systemVersion: version }),
+      }),
+    );
+  });
+
+  it('preserves authoritative rejections for non-required filtered bindings', async () => {
     const get = vi.fn(async (url: string) => {
       if (url.endsWith('/ValueSet/$validate-code')) {
         return {
@@ -240,9 +304,15 @@ describe('ValueSet filtered include server delegation', () => {
       serverUrl: 'https://tx.example/fhir',
     });
 
-    await expect(
-      validator.isCodeValidForBinding('449411000124106', SNOMED, VALUE_SET_URL, 'extensible')
-    ).resolves.toBe(true);
+    await expect(validator.validateBinding(
+      { system: SNOMED, code: '449411000124106' },
+      { strength: 'extensible', valueSet: VALUE_SET_URL },
+      'Observation.code',
+      { fhirVersion: 'R4' },
+    )).resolves.toContainEqual(expect.objectContaining({
+      code: 'terminology-binding-extensible',
+      severity: 'warning',
+    }));
   });
 
   it('preserves default validate-code delegation when an update has undefined serverDelegation', async () => {

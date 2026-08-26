@@ -29,6 +29,26 @@ describe('StructureDefinitionLoader policy changes', () => {
     await expect(loader.loadProfile(canonical)).resolves.toMatchObject({ version: '1.0.0' });
   });
 
+  it('evicts a core profile cached under the previous release selection', async () => {
+    const cacheRoot = await createRoot();
+    const canonical = 'http://hl7.org/fhir/StructureDefinition/Patient';
+    await writePackage(cacheRoot, 'hl7.fhir.r4.core', '4.0.1', profile(canonical, '4.0.1'));
+    await writePackage(cacheRoot, 'hl7.fhir.r4b.core', '4.3.0', profile(canonical, '4.3.0'));
+    const loader = createLoader(cacheRoot);
+    await loader.waitForInitialization();
+    loader.setPackageVersionPins({
+      'hl7.fhir.r4.core': '4.0.1',
+      'hl7.fhir.r4b.core': '4.3.0',
+    });
+    loader.setSelectedCorePackage('hl7.fhir.r4.core');
+
+    await expect(loader.loadProfile(canonical)).resolves.toMatchObject({ version: '4.0.1' });
+    loader.setSelectedCorePackage('hl7.fhir.r4b.core');
+
+    expect(loader.getSelectedCorePackage()).toBe('hl7.fhir.r4b.core');
+    await expect(loader.loadProfile(canonical)).resolves.toMatchObject({ version: '4.3.0' });
+  });
+
   it('does not let an old in-flight lookup overwrite the new policy cache', async () => {
     const cacheRoot = await createRoot();
     const canonical = 'https://example.org/fhir/StructureDefinition/dynamic-patient';

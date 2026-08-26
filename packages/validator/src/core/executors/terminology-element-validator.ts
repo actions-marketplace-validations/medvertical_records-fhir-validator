@@ -16,7 +16,11 @@ import {
   shouldSuppressValueSetSliceMembershipIssue,
   shouldValidateBindingForValue,
 } from './terminology-binding-selection';
-import { getElementTypeCodes, getResourceType, isDirectResourceElementPath } from './terminology-executor-helpers';
+import {
+  getElementTypeCodes,
+  getResourceType,
+  isDirectResourceElementPath,
+} from './terminology-executor-helpers';
 import { validateExternalCodeSystems } from './terminology-external-code-system-rules';
 import { UCUM_BEARING_TYPES, validateUcumAtPath } from './terminology-ucum-rules';
 import type { TerminologySlicePlanCache } from './terminology-slice-plan-cache';
@@ -108,6 +112,11 @@ async function validateElementBinding(
   const path = elementDef.path;
   const sliceSelection = selectSliceScopedValues(resource, elementDef, structureDef, getValueAtPath, slicePlanCache);
   if (sliceSelection && !sliceSelection.hasMatchingSliceElements) return [];
+  const targets = sliceSelection
+    ? []
+    : getValidationTargets(resource, path)
+      .filter((target) => target.value !== null && target.value !== undefined)
+      .filter((target) => shouldValidateBindingForValue(elementDef, target.value));
   const value = sliceSelection
     ? sliceSelection.values.length === 0
       ? undefined
@@ -118,28 +127,30 @@ async function validateElementBinding(
 
   if (elementDef.binding?.strength === 'required' && (elementDef.min ?? 0) > 0) {
     const missing =
+      targets.length === 0 &&
       (value === null || value === undefined) &&
       shouldValidateRequired(resource, path) &&
       (Boolean(sliceSelection) || isDirectResourceElementPath(path, getResourceType(resource, structureDef)));
     if (missing) return [createMissingRequiredBindingIssue(params)];
   }
-  if (value === null || value === undefined || !shouldValidateBindingForValue(elementDef, value)) return [];
+
+  if (
+    targets.length === 0
+    && (value === null || value === undefined || !shouldValidateBindingForValue(elementDef, value))
+  ) {
+    return [];
+  }
 
   const issues: ValidationIssue[] = [];
   const validateCandidate = await createCandidateBindingValidator(params, valueSetValidator, slicePlanCache);
-  if (!sliceSelection) {
-    const targets = getValidationTargets(resource, path)
-      .filter((target) => target.value !== null && target.value !== undefined)
-      .filter((target) => shouldValidateBindingForValue(elementDef, target.value));
-    if (targets.length > 0) {
-      for (const target of targets) {
-        for (const candidate of selectValuesForBinding(elementDef, target.value, structureDef, slicePlanCache)) {
-          if (shouldSuppressNonRequiredBindingForOwnFixedPattern(elementDef, candidate)) continue;
-          issues.push(...(await validateCandidate(candidate, target.fullPath)));
-        }
+  if (targets.length > 0) {
+    for (const target of targets) {
+      for (const candidate of selectValuesForBinding(elementDef, target.value, structureDef, slicePlanCache)) {
+        if (shouldSuppressNonRequiredBindingForOwnFixedPattern(elementDef, candidate)) continue;
+        issues.push(...(await validateCandidate(candidate, target.fullPath)));
       }
-      return issues;
     }
+    return issues;
   }
 
   const perCandidateIssues: ValidationIssue[][] = [];

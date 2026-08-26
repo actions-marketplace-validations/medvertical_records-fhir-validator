@@ -13,6 +13,56 @@ describe('sd-loader-filesystem', () => {
     tempDirs.length = 0;
   });
 
+  it('binds core selection to the requested public release when the lock pins R4 and R4B', async () => {
+    const source = await mkdtemp(path.join(tmpdir(), 'sd-loader-r4b-'));
+    tempDirs.push(source);
+    const profileUrl = 'http://hl7.org/fhir/StructureDefinition/Patient';
+    await writeStructureDefinition(
+      source,
+      'hl7.fhir.r4.core#4.0.1',
+      'StructureDefinition-Patient.json',
+      profileUrl,
+      '4.0.1',
+      'Patient',
+    );
+    await writeStructureDefinition(
+      source,
+      'hl7.fhir.r4b.core#4.3.0',
+      'StructureDefinition-Patient.json',
+      profileUrl,
+      '4.3.0',
+      'Patient',
+    );
+
+    const pins = {
+      'hl7.fhir.r4.core': '4.0.1',
+      'hl7.fhir.r4b.core': '4.3.0',
+    };
+    const indexCache = new PackageProfileIndexCache();
+    await expect(loadFromLocalCache(
+      profileUrl,
+      [source],
+      'R4',
+      pins,
+      indexCache,
+      'hl7.fhir.r4b.core',
+    )).resolves.toMatchObject({ version: '4.3.0' });
+    await expect(loadFromLocalCache(
+      profileUrl,
+      [source],
+      'R4',
+      pins,
+      indexCache,
+      'hl7.fhir.r4.core',
+    )).resolves.toMatchObject({ version: '4.0.1' });
+    expect(isRelevantPackage(
+      'hl7.fhir.r4.core#4.0.1', profileUrl, 'R4', 'hl7.fhir.r4b.core',
+    )).toBe(false);
+    expect(isRelevantPackage(
+      'hl7.fhir.r4b.core#4.3.0', profileUrl, 'R4', 'hl7.fhir.r4.core',
+    )).toBe(false);
+  });
+
   it('honors package version pins when the same canonical exists in multiple package versions', async () => {
     const source = await mkdtemp(path.join(tmpdir(), 'sd-loader-source-'));
     tempDirs.push(source);

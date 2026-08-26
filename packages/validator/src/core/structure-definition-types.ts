@@ -44,7 +44,10 @@ export interface ElementDefinition {
   type?: ElementType[];
   contentReference?: string;
   constraint?: Constraint[];
+  extension?: Array<Record<string, unknown>>;
   binding?: Binding;
+  mustHaveValue?: boolean;
+  valueAlternatives?: string[];
   mustSupport?: boolean;
   isModifier?: boolean;
   sliceName?: string; // Name of the slice (if this element is part of a slice)

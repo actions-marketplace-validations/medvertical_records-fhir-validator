@@ -13,6 +13,7 @@ function cloneServer(server: TerminologyServerDescriptor): TerminologyServerDesc
     ...server,
     fhirVersions: [...server.fhirVersions],
     preferredSystems: server.preferredSystems ? [...server.preferredSystems] : undefined,
+    snomedEditions: server.snomedEditions ? [...server.snomedEditions] : undefined,
     authConfig: cloneAuth(server.authConfig),
   };
 }

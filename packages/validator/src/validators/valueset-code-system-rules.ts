@@ -5,6 +5,10 @@ import type {
   CodeSystemConcept,
   TerminologyResolutionConfig,
 } from './valueset-types';
+import {
+  extractSnomedEditionIdentifier,
+  isTerminologyServerEligible,
+} from './valueset-server-routing';
 
 export function fhirVersionToPackageMajor(fhirVersion?: FhirVersion): string | undefined {
   if (fhirVersion === 'R4') return '4';
@@ -35,17 +39,26 @@ export function buildUnverifiableCodeSystemResult(
   system: string,
   result: CodeSystemValidationResult,
   config: TerminologyResolutionConfig,
+  codeSystemVersion?: string,
+  fhirVersion?: FhirVersion,
 ): CodeSystemValidationResult | null {
   if (result.reason !== 'code-unknown') return null;
-  const preferredServerEnabled = (config.servers ?? []).some(server =>
-    server.enabled && !server.circuitOpen && server.preferredSystems?.includes(system)
+  const requestedEdition = system === 'http://snomed.info/sct'
+    ? extractSnomedEditionIdentifier(codeSystemVersion)
+    : undefined;
+  const authoritativeServerEnabled = (config.servers ?? []).some(server =>
+    isTerminologyServerEligible(server, fhirVersion)
+    && (requestedEdition
+      ? server.snomedEditions?.some(edition =>
+        extractSnomedEditionIdentifier(edition) === requestedEdition)
+      : server.preferredSystems?.includes(system))
   );
   const isUnverifiable =
     (system === 'http://loinc.org' && /^LA\d+-\d$/.test(code)) ||
     (system === 'http://www.genenames.org/geneId' &&
       code.split('::').length >= 2 &&
       code.split('::').every(component => /^HGNC:\d+$/.test(component))) ||
-    (system === 'http://snomed.info/sct' && !preferredServerEnabled);
+    (system === 'http://snomed.info/sct' && !authoritativeServerEnabled);
   if (!isUnverifiable) return null;
 
   if (system === 'http://loinc.org') {
@@ -61,7 +74,15 @@ export function buildUnverifiableCodeSystemResult(
       valid: false,
       reason: 'system-unresolvable',
       message: `Could not verify composite HGNC fusion code '${code}' as a single terminology concept. ` +
-        'Validate its individual HGNC components instead.',
+      'Validate its individual HGNC components instead.',
+    };
+  }
+  if (requestedEdition) {
+    return {
+      valid: false,
+      reason: 'system-unresolvable',
+      message: `Could not verify SNOMED CT code '${code}' against requested edition '${requestedEdition}'. ` +
+        'Configure an enabled terminology server whose snomedEditions includes this module identifier.',
     };
   }
   return {

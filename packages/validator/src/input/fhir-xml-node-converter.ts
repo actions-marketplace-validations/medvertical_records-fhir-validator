@@ -6,10 +6,10 @@ export const XHTML_XML_NAMESPACE = 'http://www.w3.org/1999/xhtml';
 
 const COMMON_REPEATING_ELEMENTS = new Set([
   'address', 'agent', 'alias', 'answer', 'author', 'basedOn', 'category', 'coding',
-  'communication', 'component', 'contained', 'contact', 'diagnosis',
-  'endpoint', 'entity', 'entry', 'extension', 'generalPractitioner', 'given',
+  'communication', 'component', 'constraint', 'contained', 'contact', 'diagnosis',
+  'element', 'endpoint', 'entity', 'entry', 'extension', 'generalPractitioner', 'given',
   'identifier', 'image', 'imagingStudy', 'insurance', 'issue', 'item', 'line',
-  'link', 'modifierExtension', 'note', 'participant',
+  'link', 'modifierExtension', 'note', 'parameter', 'participant',
   'performer', 'profile', 'reasonCode', 'reasonReference', 'referenceRange',
   'section', 'security', 'specialty', 'supportingInfo', 'tag', 'telecom',
 ]);
@@ -32,6 +32,7 @@ const NUMERIC_ELEMENTS = new Set([
 const NUMERIC_VALUE_PARENTS = new Set([
   'Age', 'Count', 'Distance', 'Duration', 'Money', 'Quantity', 'SimpleQuantity',
 ]);
+const DECIMAL_ELEMENTS = new Set(['factor', 'offset', 'score']);
 const UNSAFE_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
 
 export interface XmlNode {
@@ -48,6 +49,8 @@ interface ConvertedNode {
   value: unknown;
   primitiveSidecar?: Record<string, unknown>;
 }
+
+const PRIMITIVE_CHOICE_ELEMENT = /^value(?:Base64Binary|Boolean|Canonical|Code|Date|DateTime|Decimal|Id|Instant|Integer|Integer64|Markdown|Oid|PositiveInt|String|Time|UnsignedInt|Uri|Url|Uuid)$/;
 
 export function createXmlNode(tag: SaxesTagNS, location: FhirInputLocation): XmlNode {
   return {
@@ -99,6 +102,17 @@ function convertNode(
   const rawValue = attribute(node, 'value');
   const id = attribute(node, 'id');
   const url = attribute(node, 'url');
+  if (rawValue === undefined && PRIMITIVE_CHOICE_ELEMENT.test(node.local)) {
+    const sidecar: Record<string, unknown> = {};
+    if (id) sidecar.id = id;
+    for (const child of node.children) {
+      const childConverted = convertNode(child, `${path}._${child.local}`, sourceMap, false, node.local);
+      setProperty(sidecar, child.local, childConverted.value, isRepeatingElement(node.local, child.local));
+    }
+    return Object.keys(sidecar).length > 0
+      ? { value: undefined, primitiveSidecar: sidecar }
+      : { value: {} };
+  }
   if (rawValue !== undefined) {
     const converted: ConvertedNode = { value: primitiveValue(parentLocal, node.local, rawValue) };
     if (id || node.children.length > 0) {
@@ -123,7 +137,9 @@ function convertNode(
     const index = Array.isArray(existing) ? existing.length : existing === undefined ? 0 : 1;
     const array = forceArray || existing !== undefined;
     const converted = convertNode(child, childPath(path, child.local, index, array), sourceMap, false, node.local);
-    const valueIndex = setProperty(output, child.local, converted.value, forceArray);
+    const valueIndex = converted.value === undefined && converted.primitiveSidecar
+      ? 0
+      : setProperty(output, child.local, converted.value, forceArray);
     const existingSidecar = output[`_${child.local}`];
     if (array && existingSidecar !== undefined && !Array.isArray(existingSidecar)) {
       output[`_${child.local}`] = [existingSidecar];
@@ -144,7 +160,11 @@ function primitiveValue(parent: string | undefined, name: string, value: string)
   const numericElement = NUMERIC_ELEMENTS.has(name)
     || /(?:Decimal|Integer|PositiveInt|UnsignedInt)$/.test(name)
     || (name === 'value' && parent !== undefined && NUMERIC_VALUE_PARENTS.has(parent));
-  if (numericElement && /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) {
+  const exponentAllowed = name.endsWith('Decimal')
+    || DECIMAL_ELEMENTS.has(name)
+    || (name === 'value' && parent !== undefined && NUMERIC_VALUE_PARENTS.has(parent));
+  const validNumericLexeme = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value);
+  if (numericElement && validNumericLexeme && (exponentAllowed || !/[eE]/.test(value))) {
     const numeric = Number(value);
     if (Number.isFinite(numeric)) return numeric;
   }

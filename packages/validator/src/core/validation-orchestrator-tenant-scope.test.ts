@@ -131,3 +131,32 @@ describe('validation issue profile attribution', () => {
     expect(result[0].profile).toBe(extensionProfile);
   });
 });
+
+describe('single-resource universal constraints', () => {
+  it('runs ele-1 alongside the invariant executor', async () => {
+    const noop = { validate: vi.fn().mockResolvedValue([]) };
+    const result = await runAllAspectValidations({
+      resource: {
+        resourceType: 'Patient',
+        id: 'patient-id-only',
+        _implicitRules: { id: 'metadata-only' },
+      },
+      resourceType: 'Patient',
+      profileUrl: 'http://hl7.org/fhir/StructureDefinition/Patient',
+      fhirVersion: 'R4',
+      structureDef: {} as never,
+      strictMode: false,
+      settings: { aspects: {
+        structural: { enabled: false }, profile: { enabled: false },
+        terminology: { enabled: false }, reference: { enabled: false },
+        invariant: { enabled: true }, metadata: { enabled: false },
+      } },
+    }, noop as never, noop as never, noop as never, noop as never,
+    noop as never, noop as never, noop as never, new TerminologyResourceValidator());
+
+    expect(result).toContainEqual(expect.objectContaining({
+      code: 'ele-1-violation',
+      path: 'Patient.implicitRules',
+    }));
+  });
+});

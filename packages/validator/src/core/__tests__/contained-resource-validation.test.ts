@@ -31,7 +31,7 @@ describe('contained resource validation', () => {
       resourceType: 'Practitioner',
       id: 'author',
       identifier: [{
-        system: 'urn:oid:1.2',
+        system: 'urn:oid:1',
         value: 'invalid-short-oid',
       }],
     }],

@@ -17,6 +17,7 @@ export class StructureDefinitionLoaderPolicyState {
   private profileSourcesConfig: ProfileSourcesConfig;
   private allowedPackages: string[];
   private packageVersionPins: Record<string, string>;
+  private selectedCorePackageId: string | undefined;
   private pinnedCanonicals: Map<string, string> | null = null;
   private policyRevision = 0;
 
@@ -48,6 +49,10 @@ export class StructureDefinitionLoaderPolicyState {
 
   get packagePins(): Record<string, string> {
     return this.packageVersionPins;
+  }
+
+  get selectedCorePackage(): string | undefined {
+    return this.selectedCorePackageId;
   }
 
   resolvePinnedCanonical(url: string): string {
@@ -118,6 +123,12 @@ export class StructureDefinitionLoaderPolicyState {
 
   getPackageVersionPins(): Record<string, string> {
     return { ...this.packageVersionPins };
+  }
+
+  setSelectedCorePackage(packageId: string | undefined): void {
+    if (this.selectedCorePackageId === packageId) return;
+    this.selectedCorePackageId = packageId;
+    this.invalidate(true);
   }
 
   invalidate(clearReloadableCache = false): void {

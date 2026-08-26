@@ -13,6 +13,11 @@ export {
     setProfileSource,
     type ProfileResolutionEntry,
     type ProfileSource,
+    type ProfileLookupSource,
+    type ProfileWarmupSource,
+    type ExternalProfileSource,
+    type CanonicalResourceSource,
+    type CodeSystemAvailabilitySource,
     type ProfileSourceContext,
 } from './profile-source';
 export {

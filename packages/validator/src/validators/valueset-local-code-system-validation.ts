@@ -8,6 +8,7 @@ import {
 import { displaysEquivalentForCodeInfo } from './valueset-display-utils';
 import type { FhirVersion } from './valueset-expansion-cache-key';
 import type { ValueSetPackageLoader } from './valueset-package-loader';
+import type { CodeSystem } from './valueset-types';
 
 interface LocalCodeSystemValidationDeps {
   cache: ValueSetCache;
@@ -20,13 +21,14 @@ export async function validateCodeInLocalCodeSystem(
   system: string,
   display?: string,
   fhirVersion?: FhirVersion,
+  codeSystemVersion?: string,
 ): Promise<CodeSystemValidationResult | null> {
-  const codeSystem = deps.cache.getCodeSystem(system)
-    ?? deps.cache.getCodeSystemFile(system)
-    ?? await deps.packageLoader.loadCodeSystem(
-      system,
-      fhirVersionToPackageMajor(fhirVersion),
-    );
+  const codeSystem = await resolveLocalCodeSystem(
+    deps,
+    system,
+    fhirVersion,
+    codeSystemVersion,
+  );
   if (!codeSystem || !isAssertableCodeSystem(codeSystem)) return null;
 
   const concept = findCodeSystemConcept(codeSystem.concept, code);
@@ -77,4 +79,36 @@ export async function validateCodeInLocalCodeSystem(
   }
 
   return { valid: true, display: concept.display };
+}
+
+async function resolveLocalCodeSystem(
+  deps: LocalCodeSystemValidationDeps,
+  system: string,
+  fhirVersion?: FhirVersion,
+  requestedVersion?: string,
+): Promise<CodeSystem | null> {
+  if (!requestedVersion) {
+    return deps.cache.getCodeSystem(system)
+      ?? deps.cache.getCodeSystemFile(system)
+      ?? await deps.packageLoader.loadCodeSystem(
+        system,
+        fhirVersionToPackageMajor(fhirVersion),
+      );
+  }
+
+  const versionedKey = `${system}|${requestedVersion}`;
+  const cached = [
+    deps.cache.getCodeSystem(versionedKey),
+    deps.cache.getCodeSystemFile(versionedKey),
+    deps.cache.getCodeSystem(system),
+    deps.cache.getCodeSystemFile(system),
+  ].find(candidate => candidate?.version === requestedVersion);
+  if (cached) return cached;
+
+  const loaded = await deps.packageLoader.loadCodeSystem(
+    system,
+    fhirVersionToPackageMajor(fhirVersion),
+    requestedVersion,
+  );
+  return loaded?.version === requestedVersion ? loaded : null;
 }

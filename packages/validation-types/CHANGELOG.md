@@ -11,6 +11,18 @@ captures changes that affect type-package consumers directly.
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-08-25
+
+Released alongside `@records-fhir/validator` 0.6.2.
+
+### Surface
+
+- Added optional `TerminologyServer.snomedEditions` module identifiers to the
+  public settings type and Zod schema. The default SNOMED server advertises the
+  International Edition module (`900000000000207008`), allowing consumers to
+  configure deterministic national-edition routing without a breaking settings
+  migration.
+
 ## [0.1.8] — 2026-08-24
 
 Released alongside `@records-fhir/validator` 0.6.1.

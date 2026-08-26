@@ -98,7 +98,7 @@ describe('required binding with cross-major version fallback (R5 Encounter.statu
       resolveServerForSystem: () => undefined,
       terminologyDiagnostics,
       twoPhaseShadow: new TwoPhaseShadowEvaluator(packageLoader, resolutionConfig.twoPhaseExpansion),
-      validateViaServer: async () => false,
+      validateViaServer: async () => 'unverified' as const,
     };
     return { deps, packageLoader, terminologyDiagnostics };
   }

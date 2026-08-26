@@ -65,11 +65,18 @@ describe('public validation API helpers', () => {
       maxConcurrency: 2,
     });
 
-    expect(deps.validateBatch).toHaveBeenCalledWith([first, second], expect.objectContaining({
-      fhirVersion: 'R4',
-      profileUrl: 'http://example.org/Profile',
-      maxConcurrency: 2,
-    }));
+    expect(deps.validateBatch).toHaveBeenCalledWith(
+      [first, second],
+      expect.objectContaining({
+        fhirVersion: 'R4',
+        profileUrl: 'http://example.org/Profile',
+        maxConcurrency: 2,
+      }),
+      expect.objectContaining({
+        publicVersion: 'R4B',
+        corePackage: 'hl7.fhir.r4b.core#4.3.0',
+      }),
+    );
     expect(deps.validate).not.toHaveBeenCalled();
     expect(results.map((result) => result.index)).toEqual([0, 1]);
     expect(results[0]).toMatchObject({ resourceType: 'Patient', id: 'a', isValid: true });
@@ -90,7 +97,7 @@ describe('public validation API helpers', () => {
       1,
       first.resource,
       'http://example.org/A',
-      'R4',
+      expect.objectContaining({ publicVersion: 'R4', engineVersion: 'R4' }),
       undefined,
       undefined,
     );
@@ -98,7 +105,7 @@ describe('public validation API helpers', () => {
       2,
       second.resource,
       'http://example.org/B',
-      'R5',
+      expect.objectContaining({ publicVersion: 'R5', engineVersion: 'R5' }),
       undefined,
       undefined,
     );

@@ -50,7 +50,24 @@ export function displaysEquivalentForCodeInfo(
     return loincDisplaysCompatible(expected, actual);
   }
 
+  if (
+    codeInfo.system === 'http://snomed.info/sct'
+    && codeInfo.code === '6736007'
+  ) {
+    return moderateSeverityDisplaysEquivalent(expected, actual);
+  }
+
   return false;
+}
+
+function moderateSeverityDisplaysEquivalent(expected: string, actual: string): boolean {
+  const accepted = new Set([
+    'midgrade',
+    'moderate',
+    'moderate severity',
+    'moderate severity modifier',
+  ]);
+  return accepted.has(normalizeDisplay(expected)) && accepted.has(normalizeDisplay(actual));
 }
 
 function normalizeDisplay(display: string): string {

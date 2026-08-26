@@ -11,6 +11,11 @@ import type { ValidationIssue, ValidationSettings } from './types';
 import type { AnomalyDetectorConfig, AnomalyFinding } from './validators/anomaly-detector';
 import type { TerminologyResolutionConfig } from './validators/valueset-validator';
 
+export type RecordsBatchValidationOptions =
+  Omit<NonNullable<Parameters<RecordsValidator['validateBatch']>[1]>, 'fhirVersion'> & {
+    fhirVersion?: PublicFhirVersion;
+  };
+
 export interface RecordsValidatorRuntimeLease {
   ready(): Promise<void>;
   loadProfileWithSnapshot(
@@ -43,9 +48,19 @@ export interface RecordsValidatorValidation {
     serverId?: number,
   ): Promise<ValidationIssue[]>;
   validateMetadata(...args: Parameters<RecordsValidator['validateMetadata']>): ReturnType<RecordsValidator['validateMetadata']>;
-  validateStructure(...args: Parameters<RecordsValidator['validateStructure']>): ReturnType<RecordsValidator['validateStructure']>;
-  validateBatch(...args: Parameters<RecordsValidator['validateBatch']>): ReturnType<RecordsValidator['validateBatch']>;
-  validateAspects(...args: Parameters<RecordsValidator['validateAspects']>): ReturnType<RecordsValidator['validateAspects']>;
+  validateStructure(
+    resource: unknown,
+    fhirVersion?: PublicFhirVersion,
+    recursionDepth?: number,
+  ): ReturnType<RecordsValidator['validateStructure']>;
+  validateBatch(
+    resources: Parameters<RecordsValidator['validateBatch']>[0],
+    options?: RecordsBatchValidationOptions,
+  ): ReturnType<RecordsValidator['validateBatch']>;
+  validateAspects(
+    resource: Parameters<RecordsValidator['validateAspects']>[0],
+    options: RecordsBatchValidationOptions,
+  ): ReturnType<RecordsValidator['validateAspects']>;
   validateAll(inputs: PublicValidationInput[], options?: PublicBatchValidationOptions): Promise<PublicValidationResult[]>;
   detectAnomalies(resources: unknown[], config?: Partial<AnomalyDetectorConfig>): Promise<AnomalyFinding[]>;
 }
@@ -54,12 +69,31 @@ export interface RecordsValidatorInspection {
   isCreated(): boolean;
   isInitialized(): Promise<boolean>;
   isAvailable(): boolean;
-  isProfileSupported(...args: Parameters<RecordsValidator['isProfileSupported']>): ReturnType<RecordsValidator['isProfileSupported']>;
+  isProfileSupported(
+    profileUrl: string,
+    fhirVersion?: PublicFhirVersion,
+    runtimeScopeKey?: string,
+  ): ReturnType<RecordsValidator['isProfileSupported']>;
   waitForInitialization(): ReturnType<RecordsValidator['waitForInitialization']>;
-  getSdLoader(): Promise<ReturnType<RecordsValidator['getSdLoader']>>;
-  loadProfileWithSnapshot(...args: Parameters<RecordsValidator['loadProfileWithSnapshot']>): ReturnType<RecordsValidator['loadProfileWithSnapshot']>;
-  registerQuestionnaire(questionnaire: { item?: unknown }): Promise<boolean>;
-  getQuestionnaire(...args: Parameters<RecordsValidator['getQuestionnaire']>): Promise<ReturnType<RecordsValidator['getQuestionnaire']>>;
+  getSdLoader(
+    fhirVersion?: PublicFhirVersion,
+    runtimeScopeKey?: string,
+  ): Promise<ReturnType<RecordsValidator['getSdLoader']>>;
+  loadProfileWithSnapshot(
+    profileUrl: string,
+    fhirVersion?: PublicFhirVersion,
+    runtimeScopeKey?: string,
+  ): ReturnType<RecordsValidator['loadProfileWithSnapshot']>;
+  registerQuestionnaire(
+    questionnaire: { item?: unknown },
+    fhirVersion?: PublicFhirVersion,
+    runtimeScopeKey?: string,
+  ): Promise<boolean>;
+  getQuestionnaire(
+    canonicalOrRef: Parameters<RecordsValidator['getQuestionnaire']>[0],
+    fhirVersion?: PublicFhirVersion,
+    runtimeScopeKey?: string,
+  ): Promise<ReturnType<RecordsValidator['getQuestionnaire']>>;
   getConstraintDiagnostics(): Promise<ReturnType<RecordsValidator['getConstraintDiagnostics']>>;
   getFHIRPathCacheStats(): ReturnType<RecordsValidator['getFHIRPathCacheStats']>;
   getPinnedCanonicalCount(): ReturnType<RecordsValidator['getPinnedCanonicalCount']>;
@@ -69,12 +103,19 @@ export interface RecordsValidatorInspection {
 export interface RecordsValidatorAdministration {
   configureTerminologyResolution(config: TerminologyResolutionConfig): Promise<ReturnType<RecordsValidator['configureTerminologyResolution']>>;
   clearTerminologyCache(): Promise<ReturnType<RecordsValidator['clearTerminologyCache']>>;
-  registerTerminologyResource(...args: Parameters<RecordsValidator['registerTerminologyResource']>): Promise<ReturnType<RecordsValidator['registerTerminologyResource']>>;
+  registerTerminologyResource(
+    resource: unknown,
+    fhirVersion?: PublicFhirVersion,
+    runtimeScopeKey?: string,
+  ): Promise<ReturnType<RecordsValidator['registerTerminologyResource']>>;
   clearConstraintDiagnostics(): Promise<ReturnType<RecordsValidator['clearConstraintDiagnostics']>>;
   clearFHIRPathCaches(): Promise<void>;
   clearProfileCache(): Promise<ReturnType<RecordsValidator['clearProfileCache']> | undefined>;
   resetProfileWarmupState(): Promise<void>;
-  evictProfile(...args: Parameters<RecordsValidator['evictProfile']>): ReturnType<RecordsValidator['evictProfile']> | undefined;
+  evictProfile(
+    profileUrl: string,
+    fhirVersion?: PublicFhirVersion,
+  ): ReturnType<RecordsValidator['evictProfile']> | undefined;
   setPinnedCanonicals(...args: Parameters<RecordsValidator['setPinnedCanonicals']>): Promise<ReturnType<RecordsValidator['setPinnedCanonicals']>>;
 }
 

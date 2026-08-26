@@ -96,6 +96,28 @@ describe('ValueSetValidator required primitive bindings', () => {
     }));
   });
 
+  it('accepts active in the R4 AllergyIntolerance clinical status value set', async () => {
+    const validator = new ValueSetValidator();
+
+    const issues = await validator.validateBinding(
+      {
+        coding: [{
+          system: 'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical',
+          code: 'active',
+          display: 'Active',
+        }],
+      },
+      {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/allergyintolerance-clinical|4.0.1',
+      },
+      'AllergyIntolerance.clinicalStatus',
+      { fhirVersion: 'R4' },
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
   it('rejects invalid observation-status codes from local expansion', async () => {
     const validator = new ValueSetValidator();
 

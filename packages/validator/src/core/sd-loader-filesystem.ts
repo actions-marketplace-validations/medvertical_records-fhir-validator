@@ -24,7 +24,8 @@ function hl7UvPackagePrefix(url: string): string | null {
 export function isRelevantPackage(
   packageName: string,
   url: string,
-  fhirVersion: 'R4' | 'R5' | 'R6'
+  fhirVersion: 'R4' | 'R5' | 'R6',
+  selectedCorePackageId?: string,
 ): boolean {
   const versionLower = fhirVersion.toLowerCase();
 
@@ -35,7 +36,8 @@ export function isRelevantPackage(
   }
 
   if (url.includes('hl7.org/fhir/StructureDefinition/')) {
-    return packageName.startsWith(`hl7.fhir.${versionLower}.core`) ||
+    const corePackage = selectedCorePackageId ?? `hl7.fhir.${versionLower}.core`;
+    return packageName.startsWith(corePackage) ||
       packageName.startsWith(`hl7.fhir.uv.extensions.${versionLower}`);
   }
 
@@ -107,6 +109,7 @@ export async function loadFromLocalCache(
   fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
   packageVersionPins: Record<string, string> = {},
   indexCache: PackageProfileIndexCache = new PackageProfileIndexCache(),
+  selectedCorePackageId?: string,
 ): Promise<StructureDefinition | null> {
   try {
     let targetUrl = url;
@@ -129,7 +132,7 @@ export async function loadFromLocalCache(
           if (!entry.isDirectory()) continue;
           if (!matchesPackageVersionPin(entry.name, packageVersionPins)) continue;
 
-          if (!isRelevantPackage(entry.name, targetUrl, fhirVersion)) {
+          if (!isRelevantPackage(entry.name, targetUrl, fhirVersion, selectedCorePackageId)) {
             continue;
           }
 

@@ -172,6 +172,12 @@ export class ValueSetPackageLoader {
             this.missingCodeSystemKeys.delete(cacheKey);
             this.cache.setCodeSystemFile(cacheKey, bestMatch);
             this.cache.setCodeSystem(cacheKey, bestMatch);
+            if (requestedVersion) {
+                const versionedCanonicalKey = `${canonical}|${requestedVersion}`;
+                this.cache.setCodeSystemFile(versionedCanonicalKey, bestMatch);
+                this.cache.setCodeSystem(versionedCanonicalKey, bestMatch);
+                return bestMatch;
+            }
             this.cache.setCodeSystemFile(requestedCanonical, bestMatch);
             this.cache.setCodeSystem(requestedCanonical, bestMatch);
             this.cache.setCodeSystemFile(canonical, bestMatch);

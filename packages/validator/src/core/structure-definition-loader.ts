@@ -192,6 +192,14 @@ export class StructureDefinitionLoader {
     return this.runtime.policy.getPackageVersionPins();
   }
 
+  setSelectedCorePackage(packageId: string | undefined): void {
+    this.runtime.policy.setSelectedCorePackage(packageId);
+  }
+
+  getSelectedCorePackage(): string | undefined {
+    return this.runtime.policy.selectedCorePackage;
+  }
+
   cacheProfile(url: string, profile: StructureDefinition, fhirVersion?: 'R4' | 'R5' | 'R6'): void {
     storeExternalProfile({
       url, profile, fhirVersion,

@@ -24,7 +24,7 @@ export interface ProfileSourceContext {
  * method as unavailable, never as evidence that a tenant-scoped lookup may
  * fall through to a shared source.
  */
-export interface ProfileSource {
+export interface ProfileLookupSource {
     /**
      * Directories containing IG-package subdirectories (`<name>#<version>/`).
      * Declaring them lets terminology resolution search the same host-owned
@@ -45,6 +45,9 @@ export interface ProfileSource {
         context?: ProfileSourceContext,
     ): Promise<StructureDefinition | null>;
 
+}
+
+export interface ProfileWarmupSource {
     loadAllForWarmup?(): Promise<Map<string, ProfileResolutionEntry>>;
 
     warmupRecent?(
@@ -54,12 +57,18 @@ export interface ProfileSource {
         context?: ProfileSourceContext,
     ): Promise<{ warmedUp: number; timeMs: number }>;
 
+}
+
+export interface ExternalProfileSource {
     fetchExternalProfile?(url: string): Promise<StructureDefinition | null>;
 
     findPackageForProfile?(
         url: string,
     ): Promise<{ packageId: string; confidenceScore?: number } | null>;
 
+}
+
+export interface CanonicalResourceSource {
     findCanonicalResource?(
         url: string,
         resourceType: string,
@@ -67,6 +76,9 @@ export interface ProfileSource {
         context?: ProfileSourceContext,
     ): Promise<Record<string, unknown> | null>;
 
+}
+
+export interface CodeSystemAvailabilitySource {
     /** True only when the resolved CodeSystem contains assertable code membership. */
     hasCodeSystem?(
         url: string,
@@ -74,6 +86,14 @@ export interface ProfileSource {
         context?: ProfileSourceContext,
     ): Promise<boolean>;
 }
+
+/** Host capabilities available to the standalone validator package. */
+export interface ProfileSource extends
+    ProfileLookupSource,
+    ProfileWarmupSource,
+    ExternalProfileSource,
+    CanonicalResourceSource,
+    CodeSystemAvailabilitySource {}
 
 const NOOP_PROFILE_SOURCE: ProfileSource = {};
 

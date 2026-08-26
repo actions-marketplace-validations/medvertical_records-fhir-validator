@@ -106,7 +106,7 @@ describe('required binding with unenumerable whole-system includes', () => {
       resolveServerForSystem: () => undefined,
       terminologyDiagnostics,
       twoPhaseShadow: new TwoPhaseShadowEvaluator(packageLoader, resolutionConfig.twoPhaseExpansion),
-      validateViaServer: async () => false,
+      validateViaServer: async () => 'unverified' as const,
     };
     return { deps, terminologyDiagnostics };
   }

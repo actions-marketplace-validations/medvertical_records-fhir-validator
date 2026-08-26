@@ -150,7 +150,7 @@ function isValidOidUrn(value: string): boolean {
 
     const oid = value.slice('urn:oid:'.length);
     const arcs = oid.split('.');
-    if (arcs.length < 3 || arcs.some(arc => !/^(?:0|[1-9][0-9]*)$/.test(arc))) {
+    if (arcs.length < 2 || arcs.some(arc => !/^(?:0|[1-9][0-9]*)$/.test(arc))) {
         return false;
     }
 
@@ -251,7 +251,7 @@ export function validateUriFormat(value: string, path: string, resourceType: str
             details: {
                 value,
                 expectedUriType: 'OID URN',
-                fixHint: 'Use urn:oid followed by at least three numeric arcs without leading zeroes.',
+                fixHint: 'Use urn:oid followed by at least two numeric arcs without leading zeroes.',
             },
         });
     }

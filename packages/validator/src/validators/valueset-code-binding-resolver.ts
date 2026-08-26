@@ -19,13 +19,18 @@ import type {
 import { recordTerminologyDelegation, recordTerminologyReason } from './valueset-diagnostics';
 import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 import { canDelegateCodeValidation } from './valueset-delegation-policy';
+import { isSnomedEditionRouteMissing } from './valueset-server-routing';
 
 interface CodeBindingResolutionDeps {
   getExpandedValueSet: (valueSetUrl: string, fhirVersion?: FhirVersion) => Promise<Set<string>>;
-  hasTerminologyServer: (override?: { url: string }) => boolean;
+  hasTerminologyServer: (override?: { url: string }, fhirVersion?: FhirVersion) => boolean;
   packageLoader: ValueSetPackageLoader;
   resolutionConfig: TerminologyResolutionConfig;
-  resolveServerForSystem: (system?: string) => TerminologyServerOverride | undefined;
+  resolveServerForSystem: (
+    system?: string,
+    fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
+  ) => TerminologyServerOverride | undefined;
   terminologyDiagnostics: TerminologyDiagnostics;
   twoPhaseShadow: TwoPhaseShadowEvaluator;
   validateViaServer: (
@@ -35,7 +40,8 @@ interface CodeBindingResolutionDeps {
     bindingStrength: BindingStrength,
     override: TerminologyServerOverride | undefined,
     fhirVersion?: FhirVersion,
-  ) => Promise<boolean>;
+    codeSystemVersion?: string,
+  ) => Promise<CodeBindingOutcome>;
 }
 
 export async function resolveValueSetCodeBinding(
@@ -46,10 +52,22 @@ export async function resolveValueSetCodeBinding(
   bindingStrength: BindingStrength,
   fhirVersion?: FhirVersion,
   elementPath?: string,
+  codeSystemVersion?: string,
 ): Promise<CodeBindingOutcome> {
   if (isLanguageBinding(valueSetUrl, system)) return validateBCP47(code) ? 'valid' : 'invalid';
   if (isMimeTypesValueSet(valueSetUrl)) {
     return validateMimeTypeBindingCode(code, system, elementPath) ? 'valid' : 'invalid';
+  }
+  if (codeSystemVersion?.trim()) {
+    return resolveVersionedCodeBinding(
+      deps,
+      code,
+      system,
+      valueSetUrl,
+      bindingStrength,
+      fhirVersion,
+      codeSystemVersion,
+    );
   }
 
   const lookup = await deps.twoPhaseShadow.lookup(code, system, valueSetUrl, fhirVersion);
@@ -78,17 +96,37 @@ export async function resolveValueSetCodeBinding(
   const unverifiableReason = classifyUnverifiableComposeReason(
     system, code, filteredIncludes, unenumerableIncludes,
   );
-  const override = deps.resolveServerForSystem(system);
+  const override = deps.resolveServerForSystem(system, fhirVersion, codeSystemVersion);
+  const editionRouteMissing = isSnomedEditionRouteMissing(
+    system,
+    codeSystemVersion,
+    override,
+  );
+  const hasServer = !editionRouteMissing && deps.hasTerminologyServer(override, fhirVersion);
   const shouldDelegate = canDelegateCodeValidation(deps.resolutionConfig) && (
     expandedCodes.size === 0
     || filteredIncludes.length > 0
     || unverifiableReason === 'unenumerable-system-include'
     || bindingStrength !== 'required'
   );
-  if (deps.hasTerminologyServer(override) && shouldDelegate) {
+  if (hasServer && shouldDelegate) {
     recordTerminologyDelegation(deps.terminologyDiagnostics.delegatedBindings, 'server-validate-code');
-    if (await deps.validateViaServer(code, system, valueSetUrl, bindingStrength, override, fhirVersion)) {
+    const serverOutcome = await deps.validateViaServer(
+      code,
+      system,
+      valueSetUrl,
+      bindingStrength,
+      override,
+      fhirVersion,
+      codeSystemVersion,
+    );
+    if (serverOutcome === 'valid') {
       return deps.twoPhaseShadow.finish(lookup, true, { code, system, valueSetUrl })
+        ? 'valid'
+        : 'invalid';
+    }
+    if (serverOutcome === 'invalid') {
+      return deps.twoPhaseShadow.finish(lookup, false, { code, system, valueSetUrl })
         ? 'valid'
         : 'invalid';
     }
@@ -102,7 +140,7 @@ export async function resolveValueSetCodeBinding(
   // required-binding error.
   const requiredMissUnprovable = bindingStrength === 'required'
     && isLocallyUnprovableMissReason(unverifiableReason)
-    && !deps.hasTerminologyServer(override);
+    && !hasServer;
   if (unverifiableReason && (bindingStrength !== 'required' || requiredMissUnprovable)) {
     deps.twoPhaseShadow.finish(lookup, true, { code, system, valueSetUrl });
     recordTerminologyReason(deps.terminologyDiagnostics.unverifiedBindings, unverifiableReason);
@@ -116,6 +154,40 @@ export async function resolveValueSetCodeBinding(
   return deps.twoPhaseShadow.finish(lookup, false, { code, system, valueSetUrl })
     ? 'valid'
     : 'invalid';
+}
+
+async function resolveVersionedCodeBinding(
+  deps: CodeBindingResolutionDeps,
+  code: string,
+  system: string | undefined,
+  valueSetUrl: string,
+  bindingStrength: BindingStrength,
+  fhirVersion: FhirVersion | undefined,
+  codeSystemVersion: string,
+): Promise<CodeBindingOutcome> {
+  const override = deps.resolveServerForSystem(system, fhirVersion, codeSystemVersion);
+  const hasServer = !isSnomedEditionRouteMissing(system, codeSystemVersion, override)
+    && deps.hasTerminologyServer(override, fhirVersion)
+    && canDelegateCodeValidation(deps.resolutionConfig);
+  if (hasServer) {
+    recordTerminologyDelegation(deps.terminologyDiagnostics.delegatedBindings, 'server-validate-code');
+    const serverOutcome = await deps.validateViaServer(
+      code,
+      system,
+      valueSetUrl,
+      bindingStrength,
+      override,
+      fhirVersion,
+      codeSystemVersion,
+    );
+    if (serverOutcome === 'valid') return 'valid';
+    if (serverOutcome === 'invalid') return 'invalid';
+  }
+  recordTerminologyReason(
+    deps.terminologyDiagnostics.unverifiedBindings,
+    'versioned-binding-unverified',
+  );
+  return 'unverified';
 }
 
 function logRequiredBindingMiss(

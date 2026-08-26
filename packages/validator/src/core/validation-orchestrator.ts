@@ -21,6 +21,7 @@ import { getValueAtPath } from './validation-utils';
 import type { ReferenceResolver } from '../validators/slicing-validator';
 import { TerminologyResourceValidator } from '../validators/terminology-resource-validator';
 import type { FhirResource } from './fhir-resource';
+import { universalConstraintsValidator } from '../validators/universal-constraints-validator';
 
 export interface ValidationOrchestratorContext {
   resource: FhirResource;
@@ -118,7 +119,7 @@ export async function runAllAspectValidations(
       profileUrl: context.profileUrl,
       existingIssues: issues
     });
-    issues.push(...invariantIssues);
+    issues.push(...invariantIssues, ...universalConstraintsValidator.validate(context.resource));
   }
 
   // Custom Rule validation (User-defined business rules)

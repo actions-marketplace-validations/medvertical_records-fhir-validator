@@ -19,6 +19,7 @@ import {
   expandPathWithArrayIndex,
   getValidationTargets
 } from '..';
+import { isResolvedPrimitiveSidecarValue } from '../../core/fhir-primitive-sidecar';
 
 describe('Element Path Resolver', () => {
 
@@ -597,6 +598,30 @@ describe('Element Path Resolver', () => {
             url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
             valueCode: 'masked',
           }],
+        });
+      });
+
+      it('aligns sidecar-only entries in repeating primitive arrays', () => {
+        const patient = {
+          resourceType: 'Patient',
+          name: [{
+            given: [null],
+            _given: [{
+              extension: [{
+                url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+                valueCode: 'unknown',
+              }],
+            }],
+          }],
+        };
+
+        const targets = getValidationTargets(patient, 'Patient.name.given');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].fullPath).toBe('Patient.name[0].given[0]');
+        expect(isResolvedPrimitiveSidecarValue(targets[0].value)).toBe(true);
+        expect(targets[0].value).toMatchObject({
+          extension: [{ valueCode: 'unknown' }],
         });
       });
 

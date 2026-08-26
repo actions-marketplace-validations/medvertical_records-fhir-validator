@@ -87,13 +87,14 @@ export interface PublicValidationDeps {
   validate(
     resource: unknown,
     profileUrl: string | undefined,
-    fhirVersion: InternalFhirVersion,
+    releaseContext: FhirReleaseContext,
     settings: ValidationSettings | undefined,
     fhirClient: FhirClientLike | undefined,
   ): Promise<ValidationIssue[]>;
   validateBatch(
     resources: unknown[],
     options: BatchValidationOptions,
+    releaseContext: FhirReleaseContext,
   ): Promise<Map<unknown, ValidationIssue[]> | Map<unknown, unknown>>;
 }
 
@@ -178,13 +179,14 @@ async function validateHomogeneousBatch(
 ): Promise<PublicValidationResult[]> {
   const first = requests[0];
   const resources = requests.map((request) => request.resource);
+  const releaseContext = resolveFhirReleaseContext(first.fhirVersion);
   const resultMap = await deps.validateBatch(resources, {
     profileUrl: first.profileUrl,
-    fhirVersion: toInternalFhirVersion(first.fhirVersion),
+    fhirVersion: releaseContext.engineVersion,
     settings: first.settings,
     fhirClient: first.fhirClient,
     maxConcurrency: normalizeMaxConcurrency(options.maxConcurrency),
-  });
+  }, releaseContext);
 
   return requests.map((request, index) =>
     createPublicValidationResult(request, index, getIssueList(resultMap, request.resource))
@@ -204,7 +206,7 @@ function validateIndividually(
         const issues = await deps.validate(
           request.resource,
           request.profileUrl,
-          toInternalFhirVersion(request.fhirVersion),
+          resolveFhirReleaseContext(request.fhirVersion),
           request.settings,
           request.fhirClient,
         );

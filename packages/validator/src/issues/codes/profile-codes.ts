@@ -22,6 +22,16 @@ export const ProfileCodes = {
         severity: 'error',
         description: 'Element does not match a pattern declared by the profile',
     },
+    'profile-primitive-value-required': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Primitive element requires a value and cannot be extension-only',
+    },
+    'profile-primitive-value-alternative-required': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Extension-only primitive does not use an allowed value alternative',
+    },
     'profile-slice-fixed-value-missing': {
         aspect: 'profile',
         severity: 'error',

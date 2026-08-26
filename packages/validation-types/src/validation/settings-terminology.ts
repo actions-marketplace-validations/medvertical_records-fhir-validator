@@ -127,6 +127,13 @@ export interface TerminologyServer {
    * Example: `['http://loinc.org']` for a LOINC-dedicated server.
    */
   preferredSystems?: string[];
+
+  /**
+   * SNOMED CT edition module IDs or full edition/version URIs for which this
+   * endpoint is authoritative. A versioned Coding is routed here before a
+   * generic SNOMED-preferred endpoint.
+   */
+  snomedEditions?: string[];
 }
 
 // ============================================================================

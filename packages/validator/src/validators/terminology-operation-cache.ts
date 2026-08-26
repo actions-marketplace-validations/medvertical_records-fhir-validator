@@ -1,4 +1,7 @@
-import type { SubsumptionOutcome } from './terminology-api-types';
+import type {
+  RemoteValueSetValidationResult,
+  SubsumptionOutcome,
+} from './terminology-api-types';
 import { TerminologyTimedLruCache } from './terminology-timed-lru-cache';
 
 type CachedSubsumption = Exclude<SubsumptionOutcome, 'unknown'>;
@@ -7,7 +10,7 @@ type CachedSubsumption = Exclude<SubsumptionOutcome, 'unknown'>;
 export class TerminologyOperationCache {
   private readonly codeSystemValidateCode = new TerminologyTimedLruCache<unknown>();
   private readonly subsumes = new TerminologyTimedLruCache<CachedSubsumption>();
-  private readonly validateCode = new TerminologyTimedLruCache<boolean>();
+  private readonly validateCode = new TerminologyTimedLruCache<RemoteValueSetValidationResult>();
   private readonly valueSetNotResolvable = new TerminologyTimedLruCache<boolean>();
 
   getCodeSystemValidateCode<T>(key: string): T | undefined {
@@ -35,12 +38,14 @@ export class TerminologyOperationCache {
     return undefined;
   }
 
-  getValidateCode(key: string): boolean | undefined {
+  getValidateCode(key: string): RemoteValueSetValidationResult | undefined {
     return this.validateCode.get(key);
   }
 
-  storeValidateCode(key: string, result: boolean): void {
-    this.validateCode.set(key, result);
+  storeValidateCode(key: string, result: RemoteValueSetValidationResult | boolean): void {
+    this.validateCode.set(key, typeof result === 'boolean'
+      ? { accepted: result, outcome: result ? 'valid' : 'invalid' }
+      : result);
   }
 
   getValueSetNotResolvable(key: string): boolean | undefined {

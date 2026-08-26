@@ -35,6 +35,19 @@ describe('valueset display equivalence', () => {
     )).toBe(false);
   });
 
+  it('accepts the SNOMED preferred display Moderate when a server returns Midgrade', () => {
+    expect(displaysEquivalentForCodeInfo(
+      'Midgrade',
+      'moderate',
+      { system: 'http://snomed.info/sct', code: '6736007' },
+    )).toBe(true);
+    expect(displaysEquivalentForCodeInfo(
+      'Midgrade',
+      'mild to moderate',
+      { system: 'http://snomed.info/sct', code: '6736007' },
+    )).toBe(false);
+  });
+
   it('does not silently remove semantic text from HL7 v2 displays', () => {
     expect(displaysEquivalentForCodeInfo(
       'Routine appointment - default if not valued',

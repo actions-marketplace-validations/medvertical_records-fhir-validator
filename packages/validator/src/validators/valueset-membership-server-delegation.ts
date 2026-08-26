@@ -40,8 +40,13 @@ export async function tryValidateValueSetMembershipViaServer(
   request: ValueSetMembershipServerDelegationRequest,
 ): Promise<boolean> {
   const { code, system, valueSetUrl, localExpansionIsEmpty, fhirVersion } = request;
-  const override = resolveTerminologyServerForSystem(deps.resolutionConfig, system);
-  const canUseServer = hasTerminologyServer(deps.resolutionConfig, override)
+  const override = resolveTerminologyServerForSystem(
+    deps.resolutionConfig,
+    system,
+    undefined,
+    fhirVersion,
+  );
+  const canUseServer = hasTerminologyServer(deps.resolutionConfig, override, fhirVersion)
     && canDelegateCodeValidation(deps.resolutionConfig)
     && (
       localExpansionIsEmpty
@@ -57,12 +62,13 @@ export async function tryValidateValueSetMembershipViaServer(
     deps.terminologyDiagnostics.delegatedBindings,
     'server-validate-code',
   );
-  return validateCodeViaTerminologyServerWithFilters({
+  const outcome = await validateCodeViaTerminologyServerWithFilters({
     apiClient: deps.apiClient,
     packageLoader: deps.packageLoader,
     hasTerminologyServer: candidate => hasTerminologyServer(
       deps.resolutionConfig,
       candidate,
+      fhirVersion,
     ),
     code,
     system,
@@ -71,4 +77,5 @@ export async function tryValidateValueSetMembershipViaServer(
     override,
     fhirVersion,
   });
+  return outcome === 'valid';
 }

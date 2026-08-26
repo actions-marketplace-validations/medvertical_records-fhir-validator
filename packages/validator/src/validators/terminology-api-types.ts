@@ -1,5 +1,14 @@
 export type SubsumptionOutcome = 'subsumes' | 'subsumed-by' | 'equivalent' | 'not-subsumed' | 'unknown';
 
+export type RemoteValueSetValidationOutcome = 'valid' | 'invalid' | 'unverified';
+
+export interface RemoteValueSetValidationResult {
+    /** Whether the remote response authoritatively established membership. */
+    outcome: RemoteValueSetValidationOutcome;
+    /** Backwards-compatible fail-open result exposed by TerminologyApiClient.validateCode(). */
+    accepted: boolean;
+}
+
 export interface CodeSystemValidationIssue {
     severity: 'error' | 'warning' | 'information';
     code: string;

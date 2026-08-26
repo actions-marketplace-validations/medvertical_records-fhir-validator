@@ -40,6 +40,7 @@ export function resolveFhirSegmentValue(container: unknown, segment: string): un
   if (!isObjectRecord(container)) return undefined;
 
   const direct = container[segment];
+  if (Array.isArray(direct)) return mergePrimitiveArraySidecars(container, segment, direct);
   if (direct !== undefined) return direct;
 
   if (segment.endsWith('[x]')) {
@@ -47,6 +48,23 @@ export function resolveFhirSegmentValue(container: unknown, segment: string): un
   }
 
   return getPrimitiveSidecar(container, segment);
+}
+
+function mergePrimitiveArraySidecars(
+  container: Record<string, unknown>,
+  segment: string,
+  direct: unknown[],
+): unknown[] {
+  const sidecars = container[`_${segment}`];
+  if (!Array.isArray(sidecars)) return direct;
+  let changed = false;
+  const resolved = direct.map((value, index) => {
+    const sidecar = sidecars[index];
+    if (value != null || !isMeaningfulPrimitiveSidecar(sidecar)) return value;
+    changed = true;
+    return markPrimitiveSidecarValue(sidecar);
+  });
+  return changed ? resolved : direct;
 }
 
 function resolveChoiceSegmentValue(container: Record<string, unknown>, baseName: string): unknown {

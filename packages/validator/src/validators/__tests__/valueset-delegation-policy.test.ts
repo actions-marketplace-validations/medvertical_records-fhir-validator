@@ -43,7 +43,7 @@ describe('ValueSet delegation policy', () => {
   });
 
   it('does not call remote binding validation for an empty local expansion', async () => {
-    const validateViaServer = vi.fn(async () => true);
+    const validateViaServer = vi.fn(async () => 'valid' as const);
     const outcome = await resolveValueSetCodeBinding({
       getExpandedValueSet: vi.fn(async () => new Set()),
       hasTerminologyServer: vi.fn(() => true),
@@ -63,9 +63,9 @@ describe('ValueSet delegation policy', () => {
   });
 
   it('does not call remote membership validation for an empty local expansion', async () => {
-    const validateCode = vi.fn(async () => true);
+    const validateCodeOutcome = vi.fn(async () => 'valid' as const);
     const result = await validateValueSetMembership({
-      apiClient: { validateCode } as never,
+      apiClient: { validateCodeOutcome } as never,
       getExpandedValueSet: vi.fn(async () => new Set()),
       packageLoader: { getIncludeConceptFilters: vi.fn(async () => []) } as never,
       resolutionConfig: config,
@@ -74,14 +74,14 @@ describe('ValueSet delegation policy', () => {
     }, 'code', 'http://example.test/CodeSystem/x', 'http://example.test/ValueSet/x', 'R4');
 
     expect(result).toBe(false);
-    expect(validateCode).not.toHaveBeenCalled();
+    expect(validateCodeOutcome).not.toHaveBeenCalled();
   });
 
   it('records an allowed remote membership validation', async () => {
-    const validateCode = vi.fn(async () => true);
+    const validateCodeOutcome = vi.fn(async () => 'valid' as const);
     const terminologyDiagnostics = createEmptyTerminologyDiagnostics();
     const result = await validateValueSetMembership({
-      apiClient: { validateCode } as never,
+      apiClient: { validateCodeOutcome } as never,
       getExpandedValueSet: vi.fn(async () => new Set()),
       packageLoader: { getIncludeConceptFilters: vi.fn(async () => []) } as never,
       resolutionConfig: {
@@ -96,7 +96,7 @@ describe('ValueSet delegation policy', () => {
     }, 'code', 'http://example.test/CodeSystem/x', 'http://example.test/ValueSet/x', 'R4');
 
     expect(result).toBe(true);
-    expect(validateCode).toHaveBeenCalledOnce();
+    expect(validateCodeOutcome).toHaveBeenCalledOnce();
     expect(terminologyDiagnostics.delegatedBindings).toEqual({
       total: 1,
       byReason: { 'server-validate-code': 1 },

@@ -30,6 +30,8 @@ export function isRemoteValueSetNotResolvable(
   context: TerminologyValueSetOperationsContext,
   valueSetUrl: string,
   override?: TerminologyServerOverride,
+  system?: string,
+  codeSystemVersion?: string,
 ): boolean {
   const config = context.getConfig();
   const serverUrl = override?.url ?? config.serverUrl;
@@ -39,6 +41,11 @@ export function isRemoteValueSetNotResolvable(
     override?.auth ?? config.auth,
   );
   return context.operationCache.getValueSetNotResolvable(
-    makeValueSetNotResolvableCacheKey(serverScope, valueSetUrl),
+    makeValueSetNotResolvableCacheKey(
+      serverScope,
+      valueSetUrl,
+      system,
+      codeSystemVersion,
+    ),
   ) === true;
 }

@@ -56,6 +56,7 @@ export function buildTerminologyResolutionConfig(settings: ValidationSettings): 
       enabled: server.enabled,
       fhirVersions: server.fhirVersions,
       preferredSystems: server.preferredSystems,
+      snomedEditions: server.snomedEditions,
       circuitOpen: server.circuitOpen,
       authConfig: server.authConfig,
     })),

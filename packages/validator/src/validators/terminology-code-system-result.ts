@@ -31,6 +31,7 @@ export function parseCodeSystemValidationParameters(
     parameters: unknown,
     code: string,
     system: string,
+    options: { authoritativeSnomedEdition?: boolean } = {},
 ): CodeSystemValidationResult {
     const entries = getParametersEntries(parameters);
     if (!entries) {
@@ -65,7 +66,8 @@ export function parseCodeSystemValidationParameters(
     const errorMessage = typeof messageParam?.valueString === 'string'
         ? messageParam.valueString
         : `Unknown code '${code}' in CodeSystem '${system}'`;
-    if (isSnomedNationalExtensionSystemCode(system, code)) {
+    if (isSnomedNationalExtensionSystemCode(system, code)
+        && options.authoritativeSnomedEdition !== true) {
         logger.debug(
             '[TerminologyApiClient] SNOMED national-extension code unverified; failing open',
             terminologyTargetMetadata(system, code),

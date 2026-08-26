@@ -55,6 +55,12 @@ export class ValidatorRuntimeRegistry<T> {
     return promises;
   }
 
+  currentInstances(): T[] {
+    const instances = [...this.scopedEntries.values()]
+      .flatMap(entry => entry.instance ? [entry.instance] : []);
+    return this.defaultInstance ? [this.defaultInstance, ...instances] : instances;
+  }
+
   currentScopedEntries(): ReadonlyArray<{ instance?: T; promise: Promise<T> }> {
     return [...this.scopedEntries.values()];
   }

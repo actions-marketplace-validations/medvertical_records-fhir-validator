@@ -49,6 +49,7 @@ export const TerminologyServerSchema = z.object({
   testScore: z.number().optional(),
   authConfig: TerminologyAuthConfigSchema.optional(),
   preferredSystems: z.array(z.string()).optional(),
+  snomedEditions: z.array(z.string().trim().min(1)).optional(),
 });
 
 export const CircuitBreakerConfigSchema = z.object({

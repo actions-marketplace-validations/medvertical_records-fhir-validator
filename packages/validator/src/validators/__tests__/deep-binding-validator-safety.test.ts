@@ -82,6 +82,41 @@ describe('DeepBindingValidator safety', () => {
     ]);
   });
 
+  it('uses the selected choice type for required bindings on value[x]', () => {
+    const issues = new DeepBindingValidator().validate({
+      resource: {
+        resourceType: 'Observation',
+        component: [
+          {
+            valueQuantity: {
+              value: 120,
+              system: 'http://unitsofmeasure.org',
+              code: 'mm[Hg]',
+            },
+          },
+          {
+            valueQuantity: {
+              value: 80,
+              system: 'http://unitsofmeasure.org',
+            },
+          },
+        ],
+      },
+      resourceType: 'Observation',
+      structureDef: profile([{
+        ...requiredBinding('Observation.component.value[x]', 'CodeableConcept'),
+        type: [{ code: 'CodeableConcept' }, { code: 'Quantity' }],
+      }]),
+    });
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'deep-binding-empty-code',
+        path: 'Observation.component[1].valueQuantity',
+      }),
+    ]);
+  });
+
   it('reports present Coding and primitive code values that lack a code', () => {
     const issues = new DeepBindingValidator().validate({
       resource: {

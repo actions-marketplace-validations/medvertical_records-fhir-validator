@@ -26,6 +26,7 @@ interface CodeSystemValidationRequestOptions {
   cacheKey: string;
   circuitBreaker: CircuitBreaker;
   code: string;
+  codeSystemVersion?: string;
   config: TerminologyResolutionConfig;
   display?: string;
   override?: TerminologyServerOverride;
@@ -40,12 +41,13 @@ function handleCodeSystemValidationError(
   error: unknown,
   code: string,
   system: string,
+  authoritativeSnomedEdition: boolean,
 ): CodeSystemValidationResult {
   const axiosResponse = isAxiosError(error) ? error.response : undefined;
 
   if (axiosResponse?.status === 422 || axiosResponse?.status === 404) {
     circuitBreaker.recordSuccess();
-    if (isSnomedNationalExtensionSystemCode(system, code)) {
+    if (isSnomedNationalExtensionSystemCode(system, code) && !authoritativeSnomedEdition) {
       logger.debug(
         '[TerminologyApiClient] SNOMED national-extension code could not be verified; failing open',
         {
@@ -70,6 +72,7 @@ export async function executeCodeSystemValidateCodeRequest({
   cacheKey,
   circuitBreaker,
   code,
+  codeSystemVersion,
   config,
   display,
   override,
@@ -82,6 +85,7 @@ export async function executeCodeSystemValidateCodeRequest({
     const params = {
       url: system,
       code,
+      ...(codeSystemVersion ? { version: codeSystemVersion } : {}),
       ...(display ? { display } : {}),
       _format: 'json',
     };
@@ -115,6 +119,7 @@ export async function executeCodeSystemValidateCodeRequest({
       response.data,
       code,
       system,
+      { authoritativeSnomedEdition: override?.authoritativeSnomedEdition },
     );
     operationCache.storeCodeSystemValidateCode(cacheKey, result);
     return result;
@@ -124,6 +129,7 @@ export async function executeCodeSystemValidateCodeRequest({
       error,
       code,
       system,
+      override?.authoritativeSnomedEdition === true,
     );
     const axiosResponse = isAxiosError(error) ? error.response : undefined;
     if (axiosResponse?.status === 422 || axiosResponse?.status === 404) {

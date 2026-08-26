@@ -1,4 +1,5 @@
 import type { TerminologyRequestConfigBuilder } from './terminology-api-request-config';
+import type { RemoteValueSetValidationResult } from './terminology-api-types';
 import type { TerminologyCircuitBreakerRegistry } from './terminology-circuit-breakers';
 import type { TerminologyOperationCache } from './terminology-operation-cache';
 import type { TerminologyRequestBroker } from './terminology-request-broker';
@@ -10,7 +11,7 @@ export interface TerminologyValueSetOperationsContext {
   circuitBreakers: TerminologyCircuitBreakerRegistry;
   getConfig: () => TerminologyResolutionConfig;
   operationCache: TerminologyOperationCache;
-  pendingValidateCodeRequests: Map<string, Promise<boolean>>;
+  pendingValidateCodeRequests: Map<string, Promise<RemoteValueSetValidationResult>>;
   requestBroker: TerminologyRequestBroker;
   requestConfigBuilder: TerminologyRequestConfigBuilder;
 }

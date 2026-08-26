@@ -39,6 +39,7 @@ export async function tryPackageRegistrySource(
       [downloadResult.packageId]: downloadResult.version,
     },
     context.packageProfileIndexCache,
+    context.selectedCorePackageId,
   );
   if (!profile) {
     logger.warn('[SDLoader] Profile still not found after downloading package', profileCanonicalMetadata(url));

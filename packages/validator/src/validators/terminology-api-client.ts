@@ -5,6 +5,7 @@
 import { TerminologyApiClientRuntime } from './terminology-api-client-runtime';
 import type {
   CodeSystemValidationResult,
+  RemoteValueSetValidationOutcome,
   SubsumptionOutcome,
 } from './terminology-api-types';
 import type { TerminologyCircuitBreakerRegistry } from './terminology-circuit-breakers';
@@ -71,21 +72,42 @@ export class TerminologyApiClient {
     valueSetUrl: string,
     bindingStrength?: 'required' | 'extensible' | 'preferred' | 'example',
     override?: TerminologyServerOverride,
+    codeSystemVersion?: string,
   ): Promise<boolean> {
-    return validateCodeAgainstRemoteValueSet(
+    const result = await validateCodeAgainstRemoteValueSet(
       this.runtime.valueSetOperationsContext(),
-      { code, system, valueSetUrl, bindingStrength, override },
+      { code, system, valueSetUrl, bindingStrength, override, codeSystemVersion },
     );
+    return result.accepted;
+  }
+
+  async validateCodeOutcome(
+    code: string,
+    system: string | undefined,
+    valueSetUrl: string,
+    bindingStrength?: 'required' | 'extensible' | 'preferred' | 'example',
+    override?: TerminologyServerOverride,
+    codeSystemVersion?: string,
+  ): Promise<RemoteValueSetValidationOutcome> {
+    const result = await validateCodeAgainstRemoteValueSet(
+      this.runtime.valueSetOperationsContext(),
+      { code, system, valueSetUrl, bindingStrength, override, codeSystemVersion },
+    );
+    return result.outcome;
   }
 
   isValueSetNotResolvable(
     valueSetUrl: string,
     override?: TerminologyServerOverride,
+    system?: string,
+    codeSystemVersion?: string,
   ): boolean {
     return isRemoteValueSetNotResolvable(
       this.runtime.valueSetOperationsContext(),
       valueSetUrl,
       override,
+      system,
+      codeSystemVersion,
     );
   }
 
@@ -94,6 +116,7 @@ export class TerminologyApiClient {
     system: string,
     display?: string,
     override?: TerminologyServerOverride,
+    codeSystemVersion?: string,
   ): Promise<CodeSystemValidationResult> {
     if (!canDelegateCodeValidation(this.runtime.getConfig())) return { valid: true };
     return validateCodeSystemRemotely(
@@ -102,6 +125,7 @@ export class TerminologyApiClient {
       system,
       display,
       override,
+      codeSystemVersion,
     );
   }
 

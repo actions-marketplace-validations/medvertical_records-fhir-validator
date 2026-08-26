@@ -151,6 +151,7 @@ function autoDownloadRequestKey(
     packageSources: [...context.packageSources].sort(),
     packageVersionPins: Object.entries(context.packageVersionPins ?? {})
       .sort(([left], [right]) => left.localeCompare(right)),
+    selectedCorePackageId: context.selectedCorePackageId,
   };
   return `${url}\n${JSON.stringify(policy)}`;
 }

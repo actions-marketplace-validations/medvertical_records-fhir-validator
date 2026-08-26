@@ -14,6 +14,7 @@ describe('terminology configuration snapshots', () => {
         enabled: true,
         fhirVersions: ['R4'],
         preferredSystems: ['http://loinc.org'],
+        snomedEditions: ['999000041000000102'],
         authConfig: { type: 'basic', username: 'user', password: 'initial-password' },
       }],
       serverDelegation: {
@@ -28,11 +29,13 @@ describe('terminology configuration snapshots', () => {
 
     input.auth!.token = 'mutated-token';
     input.servers![0].preferredSystems!.push('http://snomed.info/sct');
+    input.servers![0].snomedEditions!.push('900000000000207008');
     input.servers![0].authConfig!.password = 'mutated-password';
     input.serverDelegation!.maxRemoteCodeSystemValidations = 999;
 
     expect(snapshot.auth?.token).toBe('initial-token');
     expect(snapshot.servers?.[0].preferredSystems).toEqual(['http://loinc.org']);
+    expect(snapshot.servers?.[0].snomedEditions).toEqual(['999000041000000102']);
     expect(snapshot.servers?.[0].authConfig?.password).toBe('initial-password');
     expect(snapshot.serverDelegation?.maxRemoteCodeSystemValidations).toBe(2);
   });

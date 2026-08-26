@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { getValueAtPath } from '../core/validation-utils';
+import { TypeValidator } from '../validators/type-validator';
 import { parseFhirNdjson } from './fhir-ndjson-input';
 import { parseFhirXml } from './fhir-xml-input';
 
@@ -105,6 +107,118 @@ describe('secure FHIR XML input adapter', () => {
           },
         ],
       }],
+    });
+  });
+
+  it('maps missing primitive choice values to JSON sidecars', () => {
+    const parsed = parseFhirXml(`<Parameters xmlns="http://hl7.org/fhir">
+  <parameter>
+    <name value="missing"/>
+    <valueBoolean>
+      <extension url="http://hl7.org/fhir/StructureDefinition/data-absent-reason">
+        <valueCode value="unknown"/>
+      </extension>
+    </valueBoolean>
+  </parameter>
+</Parameters>`);
+
+    const expectedSidecar = {
+      extension: [{
+        url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+        valueCode: 'unknown',
+      }],
+    };
+
+    expect(parsed.resources[0]).toEqual({
+      resourceType: 'Parameters',
+      parameter: [{
+        name: 'missing',
+        _valueBoolean: expectedSidecar,
+      }],
+    });
+    const parameter = (parsed.resources[0].parameter as Array<Record<string, unknown>>)[0];
+    expect(parameter).not.toHaveProperty('valueBoolean');
+    expect(getValueAtPath(parameter, 'value[x]')).toEqual(expectedSidecar);
+  });
+
+  it('normalizes exponent-form XML decimals as numbers', () => {
+    const parsed = parseFhirXml(`<Parameters xmlns="http://hl7.org/fhir">
+  <parameter><name value="decimal"/><valueDecimal value="1.0e-1"/></parameter>
+</Parameters>`);
+
+    expect(parsed.resources[0]).toMatchObject({
+      parameter: [{ valueDecimal: 0.1 }],
+    });
+  });
+
+  it('preserves exponent-form XML integers so structural validation rejects them', async () => {
+    const parsed = parseFhirXml(`<Parameters xmlns="http://hl7.org/fhir">
+  <parameter><name value="integer"/><valueInteger value="1e2"/></parameter>
+</Parameters>`);
+    const parameter = (parsed.resources[0].parameter as Array<Record<string, unknown>>)[0];
+
+    expect(parameter.valueInteger).toBe('1e2');
+    await expect(new TypeValidator().validate(
+      parameter.valueInteger,
+      [{ code: 'integer' }],
+      'Parameters.parameter[0].valueInteger',
+    )).resolves.toContainEqual(expect.objectContaining({
+      code: 'structural-primitive-type-mismatch',
+      path: 'Parameters.parameter[0].valueInteger',
+    }));
+  });
+
+  it('preserves leading-plus numeric primitives so structural validation rejects them', async () => {
+    const parsed = parseFhirXml(`<Parameters xmlns="http://hl7.org/fhir">
+  <parameter><name value="integer"/><valueInteger value="+1"/></parameter>
+  <parameter><name value="decimal"/><valueDecimal value="+1.0"/></parameter>
+</Parameters>`);
+    const parameters = parsed.resources[0].parameter as Array<Record<string, unknown>>;
+
+    for (const [index, property, type] of [
+      [0, 'valueInteger', 'integer'],
+      [1, 'valueDecimal', 'decimal'],
+    ] as const) {
+      expect(parameters[index]?.[property]).toMatch(/^\+/);
+      await expect(new TypeValidator().validate(
+        parameters[index]?.[property],
+        [{ code: type }],
+        `Parameters.parameter[${index}].${property}`,
+      )).resolves.toContainEqual(expect.objectContaining({
+        code: 'structural-primitive-type-mismatch',
+        path: `Parameters.parameter[${index}].${property}`,
+      }));
+    }
+  });
+
+  it('preserves empty primitive choices as invalid values without empty sidecars', async () => {
+    const parsed = parseFhirXml(`<Parameters xmlns="http://hl7.org/fhir">
+  <parameter><name value="empty"/><valueBoolean/></parameter>
+</Parameters>`);
+    const parameter = (parsed.resources[0].parameter as Array<Record<string, unknown>>)[0];
+
+    expect(parameter).toEqual({ name: 'empty', valueBoolean: {} });
+    expect(parameter).not.toHaveProperty('_valueBoolean');
+    await expect(new TypeValidator().validate(
+      parameter.valueBoolean,
+      [{ code: 'boolean' }],
+      'Parameters.parameter[0].valueBoolean',
+    )).resolves.toContainEqual(expect.objectContaining({
+      code: 'structural-primitive-type-mismatch',
+      path: 'Parameters.parameter[0].valueBoolean',
+    }));
+  });
+
+  it('keeps singleton StructureDefinition collections as arrays', () => {
+    const parsed = parseFhirXml(`<StructureDefinition xmlns="http://hl7.org/fhir">
+  <url value="https://example.test/StructureDefinition/example"/>
+  <snapshot><element><path value="Patient"/><constraint><key value="one"/></constraint></element></snapshot>
+</StructureDefinition>`);
+
+    expect(parsed.resources[0]).toMatchObject({
+      snapshot: {
+        element: [{ constraint: [{ key: 'one' }] }],
+      },
     });
   });
 

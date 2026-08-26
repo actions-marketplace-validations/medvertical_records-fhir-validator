@@ -43,6 +43,8 @@ export interface TerminologyServerDescriptor {
     enabled: boolean;
     fhirVersions: ('R4' | 'R5' | 'R6')[];
     preferredSystems?: string[];
+    /** SNOMED edition module IDs or edition/version URIs served authoritatively. */
+    snomedEditions?: string[];
     circuitOpen?: boolean;
     authConfig?: TerminologyApiAuthConfig;
 }
@@ -51,6 +53,8 @@ export interface TerminologyServerDescriptor {
 export interface TerminologyServerOverride {
     url: string;
     auth?: TerminologyApiAuthConfig;
+    /** The selected server explicitly declares the requested SNOMED edition. */
+    authoritativeSnomedEdition?: boolean;
 }
 
 /** Configuration for terminology resolution */
@@ -130,6 +134,7 @@ export const TERMINOLOGY_UNVERIFIED_REASONS = [
     'unsupported-filter',
     'unenumerable-system-include',
     'unresolvable-snomed-extension-filter',
+    'versioned-binding-unverified',
     'validation-error',
 ] as const;
 

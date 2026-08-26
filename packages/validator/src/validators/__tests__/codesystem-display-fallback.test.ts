@@ -63,6 +63,44 @@ describe('ValueSetValidator CodeSystem display fallback', () => {
     );
   });
 
+  it('does not use a fallback terminology server for another FHIR release', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://primary-r5.example/fhir',
+      servers: [
+        {
+          id: 'primary-r5',
+          url: 'https://primary-r5.example/fhir',
+          enabled: true,
+          fhirVersions: ['R5'],
+        },
+        {
+          id: 'fallback-r4',
+          url: 'https://fallback-r4.example/fhir',
+          enabled: true,
+          fhirVersions: ['R4'],
+        },
+      ],
+    });
+    const validateCodeInCodeSystem = vi.fn().mockResolvedValue({
+      valid: false,
+      reason: 'display-mismatch',
+      message: "Wrong Display Name 'Old label'. Valid display is 'Current label'",
+    });
+    (validator as any).apiClient.validateCodeInCodeSystem = validateCodeInCodeSystem;
+
+    const result = await validator.validateCodeInCodeSystem(
+      '123456',
+      'http://snomed.info/sct',
+      'Old label',
+      'R5',
+    );
+
+    expect(result.reason).toBe('display-mismatch');
+    expect(validateCodeInCodeSystem).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps SNOMED code-unknown results when an enabled preferred SNOMED server was used', async () => {
     const validator = new ValueSetValidator();
     validator.setResolutionConfig({

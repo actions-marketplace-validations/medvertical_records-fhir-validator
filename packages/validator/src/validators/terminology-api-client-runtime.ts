@@ -3,6 +3,7 @@ import { RemoteCodeSystemValidationBudget } from './terminology-api-remote-budge
 import { TerminologyRequestConfigBuilder } from './terminology-api-request-config';
 import type {
   CodeSystemValidationResult,
+  RemoteValueSetValidationResult,
   SubsumptionOutcome,
 } from './terminology-api-types';
 import { TerminologyCircuitBreakerRegistry } from './terminology-circuit-breakers';
@@ -28,7 +29,10 @@ export class TerminologyApiClientRuntime {
     () => this.config.auth,
   );
   private readonly remoteCodeSystemBudget = new RemoteCodeSystemValidationBudget();
-  private readonly pendingValidateCodeRequests = new Map<string, Promise<boolean>>();
+  private readonly pendingValidateCodeRequests = new Map<
+    string,
+    Promise<RemoteValueSetValidationResult>
+  >();
   private readonly pendingSubsumesRequests = new Map<string, Promise<SubsumptionOutcome>>();
   private readonly pendingCodeSystemValidateCodeRequests = new Map<
     string,

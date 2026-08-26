@@ -5,7 +5,14 @@ import {
   getIssuePath,
   getIssueResourceType,
 } from './validation-issue-dedupe-common';
-import { normalizeInvalidUriDedupePath } from './validation-issue-dedupe-path-utils';
+import {
+  hasBundleEntryResourceIdentity,
+  isIndexedBundleEntryResourcePath,
+  normalizeIndexedBundleEntryResourcePath,
+} from './validation-issue-dedupe-bundle-path-utils';
+import {
+  normalizeInvalidUriDedupePath,
+} from './validation-issue-dedupe-path-utils';
 
 export function getTerminologyDisplayMismatchKey(issue: ValidationIssue): string | null {
   if (issue.code !== 'terminology-display-mismatch') return null;
@@ -14,9 +21,10 @@ export function getTerminologyDisplayMismatchKey(issue: ValidationIssue): string
   const code = typeof details?.code === 'string' ? details.code.trim().toLowerCase() : '';
   const display = typeof details?.display === 'string' ? details.display.trim().toLowerCase() : '';
   if (!system || !code || !display) return null;
+  const issuePath = getTerminologyIssuePath(issue);
   return [
-    getIssueResourceType(issue).toLowerCase(),
-    normalizeDisplayMismatchPath(issue),
+    getTerminologyResourceScope(issue, issuePath),
+    normalizeDisplayMismatchPath(issue, issuePath),
     system,
     code,
     display,
@@ -51,7 +59,8 @@ export function compareDisplayMismatchSpecificity(
 ): number {
   const scoreDifference = getDisplayMismatchSpecificity(candidate)
     - getDisplayMismatchSpecificity(existing);
-  return scoreDifference || getIssuePath(candidate).length - getIssuePath(existing).length;
+  return scoreDifference
+    || getTerminologyIssuePath(candidate).length - getTerminologyIssuePath(existing).length;
 }
 
 export function getInvalidUriIssueKey(issue: ValidationIssue): string | null {
@@ -71,9 +80,13 @@ export function compareInvalidUriSpecificity(
 
 function normalizeIssuePathForTerminologyCode(issue: ValidationIssue): string {
   const resourceType = getIssueResourceType(issue);
-  const rawPath = getIssuePath(issue).trim().toLowerCase();
+  const rawPath = getTerminologyIssuePath(issue).toLowerCase();
   const prefix = `${resourceType}.`.toLowerCase();
-  const relativePath = resourceType && rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath;
+  const relativePath = isIndexedBundleEntryResourcePath(rawPath)
+    ? rawPath.slice('bundle.'.length)
+    : resourceType && rawPath.startsWith(prefix)
+      ? rawPath.slice(prefix.length)
+      : rawPath;
   const normalized = normalizeChoiceTypePath(
     relativePath.replace(/\.value\.oftype\(([^)]+)\)/g, '.value$1'),
     { stripIndices: false },
@@ -89,6 +102,7 @@ function getTerminologyCodeInvalidSpecificity(issue: ValidationIssue): number {
   if (issue.code === 'terminology-code-invalid') score += 25;
   if (issue.code === 'tx-codesystem-concept-property-code-invalid') score += 100;
   if (details?.provenance && typeof details.provenance === 'object') score += 50;
+  if (hasBundleEntryResourceIdentity(issue.path ?? '')) score += 50;
   return score;
 }
 
@@ -99,20 +113,43 @@ function getDisplayMismatchSpecificity(issue: ValidationIssue): number {
     : undefined;
   return getSeverityRank(issue.severity) * 100
     + (issue.aspect === 'profile' || sourceExecutor === 'profile' ? 20 : 0)
-    + (normalizeRawDisplayMismatchPath(issue).endsWith('.display') ? 5 : 0);
+    + (normalizeRawDisplayMismatchPath(issue).endsWith('.display') ? 5 : 0)
+    + (hasBundleEntryResourceIdentity(issue.path ?? '') ? 50 : 0);
 }
 
-function normalizeDisplayMismatchPath(issue: ValidationIssue): string {
-  return normalizeRawDisplayMismatchPath(issue).replace(/\.display$/i, '').toLowerCase();
+function normalizeDisplayMismatchPath(issue: ValidationIssue, issuePath: string): string {
+  return normalizeRawDisplayMismatchPath(issue, issuePath)
+    .replace(/\.display$/i, '')
+    .toLowerCase();
 }
 
-function normalizeRawDisplayMismatchPath(issue: ValidationIssue): string {
-  const path = getIssuePath(issue).trim();
+function normalizeRawDisplayMismatchPath(
+  issue: ValidationIssue,
+  issuePath = getTerminologyIssuePath(issue),
+): string {
+  const path = issuePath.trim();
+  if (isIndexedBundleEntryResourcePath(path)) {
+    return path.slice('Bundle.'.length);
+  }
   const resourceType = getIssueResourceType(issue);
   const prefix = `${resourceType}.`;
   return resourceType && path.toLowerCase().startsWith(prefix.toLowerCase())
     ? path.slice(prefix.length)
     : path;
+}
+
+function getTerminologyIssuePath(issue: ValidationIssue): string {
+  const issuePath = issue.path?.trim() ?? '';
+  if (isIndexedBundleEntryResourcePath(issuePath)) {
+    return normalizeIndexedBundleEntryResourcePath(issuePath);
+  }
+  return getIssuePath(issue).trim();
+}
+
+function getTerminologyResourceScope(issue: ValidationIssue, issuePath: string): string {
+  return isIndexedBundleEntryResourcePath(issuePath)
+    ? 'bundle-entry'
+    : getIssueResourceType(issue).toLowerCase();
 }
 
 function getInvalidUriSpecificity(issue: ValidationIssue): number {

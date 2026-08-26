@@ -10,6 +10,49 @@ ship together; package-only changes are noted under each release.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-08-25
+
+Patch release closing Bundle, XML, and SNOMED edition gaps and adding
+reproducible release evidence for every supported FHIR release. There are no
+intentional breaking changes.
+
+### Fixed
+
+- Restored terminology and binding validation for resources nested in Bundle
+  entries. Duplicate parent/child findings are collapsed without losing the
+  resource-qualified path needed to locate the failing entry, while findings
+  from separate Bundle entry indices remain independent.
+- Forwarded `Coding.version` through terminology validation and routed SNOMED
+  CT edition URIs only to servers that explicitly advertise the requested
+  module through `snomedEditions`; that declaration alone makes the scoped
+  server response authoritative. Edition selection is now part of immutable
+  runtime snapshots and terminology cache keys, authoritative negative
+  responses remain invalid, and deep datatype traversal preserves the requested
+  version. ValueSet binding delegation sends `systemVersion`, version-specific
+  package loads cannot replace the unversioned CodeSystem cache, and
+  release-incompatible defaults fall back to an enabled generic server. A
+  missing edition route emits an actionable diagnostic instead of silently using
+  the wrong server.
+- Hardened FHIR XML conversion and the conformance resource loader so
+  namespace-aware XML resources, manifest inputs, and supporting resources use
+  the same bounded parser and reach validation as proper FHIR JSON objects.
+  Invalid leading-plus numeric lexemes stay visible to structural validation,
+  and repeating primitive sidecars remain aligned with their missing values so
+  `mustHaveValue` and `valueAlternatives` apply per occurrence.
+
+### Quality
+
+- Added explicit JSON/XML and R4/R4B/R5/R6 conformance lanes, including small
+  clean and defect corpora for R4B and R6.
+- Added a reproducible validator performance baseline and a regression gate
+  with absolute ceilings, noise-floor handling, and report provenance checks.
+- Added FHIRSchema dual-path report freshness and provenance gates. The release
+  keeps StructureDefinition validation authoritative; FHIRSchema remains an
+  evidence-only comparison path until independently confirmed gaps justify a
+  runtime change.
+- Fixed the public-repository export boundary so its policy module is included
+  and the exported tree executes the privacy audit during regression tests.
+
 ## [0.6.1] — 2026-08-24
 
 Patch release keeping clinical content out of persisted findings.

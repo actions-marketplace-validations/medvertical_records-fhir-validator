@@ -132,6 +132,7 @@ export class StructureDefinitionLoaderRuntime {
       packageDownloader: this.packageDownloader,
       allowedPackages: this.policy.allowedPackageList,
       packageVersionPins: this.policy.packagePins,
+      selectedCorePackageId: this.policy.selectedCorePackage,
       profileSourcesConfig: this.policy.profileSources,
       profileSourceContext,
       profileResolutionSettings,

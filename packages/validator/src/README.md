@@ -40,7 +40,7 @@ node scripts/oss/audit-validator-boundary.mjs --include-tests
 ```
 
 Fallbacks, fail-open behavior, and deprecated compatibility exports are
-documented in [`docs/technical/validator-fallback-policy.md`](../../../docs/technical/validator-fallback-policy.md).
+documented in [`docs/architecture/cross-cutting/validator-fallback-policy.md`](../../../docs/architecture/cross-cutting/validator-fallback-policy.md).
 
 ## Main Areas
 

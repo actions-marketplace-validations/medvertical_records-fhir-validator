@@ -15,6 +15,7 @@ function createConfig(): TerminologyResolutionConfig {
       enabled: true,
       fhirVersions: ['R4'],
       preferredSystems: ['http://loinc.org'],
+      snomedEditions: ['999000041000000102'],
       authConfig: {
         type: 'bearer',
         token: 'server-token',
@@ -43,6 +44,7 @@ describe('ValueSetValidator resolution config ownership', () => {
     input.auth!.token = 'mutated';
     input.servers![0].fhirVersions.push('R5');
     input.servers![0].preferredSystems!.push('http://snomed.info/sct');
+    input.servers![0].snomedEditions!.push('900000000000207008');
     input.servers![0].authConfig!.token = 'mutated';
     input.serverDelegation!.cacheTTLSeconds = 999;
     input.twoPhaseExpansion!.mode = 'enforce';
@@ -58,6 +60,7 @@ describe('ValueSetValidator resolution config ownership', () => {
     snapshot.auth!.token = 'mutated';
     snapshot.servers![0].fhirVersions.push('R6');
     snapshot.servers![0].preferredSystems![0] = 'mutated';
+    snapshot.servers![0].snomedEditions![0] = 'mutated';
     snapshot.servers![0].authConfig!.token = 'mutated';
     snapshot.serverDelegation!.validateCodes = false;
     snapshot.twoPhaseExpansion!.enabled = false;

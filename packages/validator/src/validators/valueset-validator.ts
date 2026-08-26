@@ -114,6 +114,7 @@ export class ValueSetValidator {
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
     elementPath?: string,
+    codeSystemVersion?: string,
   ): Promise<CodeBindingOutcome> {
     return this.pipeline.resolveCodeBindingForBinding(
       code,
@@ -122,6 +123,7 @@ export class ValueSetValidator {
       bindingStrength,
       fhirVersion,
       elementPath,
+      codeSystemVersion,
     );
   }
 
@@ -130,8 +132,15 @@ export class ValueSetValidator {
     system: string,
     display?: string,
     fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
   ): Promise<CodeSystemValidationResult> {
-    return this.pipeline.validateCodeInCodeSystem(code, system, display, fhirVersion);
+    return this.pipeline.validateCodeInCodeSystem(
+      code,
+      system,
+      display,
+      fhirVersion,
+      codeSystemVersion,
+    );
   }
 
   async validateCodeInLocalCodeSystemOnly(
@@ -139,12 +148,14 @@ export class ValueSetValidator {
     system: string,
     display?: string,
     fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
   ): Promise<CodeSystemValidationResult | null> {
     return this.pipeline.validateCodeInLocalCodeSystemOnly(
       code,
       system,
       display,
       fhirVersion,
+      codeSystemVersion,
     );
   }
 
@@ -194,6 +205,7 @@ export class ValueSetValidator {
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
     elementPath?: string,
+    codeSystemVersion?: string,
   ): Promise<CodeBindingOutcome> {
     return this.pipeline.resolveCodeBinding(
       code,
@@ -202,6 +214,7 @@ export class ValueSetValidator {
       bindingStrength,
       fhirVersion,
       elementPath,
+      codeSystemVersion,
     );
   }
 }

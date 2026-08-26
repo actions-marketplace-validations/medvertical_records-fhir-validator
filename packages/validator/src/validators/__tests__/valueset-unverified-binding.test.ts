@@ -40,6 +40,7 @@ describe('ValueSetValidator unverified bindings (P-3)', () => {
         'unsupported-filter': 0,
         'unenumerable-system-include': 0,
         'unresolvable-snomed-extension-filter': 0,
+        'versioned-binding-unverified': 0,
         'validation-error': 0,
       },
     });

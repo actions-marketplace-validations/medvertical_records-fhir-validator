@@ -57,6 +57,31 @@ describe('universalConstraintsValidator', () => {
     }));
   });
 
+  it('reports ele-1 when a primitive sidecar contains only an element id', () => {
+    const issues = universalConstraintsValidator.validate({
+      resourceType: 'Patient',
+      id: 'patient-id-only',
+      _implicitRules: { id: 'metadata-only' },
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'ele-1-violation',
+      path: 'Patient.implicitRules',
+    }));
+  });
+
+  it('reports ele-1 when a repeating element contains only an element id', () => {
+    const issues = universalConstraintsValidator.validate({
+      resourceType: 'Patient',
+      name: [{ id: 'metadata-only' }],
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'ele-1-violation',
+      path: 'Patient.name[0]',
+    }));
+  });
+
   it('still reports ele-1 when a repeating primitive sidecar array has no meaningful items', () => {
     const issues = universalConstraintsValidator.validate({
       resourceType: 'ActivityDefinition',

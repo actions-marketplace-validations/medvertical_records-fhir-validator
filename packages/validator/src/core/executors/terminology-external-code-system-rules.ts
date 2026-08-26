@@ -101,12 +101,14 @@ export async function validateLocalCodeSystemCoding(
   const coding = asCodingValue(value);
   if (!coding || /\/ValueSet\//i.test(coding.system)) return [];
 
-  const result = await valuesetValidator.validateCodeInLocalCodeSystemOnly(
-    coding.code,
-    coding.system,
-    typeof coding.display === 'string' ? coding.display : undefined,
-    fhirVersion,
-  );
+  const display = typeof coding.display === 'string' ? coding.display : undefined;
+  const result = coding.version
+    ? await valuesetValidator.validateCodeInLocalCodeSystemOnly(
+        coding.code, coding.system, display, fhirVersion, coding.version,
+      )
+    : await valuesetValidator.validateCodeInLocalCodeSystemOnly(
+        coding.code, coding.system, display, fhirVersion,
+      );
   if (!result) return [];
 
   return buildCodeSystemResultIssues(coding, result, path, 0, false, false);
@@ -151,12 +153,14 @@ async function validateExternalCoding(
 ): Promise<ValidationIssue[]> {
   if (/\/ValueSet\//i.test(coding.system)) return [];
 
-  const result = await valuesetValidator.validateCodeInCodeSystem(
-    coding.code,
-    coding.system,
-    typeof coding.display === 'string' ? coding.display : undefined,
-    fhirVersion,
-  );
+  const display = typeof coding.display === 'string' ? coding.display : undefined;
+  const result = coding.version
+    ? await valuesetValidator.validateCodeInCodeSystem(
+        coding.code, coding.system, display, fhirVersion, coding.version,
+      )
+    : await valuesetValidator.validateCodeInCodeSystem(
+        coding.code, coding.system, display, fhirVersion,
+      );
   return buildCodeSystemResultIssues(coding, result, path, index, isArrayInput);
 }
 
@@ -169,6 +173,7 @@ function asCodingValue(value: unknown): CodingValue | undefined {
     system: value.system,
     code: value.code,
     ...(typeof value.display === 'string' ? { display: value.display } : {}),
+    ...(typeof value.version === 'string' ? { version: value.version } : {}),
   };
 }
 

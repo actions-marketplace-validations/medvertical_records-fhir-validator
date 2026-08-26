@@ -113,11 +113,15 @@ export class SnapshotElementMerger {
     if (diffElement.constraint) {
       merged.constraint = [...(baseElement.constraint || []), ...diffElement.constraint];
     }
+    if (diffElement.extension) {
+      merged.extension = mergeExtensions(baseElement.extension, diffElement.extension);
+    }
     if (diffElement.binding) merged.binding = diffElement.binding;
 
     const propertiesToCopy = [
       'short', 'definition', 'comment', 'requirements',
       'mustSupport', 'isModifier', 'isSummary',
+      'mustHaveValue', 'valueAlternatives',
       'meaningWhenMissing', 'fixed', 'pattern',
       'example', 'minValue', 'maxValue', 'maxLength',
       'condition', 'mapping', 'slicing',
@@ -158,6 +162,21 @@ export class SnapshotElementMerger {
       if (constraint.isModifier !== undefined) element.isModifier = constraint.isModifier;
     }
   }
+}
+
+function mergeExtensions(
+  baseExtensions: Array<Record<string, unknown>> | undefined,
+  differentialExtensions: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const overriddenUrls = new Set(differentialExtensions.flatMap(extension =>
+    typeof extension.url === 'string' ? [extension.url] : [],
+  ));
+  return [
+    ...(baseExtensions ?? []).filter(extension =>
+      typeof extension.url !== 'string' || !overriddenUrls.has(extension.url),
+    ),
+    ...differentialExtensions,
+  ];
 }
 
 function restrictMax(baseMax?: string, diffMax?: string): string {

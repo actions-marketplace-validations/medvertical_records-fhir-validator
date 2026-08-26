@@ -9,27 +9,40 @@ import {
   TerminologyApiClient,
   type CodeSystemValidationResult,
 } from './terminology-api-client';
+import type { FhirVersion } from './valueset-expansion-cache-key';
+import {
+  extractSnomedEditionIdentifier,
+  isTerminologyServerEligible,
+} from './valueset-server-routing';
 
 export async function validateCodeInCodeSystemWithFallbacks({
   apiClient,
   code,
+  codeSystemVersion,
   display,
+  fhirVersion,
   primaryOverride,
   resolutionConfig,
   system,
 }: {
   apiClient: TerminologyApiClient;
   code: string;
+  codeSystemVersion?: string;
   display?: string;
+  fhirVersion?: FhirVersion;
   primaryOverride?: TerminologyServerOverride;
   resolutionConfig: TerminologyResolutionConfig;
   system: string;
 }): Promise<CodeSystemValidationResult> {
-  const result = await apiClient.validateCodeInCodeSystem(code, system, display, primaryOverride);
+  const result = await callCodeSystemValidator(
+    apiClient, code, system, display, primaryOverride, codeSystemVersion,
+  );
   if (!display || !isDisplayMismatchResult(result)) {
     const codeMembershipResult = await validateCodeMembershipWithFallbackServers({
       apiClient,
       code,
+      codeSystemVersion,
+      fhirVersion,
       primaryOverride,
       primaryResult: result,
       resolutionConfig,
@@ -38,6 +51,8 @@ export async function validateCodeInCodeSystemWithFallbacks({
     return validateInactiveCodeWithFallbackServers({
       apiClient,
       code,
+      codeSystemVersion,
+      fhirVersion,
       primaryOverride,
       primaryResult: codeMembershipResult,
       resolutionConfig,
@@ -51,7 +66,9 @@ export async function validateCodeInCodeSystemWithFallbacks({
   const displayResult = await validateDisplayMismatchWithFallbackServers({
     apiClient,
     code,
+    codeSystemVersion,
     display,
+    fhirVersion,
     primaryOverride,
     primaryResult: result,
     resolutionConfig,
@@ -60,6 +77,8 @@ export async function validateCodeInCodeSystemWithFallbacks({
   return validateInactiveCodeWithFallbackServers({
     apiClient,
     code,
+    codeSystemVersion,
+    fhirVersion,
     primaryOverride,
     primaryResult: displayResult,
     resolutionConfig,
@@ -70,6 +89,8 @@ export async function validateCodeInCodeSystemWithFallbacks({
 async function validateCodeMembershipWithFallbackServers({
   apiClient,
   code,
+  codeSystemVersion,
+  fhirVersion,
   primaryOverride,
   primaryResult,
   resolutionConfig,
@@ -77,6 +98,8 @@ async function validateCodeMembershipWithFallbackServers({
 }: {
   apiClient: TerminologyApiClient;
   code: string;
+  codeSystemVersion?: string;
+  fhirVersion?: FhirVersion;
   primaryOverride?: TerminologyServerOverride;
   primaryResult: CodeSystemValidationResult;
   resolutionConfig: TerminologyResolutionConfig;
@@ -84,11 +107,15 @@ async function validateCodeMembershipWithFallbackServers({
 }): Promise<CodeSystemValidationResult> {
   if (!shouldTryCodeMembershipFallback(primaryResult, primaryOverride)) return primaryResult;
 
-  const fallbackServers = getFallbackTerminologyServers(resolutionConfig, primaryOverride);
+  const fallbackServers = getFallbackTerminologyServers(
+    resolutionConfig, primaryOverride, system, codeSystemVersion, fhirVersion,
+  );
   if (fallbackServers.length === 0) return primaryResult;
 
   for (const server of fallbackServers) {
-    const fallbackResult = await apiClient.validateCodeInCodeSystem(code, system, undefined, server);
+    const fallbackResult = await callCodeSystemValidator(
+      apiClient, code, system, undefined, server, codeSystemVersion,
+    );
     if (fallbackResult.valid || isDisplayMismatchResult(fallbackResult)) {
       return fallbackResult;
     }
@@ -128,7 +155,9 @@ function isEquivalentDisplayMismatch(
 async function validateDisplayMismatchWithFallbackServers({
   apiClient,
   code,
+  codeSystemVersion,
   display,
+  fhirVersion,
   primaryOverride,
   primaryResult,
   resolutionConfig,
@@ -136,17 +165,23 @@ async function validateDisplayMismatchWithFallbackServers({
 }: {
   apiClient: TerminologyApiClient;
   code: string;
+  codeSystemVersion?: string;
   display: string;
+  fhirVersion?: FhirVersion;
   primaryOverride?: TerminologyServerOverride;
   primaryResult: CodeSystemValidationResult;
   resolutionConfig: TerminologyResolutionConfig;
   system: string;
 }): Promise<CodeSystemValidationResult> {
-  const fallbackServers = getFallbackTerminologyServers(resolutionConfig, primaryOverride);
+  const fallbackServers = getFallbackTerminologyServers(
+    resolutionConfig, primaryOverride, system, codeSystemVersion, fhirVersion,
+  );
   if (fallbackServers.length === 0) return primaryResult;
 
   for (const server of fallbackServers) {
-    const fallbackResult = await apiClient.validateCodeInCodeSystem(code, system, display, server);
+    const fallbackResult = await callCodeSystemValidator(
+      apiClient, code, system, display, server, codeSystemVersion,
+    );
     if (fallbackResult.valid) {
       return {
         ...fallbackResult,
@@ -161,6 +196,8 @@ async function validateDisplayMismatchWithFallbackServers({
 async function validateInactiveCodeWithFallbackServers({
   apiClient,
   code,
+  codeSystemVersion,
+  fhirVersion,
   primaryOverride,
   primaryResult,
   resolutionConfig,
@@ -168,6 +205,8 @@ async function validateInactiveCodeWithFallbackServers({
 }: {
   apiClient: TerminologyApiClient;
   code: string;
+  codeSystemVersion?: string;
+  fhirVersion?: FhirVersion;
   primaryOverride?: TerminologyServerOverride;
   primaryResult: CodeSystemValidationResult;
   resolutionConfig: TerminologyResolutionConfig;
@@ -175,13 +214,17 @@ async function validateInactiveCodeWithFallbackServers({
 }): Promise<CodeSystemValidationResult> {
   if (!isInactiveResult(primaryResult)) return primaryResult;
 
-  const fallbackServers = getFallbackTerminologyServers(resolutionConfig, primaryOverride);
+  const fallbackServers = getFallbackTerminologyServers(
+    resolutionConfig, primaryOverride, system, codeSystemVersion, fhirVersion,
+  );
   if (fallbackServers.length === 0) return primaryResult;
 
   for (const server of fallbackServers) {
     // Validate the code status only. Passing the original display here can
     // turn an otherwise active code into a display-mismatch result.
-    const fallbackResult = await apiClient.validateCodeInCodeSystem(code, system, undefined, server);
+    const fallbackResult = await callCodeSystemValidator(
+      apiClient, code, system, undefined, server, codeSystemVersion,
+    );
     if (fallbackResult.valid && !isInactiveResult(fallbackResult)) {
       const filteredIssues = primaryResult.issues?.filter(issue => !isInactiveIssue(issue)) ?? [];
       const { message: _message, issues: _issues, ...activeResult } = primaryResult;
@@ -199,6 +242,9 @@ async function validateInactiveCodeWithFallbackServers({
 function getFallbackTerminologyServers(
   resolutionConfig: TerminologyResolutionConfig,
   primaryOverride: { url: string } | undefined,
+  system: string,
+  codeSystemVersion?: string,
+  fhirVersion?: FhirVersion,
 ): TerminologyServerOverride[] {
   const skippedUrls = new Set<string>();
   if (primaryOverride?.url) {
@@ -207,10 +253,32 @@ function getFallbackTerminologyServers(
     skippedUrls.add(resolutionConfig.serverUrl);
   }
 
+  const requestedEdition = system === 'http://snomed.info/sct'
+    ? extractSnomedEditionIdentifier(codeSystemVersion)
+    : undefined;
   return (resolutionConfig.servers || [])
-    .filter(server => server.enabled && !server.circuitOpen && Boolean(server.url))
+    .filter(server => isTerminologyServerEligible(server, fhirVersion) && Boolean(server.url))
     .filter(server => !skippedUrls.has(server.url))
-    .map(server => ({ url: server.url, auth: server.authConfig }));
+    .filter(server => !requestedEdition || server.snomedEditions?.some(edition =>
+      extractSnomedEditionIdentifier(edition) === requestedEdition))
+    .map(server => ({
+      url: server.url,
+      auth: server.authConfig,
+      ...(requestedEdition ? { authoritativeSnomedEdition: true } : {}),
+    }));
+}
+
+function callCodeSystemValidator(
+  apiClient: TerminologyApiClient,
+  code: string,
+  system: string,
+  display: string | undefined,
+  override: TerminologyServerOverride | undefined,
+  codeSystemVersion: string | undefined,
+): Promise<CodeSystemValidationResult> {
+  return codeSystemVersion === undefined
+    ? apiClient.validateCodeInCodeSystem(code, system, display, override)
+    : apiClient.validateCodeInCodeSystem(code, system, display, override, codeSystemVersion);
 }
 
 function isDisplayMismatchResult(result: CodeSystemValidationResult): boolean {

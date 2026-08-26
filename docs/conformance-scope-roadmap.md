@@ -1,3 +1,15 @@
+---
+type: product-contract
+status: current
+owner: validation
+audience:
+  - integrator
+  - developer
+  - internal
+last_reviewed: 2026-08-21
+source: manual
+---
+
 # FHIR Conformance Scope Roadmap
 
 **Status:** 2026-07-30

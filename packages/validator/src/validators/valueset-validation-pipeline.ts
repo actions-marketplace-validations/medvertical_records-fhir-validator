@@ -32,6 +32,7 @@ type ResolveCodeBinding = (
   bindingStrength: BindingStrength,
   fhirVersion?: FhirVersion,
   elementPath?: string,
+  codeSystemVersion?: string,
 ) => Promise<CodeBindingOutcome>;
 
 /** Executes ValueSet validation use cases against one mutable runtime. */
@@ -93,6 +94,7 @@ export class ValueSetValidationPipeline {
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
     elementPath?: string,
+    codeSystemVersion?: string,
   ): Promise<CodeBindingOutcome> {
     return this.runtime.bindingResolutions.run([
       fhirVersion ?? '',
@@ -100,6 +102,7 @@ export class ValueSetValidationPipeline {
       valueSetUrl,
       system ?? '',
       code,
+      codeSystemVersion ?? '',
       elementPath ?? '',
     ], () => this.resolveCodeBindingSafely(
       code,
@@ -108,6 +111,7 @@ export class ValueSetValidationPipeline {
       bindingStrength,
       fhirVersion,
       elementPath,
+      codeSystemVersion,
     ));
   }
 
@@ -116,8 +120,15 @@ export class ValueSetValidationPipeline {
     system: string,
     display?: string,
     fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
   ): Promise<CodeSystemValidationResult> {
-    return this.getCodeSystems().validate(code, system, display, fhirVersion);
+    return this.getCodeSystems().validate(
+      code,
+      system,
+      display,
+      fhirVersion,
+      codeSystemVersion,
+    );
   }
 
   async validateCodeInLocalCodeSystemOnly(
@@ -125,8 +136,15 @@ export class ValueSetValidationPipeline {
     system: string,
     display?: string,
     fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
   ): Promise<CodeSystemValidationResult | null> {
-    return this.getCodeSystems().validateLocal(code, system, display, fhirVersion);
+    return this.getCodeSystems().validateLocal(
+      code,
+      system,
+      display,
+      fhirVersion,
+      codeSystemVersion,
+    );
   }
 
   async isCodeInValueSet(
@@ -188,12 +206,19 @@ export class ValueSetValidationPipeline {
     };
   }
 
-  private resolveServerForSystem(system?: string): TerminologyServerOverride | undefined {
-    return this.getCodeSystems().resolveServer(system);
+  private resolveServerForSystem(
+    system?: string,
+    fhirVersion?: FhirVersion,
+    codeSystemVersion?: string,
+  ): TerminologyServerOverride | undefined {
+    return this.getCodeSystems().resolveServer(system, fhirVersion, codeSystemVersion);
   }
 
-  private hasTerminologyServer(override?: { url: string }): boolean {
-    return this.getCodeSystems().hasServer(override);
+  private hasTerminologyServer(
+    override?: { url: string },
+    fhirVersion?: FhirVersion,
+  ): boolean {
+    return this.getCodeSystems().hasServer(override, fhirVersion);
   }
 
   private async validateCodeViaTerminologyServer(
@@ -203,7 +228,8 @@ export class ValueSetValidationPipeline {
     bindingStrength: 'required' | 'extensible' | 'preferred' | 'example' | undefined,
     override: TerminologyServerOverride | undefined,
     fhirVersion?: FhirVersion,
-  ): Promise<boolean> {
+    codeSystemVersion?: string,
+  ): Promise<CodeBindingOutcome> {
     return this.getCodeSystems().validateViaServer({
       code,
       system,
@@ -211,6 +237,7 @@ export class ValueSetValidationPipeline {
       bindingStrength,
       override,
       fhirVersion,
+      codeSystemVersion,
     });
   }
 
@@ -221,6 +248,7 @@ export class ValueSetValidationPipeline {
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
     elementPath?: string,
+    codeSystemVersion?: string,
   ): Promise<CodeBindingOutcome> {
     return runSafeBindingResolution(
       () => this.resolveCodeBindingSeam(
@@ -230,6 +258,7 @@ export class ValueSetValidationPipeline {
         bindingStrength,
         fhirVersion,
         elementPath,
+        codeSystemVersion,
       ),
       this.runtime.terminologyDiagnostics,
     );
@@ -242,6 +271,7 @@ export class ValueSetValidationPipeline {
     bindingStrength: BindingStrength,
     fhirVersion?: FhirVersion,
     elementPath?: string,
+    codeSystemVersion?: string,
   ): Promise<CodeBindingOutcome> {
     return resolveValueSetCodeBinding({
       getExpandedValueSet: this.getExpandedValueSet.bind(this),
@@ -252,7 +282,7 @@ export class ValueSetValidationPipeline {
       terminologyDiagnostics: this.runtime.terminologyDiagnostics,
       twoPhaseShadow: this.runtime.twoPhaseShadow,
       validateViaServer: this.validateCodeViaTerminologyServer.bind(this),
-    }, code, system, valueSetUrl, bindingStrength, fhirVersion, elementPath);
+    }, code, system, valueSetUrl, bindingStrength, fhirVersion, elementPath, codeSystemVersion);
   }
 
   private getExpandedValueSet(

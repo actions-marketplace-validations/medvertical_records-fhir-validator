@@ -41,6 +41,7 @@ export interface LoadProfileContext {
   packageDownloader: PackageDownloader;
   allowedPackages: string[];
   packageVersionPins: Record<string, string>;
+  selectedCorePackageId?: string;
   profileSourcesConfig: ProfileSourcesConfig;
   profileSourceContext?: ProfileSourceContext;
   profileResolutionSettings?: ValidationSettings;
@@ -215,6 +216,7 @@ async function loadProfileFromKnownSources(
       fhirVersion,
       ctx.packageVersionPins,
       ctx.packageProfileIndexCache,
+      ctx.selectedCorePackageId,
     );
 
     if (sd) {
@@ -235,6 +237,7 @@ async function loadProfileFromKnownSources(
       packageDownloader: ctx.packageDownloader,
       allowedPackages: ctx.allowedPackages,
       packageVersionPins: ctx.packageVersionPins,
+      selectedCorePackageId: ctx.selectedCorePackageId,
       packageSources: ctx.packageSources,
       cache: ctx.cache,
       availableProfiles: ctx.availableProfiles,

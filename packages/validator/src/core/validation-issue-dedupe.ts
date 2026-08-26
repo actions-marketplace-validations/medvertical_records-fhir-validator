@@ -10,6 +10,7 @@ import {
   normalizeRequiredElementPath,
 } from './validation-issue-dedupe-utils';
 import { getEffectiveRuleId } from './validation-issue-dedupe-profile-signals';
+import { hasBundleEntryResourceIdentity } from './validation-issue-dedupe-bundle-path-utils';
 
 /**
  * Dedupe issues by (code, path, severity, rule). Prevents reporting the same
@@ -29,15 +30,29 @@ export function dedupeIssues(issues: ValidationIssue[]): ValidationIssue[] {
  * representations suppress each other.
  */
 export function dedupeExactIssues(issues: ValidationIssue[]): ValidationIssue[] {
-  const seen = new Set<string>();
+  const positions = new Map<string, number>();
   const out: ValidationIssue[] = [];
   for (const issue of issues) {
     const key = getSemanticDedupeKey(issue, getIssueRuleKey(issue));
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const existingPosition = positions.get(key);
+    if (existingPosition !== undefined) {
+      if (preferRebasedBundleEntryIssue(issue, out[existingPosition])) {
+        out[existingPosition] = issue;
+      }
+      continue;
+    }
+    positions.set(key, out.length);
     out.push(issue);
   }
   return out;
+}
+
+function preferRebasedBundleEntryIssue(
+  candidate: ValidationIssue,
+  existing: ValidationIssue,
+): boolean {
+  return hasBundleEntryResourceIdentity(candidate.path ?? '')
+    && !hasBundleEntryResourceIdentity(existing.path ?? '');
 }
 
 /**

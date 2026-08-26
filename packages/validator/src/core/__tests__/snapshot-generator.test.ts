@@ -333,6 +333,49 @@ describe('SnapshotGenerator', () => {
       ]));
       expect(snapshot.find(element => element.id === 'Patient.telecom.system')?.fixedCode).toBeUndefined();
     });
+
+    it('preserves primitive value presence rules from a differential', async () => {
+      const baseProfile: StructureDefinition = {
+        resourceType: 'StructureDefinition',
+        url: 'http://hl7.org/fhir/StructureDefinition/Patient',
+        name: 'Patient', status: 'active', kind: 'resource', abstract: false, type: 'Patient',
+        snapshot: { element: [
+          { id: 'Patient', path: 'Patient' } as ElementDefinition,
+          {
+            id: 'Patient.active', path: 'Patient.active', type: [{ code: 'boolean' }],
+            extension: [{ url: 'http://example.org/base-rule', valueString: 'base' }],
+          },
+        ] },
+      };
+      const ruleUrl =
+        'http://hl7.org/fhir/5.0/StructureDefinition/extension-ElementDefinition.mustHaveValue';
+      const profile: StructureDefinition = {
+        ...baseProfile,
+        url: 'http://example.org/PatientWithRequiredActiveValue',
+        baseDefinition: baseProfile.url,
+        snapshot: undefined,
+        differential: { element: [{
+          id: 'Patient.active',
+          path: 'Patient.active',
+          extension: [{ url: ruleUrl, valueBoolean: true }],
+          mustHaveValue: true,
+          valueAlternatives: ['http://example.org/allowed-absence'],
+        }] },
+      } as StructureDefinition;
+      vi.spyOn(sdLoader, 'loadProfile').mockResolvedValue(baseProfile);
+
+      const snapshot = await generator.generateSnapshot(profile, { cacheResults: false });
+      const active = snapshot.find(element => element.path === 'Patient.active');
+
+      expect(active).toMatchObject({
+        extension: [
+          { url: 'http://example.org/base-rule', valueString: 'base' },
+          { url: ruleUrl, valueBoolean: true },
+        ],
+        mustHaveValue: true,
+        valueAlternatives: ['http://example.org/allowed-absence'],
+      });
+    });
     
     it('should clear cache', () => {
       generator.clearCache();

@@ -74,6 +74,48 @@ describe('validate-code cache', () => {
     vi.doUnmock('axios');
   });
 
+  it('distinguishes an authoritative negative response from an unavailable check', async () => {
+    vi.resetModules();
+    const get = vi.fn()
+      .mockResolvedValueOnce({
+        data: {
+          resourceType: 'Parameters',
+          parameter: [{ name: 'result', valueBoolean: false }],
+        },
+      })
+      .mockRejectedValueOnce(new Error('terminology server unavailable'));
+
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: { ...actual.default, get },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { TerminologyApiClient } = await import('../terminology-api-client');
+    const client = new TerminologyApiClient({
+      serverUrl: 'https://tx.example.com/r4',
+      strategy: 'server-first',
+    });
+
+    await expect(client.validateCodeOutcome(
+      'outside-required-set',
+      'http://x.sys',
+      'http://vs/required',
+      'required',
+    )).resolves.toBe('invalid');
+    await expect(client.validateCodeOutcome(
+      'not-checked',
+      'http://x.sys',
+      'http://vs/unavailable',
+      'required',
+    )).resolves.toBe('unverified');
+
+    vi.doUnmock('axios');
+  });
+
   it('coalesces concurrent validate-code requests for the same tuple', async () => {
     vi.resetModules();
     let resolveGet: ((value: unknown) => void) | undefined;
@@ -118,9 +160,9 @@ describe('validate-code cache', () => {
     vi.doUnmock('axios');
   });
 
-  it('short-circuits later codes when the server cannot resolve the ValueSet', async () => {
+  it('scopes unresolvable ValueSet results to the requested system version', async () => {
     vi.resetModules();
-    const get = vi.fn().mockRejectedValue({
+    const notResolvable = {
       isAxiosError: true,
       response: {
         status: 404,
@@ -133,7 +175,15 @@ describe('validate-code cache', () => {
           }],
         },
       },
-    });
+    };
+    const get = vi.fn()
+      .mockRejectedValueOnce(notResolvable)
+      .mockResolvedValue({
+        data: {
+          resourceType: 'Parameters',
+          parameter: [{ name: 'result', valueBoolean: true }],
+        },
+      });
 
     vi.doMock('axios', async () => {
       const actual = await vi.importActual<typeof import('axios')>('axios');
@@ -155,9 +205,32 @@ describe('validate-code cache', () => {
       strategy: 'server-first',
     });
 
-    expect(await client.validateCode('A', 'http://x.sys', 'http://vs/not-resolvable', 'required')).toBe(true);
-    expect(await client.validateCode('B', 'http://x.sys', 'http://vs/not-resolvable', 'required')).toBe(true);
-    expect(get).toHaveBeenCalledTimes(1);
+    const valueSetUrl = 'http://vs/not-resolvable';
+    const system = 'http://x.sys';
+    expect(await client.validateCode(
+      'A', system, valueSetUrl, 'required', undefined, 'edition-1',
+    )).toBe(true);
+    expect(await client.validateCode(
+      'B', system, valueSetUrl, 'required', undefined, 'edition-1',
+    )).toBe(true);
+    expect(client.isValueSetNotResolvable(
+      valueSetUrl, undefined, system, 'edition-1',
+    )).toBe(true);
+
+    expect(await client.validateCode(
+      'C', system, valueSetUrl, 'required', undefined, 'edition-2',
+    )).toBe(true);
+    expect(await client.validateCode(
+      'D', system, valueSetUrl, 'required',
+    )).toBe(true);
+    expect(await client.validateCode(
+      'E', 'http://y.sys', valueSetUrl, 'required', undefined, 'edition-1',
+    )).toBe(true);
+
+    expect(client.isValueSetNotResolvable(
+      valueSetUrl, undefined, system, 'edition-2',
+    )).toBe(false);
+    expect(get).toHaveBeenCalledTimes(4);
 
     vi.doUnmock('axios');
   });
@@ -397,6 +470,42 @@ describe('validate-code cache', () => {
     expect(result).toEqual({ valid: true });
     expect(get).not.toHaveBeenCalled();
 
+    vi.doUnmock('axios');
+  });
+
+  it('sends Coding.version and keeps SNOMED editions in separate cache entries', async () => {
+    vi.resetModules();
+    const get = vi.fn().mockResolvedValue({
+      data: {
+        resourceType: 'Parameters',
+        parameter: [{ name: 'result', valueBoolean: true }],
+      },
+    });
+    vi.doMock('axios', async () => {
+      const actual = await vi.importActual<typeof import('axios')>('axios');
+      return {
+        ...actual,
+        default: { ...actual.default, get },
+        isAxiosError: actual.isAxiosError,
+      };
+    });
+
+    const { TerminologyApiClient } = await import('../terminology-api-client');
+    const client = new TerminologyApiClient({
+      strategy: 'server-first',
+      serverUrl: 'https://snomed.example/fhir',
+    });
+    const system = 'http://snomed.info/sct';
+    const international = 'http://snomed.info/sct/900000000000207008/version/20250701';
+    const national = 'http://snomed.info/sct/999000041000000102/version/20250701';
+
+    await client.validateCodeInCodeSystem('123456', system, undefined, undefined, international);
+    await client.validateCodeInCodeSystem('123456', system, undefined, undefined, international);
+    await client.validateCodeInCodeSystem('123456', system, undefined, undefined, national);
+
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls[0]?.[1]).toMatchObject({ params: { version: international } });
+    expect(get.mock.calls[1]?.[1]).toMatchObject({ params: { version: national } });
     vi.doUnmock('axios');
   });
 
