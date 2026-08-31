@@ -447,4 +447,79 @@ describe('CompliesWithValidator', () => {
     const issues = await v.validate(derived);
     expect(issues).toHaveLength(1);
   });
+
+  it('handles malformed public inputs without throwing', async () => {
+    await expect(v.validate(null)).resolves.toEqual([]);
+    await expect(v.validate({
+      resourceType: 'StructureDefinition',
+      extension: [null, { url: COMPLIES_WITH_EXT.url, valueCanonical: 42 }],
+    })).resolves.toEqual([]);
+  });
+
+  it('deduplicates repeated claimed profile canonicals', async () => {
+    let loadCount = 0;
+    v = new CompliesWithValidator({
+      loadProfile: async () => {
+        loadCount += 1;
+        return makeBase([
+          { id: 'Patient.name', path: 'Patient.name', min: 1 },
+        ]);
+      },
+    } as any);
+    const derived = makeDerived([
+      { id: 'Patient.name', path: 'Patient.name', min: 0 },
+    ], {
+      extension: [
+        { ...COMPLIES_WITH_EXT, valueCanonical: baseUrl },
+        { ...COMPLIES_WITH_EXT, valueCanonical: `${baseUrl}|1.0.0` },
+      ],
+    });
+
+    const issues = await v.validate(derived);
+
+    expect(loadCount).toBe(1);
+    expect(issues).toHaveLength(1);
+  });
+
+  it('handles cyclic local ValueSet expansions', async () => {
+    const baseContains: Record<string, unknown> = {
+      system: 'http://example.org/system',
+      code: 'allowed',
+    };
+    baseContains.contains = [baseContains];
+    const derivedContains: Record<string, unknown> = {
+      system: 'http://example.org/system',
+      code: 'allowed',
+    };
+    derivedContains.contains = [derivedContains];
+    v = new CompliesWithValidator(fakeLoader({
+      [baseUrl]: makeBase([
+        {
+          id: 'Patient.gender',
+          path: 'Patient.gender',
+          binding: { strength: 'required', valueSet: '#base' },
+        },
+      ], {
+        contained: [{
+          resourceType: 'ValueSet',
+          id: 'base',
+          expansion: { contains: [baseContains] },
+        }],
+      } as any),
+    }));
+
+    await expect(v.validate(makeDerived([
+      {
+        id: 'Patient.gender',
+        path: 'Patient.gender',
+        binding: { strength: 'required', valueSet: '#derived' },
+      },
+    ], {
+      contained: [{
+        resourceType: 'ValueSet',
+        id: 'derived',
+        expansion: { contains: [derivedContains] },
+      }],
+    }))).resolves.toEqual([]);
+  });
 });

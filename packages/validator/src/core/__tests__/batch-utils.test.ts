@@ -8,13 +8,15 @@
  *   - resetWarmupState
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   deduplicateResources,
   groupResourcesByProfile,
   chunkArray,
   resetWarmupState,
+  preloadProfiles,
 } from '../batch-utils';
+import { setProfileSource } from '../../persistence';
 
 // ============================================================================
 // deduplicateResources
@@ -61,15 +63,19 @@ describe('deduplicateResources', () => {
   });
 
   it('treats objects with different property order as identical', () => {
-    // JSON.stringify preserves insertion order, so {a:1, b:2} !== {b:2, a:1}.
-    // The implementation uses JSON.stringify which IS order-sensitive.
     const r1 = { id: '1', resourceType: 'Patient' };
-    const r2 = { id: '1', resourceType: 'Patient' };
+    const r2 = { resourceType: 'Patient', id: '1' };
 
     const { unique } = deduplicateResources([r1, r2]);
 
-    // Both have same key order → same hash → deduplicated
     expect(unique).toHaveLength(1);
+  });
+
+  it('handles cyclic object graphs without crashing the batch boundary', () => {
+    const resource: Record<string, unknown> = { resourceType: 'Patient', id: '1' };
+    resource.self = resource;
+
+    expect(deduplicateResources([resource]).unique).toEqual([resource]);
   });
 
   it('returns all resources as unique when none are duplicates', () => {
@@ -119,6 +125,19 @@ describe('groupResourcesByProfile', () => {
     expect(groups.size).toBe(2);
     expect(groups.get('http://example.org/Patient')).toHaveLength(1);
     expect(groups.get('http://example.org/OtherPatient')).toHaveLength(1);
+  });
+
+  it('groups by a scalar meta.profile canonical without using its first character', () => {
+    const canonical = 'http://example.org/ScalarPatient';
+    const resource = {
+      resourceType: 'Patient',
+      meta: { profile: canonical },
+    };
+
+    const groups = groupResourcesByProfile([resource]);
+
+    expect(groups.get(canonical)).toEqual([resource]);
+    expect(groups.has(canonical[0])).toBe(false);
   });
 
   it('falls back to base FHIR definition when no meta.profile declared', () => {
@@ -222,5 +241,104 @@ describe('resetWarmupState', () => {
     resetWarmupState();
     resetWarmupState();
     expect(true).toBe(true); // No exception thrown
+  });
+});
+
+// ============================================================================
+// preloadProfiles
+// ============================================================================
+
+describe('preloadProfiles', () => {
+  beforeEach(() => {
+    resetWarmupState();
+  });
+
+  afterEach(() => {
+    setProfileSource({});
+  });
+
+  it('passes explicit canonical versions to the profile resolver', async () => {
+    const resolveProfile = vi.fn().mockResolvedValue({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.org/StructureDefinition/Profile',
+      version: '1.1.0',
+      fhirVersion: '4.0.1',
+      type: 'Patient',
+      snapshot: { element: [{ id: 'Patient', path: 'Patient' }] },
+    });
+
+    setProfileSource({ resolveProfile });
+
+    const sdLoader = {
+      loadProfilesBatch: vi.fn().mockResolvedValue(new Map()),
+      cacheProfile: vi.fn(),
+    };
+    const profileCache = {
+      get: vi.fn(),
+      set: vi.fn(),
+    };
+    const snapshotGenerator = {
+      generateSnapshot: vi.fn(),
+    };
+
+    await preloadProfiles(
+      sdLoader as any,
+      profileCache as any,
+      snapshotGenerator as any,
+      ['http://example.org/StructureDefinition/Profile|1.1.0'],
+      'R4',
+    );
+
+    expect(resolveProfile).toHaveBeenCalledWith(
+      'http://example.org/StructureDefinition/Profile',
+      '1.1.0',
+      undefined,
+      undefined,
+    );
+    expect(sdLoader.cacheProfile).toHaveBeenCalledWith(
+      'http://example.org/StructureDefinition/Profile|1.1.0',
+      expect.objectContaining({ version: '1.1.0' }),
+      'R4',
+    );
+  });
+
+  it('re-resolves tenant profiles instead of trusting an unscoped loader hit', async () => {
+    const canonical = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-body-height';
+    const globalProfile = {
+      resourceType: 'StructureDefinition',
+      url: canonical,
+      version: '8.0.0',
+      snapshot: { element: [{ path: 'Observation' }] },
+    };
+    const organizationProfile = { ...globalProfile, version: '7.0.0' };
+    const resolveProfile = vi.fn().mockResolvedValue(organizationProfile);
+    setProfileSource({ resolveProfile });
+    const sdLoader = {
+      loadProfilesBatch: vi.fn().mockResolvedValue(new Map([[canonical, globalProfile]])),
+      cacheProfile: vi.fn(),
+    };
+
+    await preloadProfiles(
+      sdLoader as any,
+      { get: vi.fn(), set: vi.fn() } as any,
+      { generateSnapshot: vi.fn() } as any,
+      [canonical],
+      'R4',
+      undefined,
+      { packageDownload: { autoDownload: true } },
+      { organizationId: 17 },
+    );
+
+    expect(resolveProfile).toHaveBeenCalledWith(
+      canonical,
+      undefined,
+      expect.objectContaining({ packageDownload: { autoDownload: true } }),
+      { organizationId: 17, fhirVersion: 'R4' },
+    );
+    expect(sdLoader.cacheProfile).toHaveBeenCalledWith(
+      canonical,
+      organizationProfile,
+      'R4',
+    );
   });
 });

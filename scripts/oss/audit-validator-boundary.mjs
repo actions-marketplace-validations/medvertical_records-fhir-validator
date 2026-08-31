@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { inspectRootPackagePolicy } from './validator-boundary-policy.mjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -173,16 +174,10 @@ if (validatorPackage.exports?.['./*']) {
 }
 
 const rootPackage = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
-const isRecordsMonorepo = rootPackage.name === 'rest-express';
-if (isRecordsMonorepo && (rootPackage.private !== true || rootPackage.license !== 'UNLICENSED')) {
+for (const policyViolation of inspectRootPackagePolicy(rootPackage)) {
   violations.push({
     file: 'package.json',
-    specifier: 'root package must remain private + UNLICENSED',
-  });
-} else if (!isRecordsMonorepo && rootPackage.private !== true) {
-  violations.push({
-    file: 'package.json',
-    specifier: 'public repo workspace root must remain private',
+    specifier: policyViolation,
   });
 }
 

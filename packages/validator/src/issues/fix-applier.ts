@@ -42,6 +42,7 @@ interface PathSegment {
 }
 
 const SEGMENT_RE = /^([A-Za-z_][\w-]*)(?:\[(\d+)\])?$/;
+const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /**
  * Parse a dot path into segments. Returns null when any segment is
@@ -64,6 +65,7 @@ function parsePath(path: string, resourceType?: string): PathSegment[] | null {
     const match = SEGMENT_RE.exec(part);
     if (!match) return null;
     const segment: PathSegment = { key: match[1] };
+    if (UNSAFE_OBJECT_KEYS.has(segment.key)) return null;
     if (match[2] !== undefined) segment.index = Number(match[2]);
     segments.push(segment);
   }
@@ -243,4 +245,6 @@ export function applyFixPatch(
       return { applied: true, resource: cloned };
     }
   }
+
+  return { applied: false, resource, reason: `Unknown patch action: ${String(patch.action)}` };
 }

@@ -13,23 +13,6 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 
 // ============================================================================
-// Types
-// ============================================================================
-
-interface Identifier {
-    system?: string;
-    value?: string;
-    assigner?: {
-        identifier?: {
-            system?: string;
-            value?: string;
-        };
-        display?: string;
-        reference?: string;
-    };
-}
-
-// ============================================================================
 // German System Definitions
 // ============================================================================
 
@@ -72,12 +55,14 @@ export class GermanIdentifierValidator {
      * @returns Array of validation issues
      */
     validateIdentifiers(
-        resource: { resourceType: string; identifier?: Identifier[] },
+        resource: unknown,
         profileUrl: string
     ): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
-        if (!resource.identifier || !Array.isArray(resource.identifier)) {
+        if (!isObjectRecord(resource) ||
+            typeof resource.resourceType !== 'string' ||
+            !Array.isArray(resource.identifier)) {
             return issues;
         }
 
@@ -101,7 +86,7 @@ export class GermanIdentifierValidator {
      * Validate a single identifier
      */
     private validateSingleIdentifier(
-        identifier: Identifier,
+        identifier: unknown,
         path: string,
         resourceType: string,
         profileUrl: string
@@ -109,7 +94,7 @@ export class GermanIdentifierValidator {
         const issues: ValidationIssue[] = [];
 
         // Skip if no system or not a German identifier
-        if (!identifier.system) {
+        if (!isObjectRecord(identifier) || typeof identifier.system !== 'string') {
             return issues;
         }
 
@@ -119,8 +104,14 @@ export class GermanIdentifierValidator {
         }
 
         // Check assigner identifier system
-        if (identifier.assigner?.identifier) {
-            const assignerSystem = identifier.assigner.identifier.system;
+        const assigner = isObjectRecord(identifier.assigner) ? identifier.assigner : null;
+        const assignerIdentifier = assigner && isObjectRecord(assigner.identifier)
+            ? assigner.identifier
+            : null;
+        if (assignerIdentifier) {
+            const assignerSystem = typeof assignerIdentifier.system === 'string'
+                ? assignerIdentifier.system
+                : undefined;
 
             if (!assignerSystem) {
                 // Assigner identifier exists but has no system
@@ -173,4 +164,8 @@ export class GermanIdentifierValidator {
             profileUrl.toLowerCase().includes(pattern)
         );
     }
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -2,7 +2,7 @@
  * Validation Enums and Type Unions
  * 
  * Centralized definitions for validation-related enums and type unions.
- * Extracted from shared/validation-settings.ts and shared/types/validation.ts
+ * Extracted from the former shared validation type module.
  */
 
 // ============================================================================
@@ -12,7 +12,7 @@
 /**
  * The 8 validation aspects
  */
-export type ValidationAspect = 'structural' | 'profile' | 'terminology' | 'reference' | 'invariant' | 'customRule' | 'metadata' | 'anomaly';
+export type ValidationAspect = 'structural' | 'profile' | 'terminology' | 'reference' | 'invariant' | 'custom_rule' | 'metadata' | 'anomaly';
 
 /**
  * Validation severity levels
@@ -26,6 +26,18 @@ export type ValidationAspect = 'structural' | 'profile' | 'terminology' | 'refer
  * - inherit: Use the parent/default severity (Records configuration feature)
  */
 export type ValidationSeverity = 'fatal' | 'error' | 'warning' | 'information' | 'info' | 'inherit';
+
+export function isErrorValidationSeverity(
+  severity: string | null | undefined,
+): severity is 'fatal' | 'error' {
+  return severity === 'fatal' || severity === 'error';
+}
+
+export function isInformationValidationSeverity(
+  severity: string | null | undefined,
+): severity is 'information' | 'info' {
+  return severity === 'information' || severity === 'info';
+}
 
 /**
  * Validation strictness levels
@@ -126,7 +138,7 @@ export const VALIDATION_ASPECTS: ValidationAspect[] = [
   'terminology',
   'reference',
   'invariant',
-  'customRule',
+  'custom_rule',
   'metadata',
   'anomaly'
 ];
@@ -140,7 +152,7 @@ export const VALIDATION_ASPECT_LABELS: Record<ValidationAspect, string> = {
   terminology: 'Terminology Validation',
   reference: 'Reference Validation',
   invariant: 'Invariants',
-  customRule: 'Custom Rules',
+  custom_rule: 'Custom Rules',
   metadata: 'Metadata Validation',
   anomaly: 'Anomaly Detection'
 };
@@ -154,9 +166,7 @@ export const VALIDATION_ASPECT_DESCRIPTIONS: Record<ValidationAspect, string> = 
   terminology: 'Validates codes against code systems, value sets, and terminology bindings',
   reference: 'Verifies that references to other resources are valid and resolvable',
   invariant: 'Validates standard FHIR invariants and profile constraints (e.g. ele-1)',
-  customRule: 'Validates user-defined business logic and custom constraints',
+  custom_rule: 'Validates user-defined business logic and custom constraints',
   metadata: 'Checks metadata requirements like lastUpdated, versionId, and tags',
   anomaly: 'Cross-resource batch analysis: duplicates, orphan references, value-range outliers, temporal gaps'
 };
-
-

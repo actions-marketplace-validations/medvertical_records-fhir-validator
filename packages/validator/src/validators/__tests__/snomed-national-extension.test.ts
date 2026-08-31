@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isSnomedNationalExtensionCode } from '../terminology-api-client';
+import { parseCodeSystemValidationParameters } from '../terminology-code-system-result';
 
 describe('isSnomedNationalExtensionCode', () => {
   it('detects UK Edition SCTIDs (namespace 1000000)', () => {
@@ -34,5 +35,23 @@ describe('isSnomedNationalExtensionCode', () => {
     expect(isSnomedNationalExtensionCode('abc')).toBe(false);
     expect(isSnomedNationalExtensionCode('12345')).toBe(false);
     expect(isSnomedNationalExtensionCode('123456789')).toBe(false);        // 9 digits — short format
+  });
+});
+
+describe('national-extension terminology evidence', () => {
+  it('keeps an unsupported national code fail-open but marks it unverified', () => {
+    expect(parseCodeSystemValidationParameters({
+      resourceType: 'Parameters',
+      parameter: [
+        { name: 'result', valueBoolean: false },
+        {
+          name: 'message',
+          valueString: "Unknown code '35901911000001104' in the International Edition",
+        },
+      ],
+    }, '35901911000001104', 'http://snomed.info/sct')).toMatchObject({
+      valid: true,
+      reason: 'national-extension-unverified',
+    });
   });
 });

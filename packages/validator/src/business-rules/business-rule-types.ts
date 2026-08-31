@@ -14,7 +14,7 @@ import type { ValidationIssue } from '@records-fhir/validation-types';
 export interface BusinessRule {
   name: string;
   description: string;
-  validator: (resource: any, resourceType: string) => Promise<ValidationIssue[]>;
+  validator: (resource: unknown, resourceType: string) => Promise<ValidationIssue[]>;
 }
 
 export type BusinessRuleMap = Map<string, BusinessRule[]>;
@@ -66,4 +66,3 @@ export interface RuleExecutionResult {
   issues: ValidationIssue[];
   error?: string;
 }
-

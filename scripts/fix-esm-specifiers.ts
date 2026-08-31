@@ -6,7 +6,6 @@ const TARGET_ROOTS = process.argv.slice(2).length > 0
   ? process.argv.slice(2).map((target) => path.resolve(target))
   : [
   path.resolve("dist/server"),
-  path.resolve("dist/electron"),
 ];
 
 const RELATIVE_IMPORT = /(\bfrom\s+['"])(\.{1,2}\/[^'"]+)(['"])/g;
@@ -14,24 +13,15 @@ const DYNAMIC_IMPORT = /(import\s*\(\s*['"])(\.{1,2}\/[^'"]+)(['"]\s*\))/g;
 
 const VALID_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".json", ".node"]);
 
-async function pathExists(candidate: string): Promise<boolean> {
-  try {
-    await fs.access(candidate);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function collectJsFiles(root: string): Promise<string[]> {
+async function collectModuleFiles(root: string): Promise<string[]> {
   const entries = await fsp.readdir(root, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
     const entryPath = path.join(root, entry.name);
     if (entry.isDirectory()) {
-      files.push(...(await collectJsFiles(entryPath)));
-    } else if (entry.isFile() && entry.name.endsWith(".js")) {
+      files.push(...(await collectModuleFiles(entryPath)));
+    } else if (entry.isFile() && (entry.name.endsWith(".js") || entry.name.endsWith(".d.ts"))) {
       files.push(entryPath);
     }
   }
@@ -76,7 +66,7 @@ function needsRewrite(baseFile: string, specifier: string): boolean {
   return false;
 }
 
-async function resolveSpecifier(baseFile: string, specifier: string): Promise<string> {
+function resolveSpecifier(baseFile: string, specifier: string): string {
   const baseDir = path.dirname(baseFile);
   const withoutQuery = specifier.split(/[?#]/)[0]!;
   const absolute = path.resolve(baseDir, withoutQuery);
@@ -135,20 +125,20 @@ async function resolveSpecifier(baseFile: string, specifier: string): Promise<st
     : `${specifier}.js`;
 }
 
-async function rewriteImports(filePath: string, content: string): Promise<string> {
+function rewriteImports(filePath: string, content: string): string {
   const replacements: Array<{
     start: number;
     end: number;
     value: string;
   }> = [];
 
-  const matcher = async (regex: RegExp, match: RegExpExecArray) => {
+  const addReplacement = (match: RegExpExecArray) => {
     const [full, prefix, specifier, suffix] = match;
     if (!needsRewrite(filePath, specifier)) {
       return;
     }
 
-    const resolved = await resolveSpecifier(filePath, specifier);
+    const resolved = resolveSpecifier(filePath, specifier);
     replacements.push({
       start: match.index,
       end: match.index + full.length,
@@ -160,8 +150,7 @@ async function rewriteImports(filePath: string, content: string): Promise<string
   for (const regex of [new RegExp(RELATIVE_IMPORT, "g"), new RegExp(DYNAMIC_IMPORT, "g")]) {
     let match: RegExpExecArray | null;
     while ((match = regex.exec(content)) !== null) {
-      // eslint-disable-next-line no-await-in-loop
-      await matcher(regex, match);
+      addReplacement(match);
     }
   }
 
@@ -185,7 +174,7 @@ async function rewriteImports(filePath: string, content: string): Promise<string
 
 async function processFile(filePath: string): Promise<void> {
   const original = await fsp.readFile(filePath, "utf8");
-  const updated = await rewriteImports(filePath, original);
+  const updated = rewriteImports(filePath, original);
   if (updated !== original) {
     await fsp.writeFile(filePath, updated, "utf8");
   }
@@ -198,18 +187,12 @@ async function processRoot(root: string): Promise<void> {
     return;
   }
 
-  const files = await collectJsFiles(root);
-  for (const file of files) {
-    // eslint-disable-next-line no-await-in-loop
-    await processFile(file);
-  }
+  const files = await collectModuleFiles(root);
+  await Promise.all(files.map(processFile));
 }
 
 async function main(): Promise<void> {
-  for (const root of TARGET_ROOTS) {
-    // eslint-disable-next-line no-await-in-loop
-    await processRoot(root);
-  }
+  await Promise.all(TARGET_ROOTS.map(processRoot));
 }
 
 main().catch((error) => {

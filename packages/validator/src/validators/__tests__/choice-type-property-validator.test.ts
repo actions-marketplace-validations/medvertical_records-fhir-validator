@@ -67,8 +67,7 @@ describe('validateChoiceTypeProperties', () => {
     const unknown = issues.find(i => i.code === 'structural-unknown-element');
     expect(unknown).toBeDefined();
     expect(unknown?.path).toBe('Group.characteristic[0].value');
-    const cardMin = issues.find(i => i.code === 'structural-cardinality-min');
-    expect(cardMin).toBeDefined();
+    expect(issues.filter(i => i.code === 'structural-cardinality-min')).toHaveLength(0);
   });
 
   it('does NOT flag wrong-suffix cases (valueInteger) — handled by type-mismatch', () => {
@@ -103,6 +102,38 @@ describe('validateChoiceTypeProperties', () => {
     expect(
       issues.filter(i => i.code === 'structural-unknown-element'),
     ).toHaveLength(0);
+  });
+
+  it('rejects multiple concrete variants of the same choice element', () => {
+    const resource = {
+      resourceType: 'Group',
+      characteristic: [{
+        valueBoolean: true,
+        valueQuantity: { value: 1, unit: 'kg' },
+      }],
+    };
+
+    expect(validateChoiceTypeProperties(resource, GROUP_SD)).toContainEqual(
+      expect.objectContaining({
+        code: 'structural-choice-type-multiple',
+        path: 'Group.characteristic[0].value[x]',
+        severity: 'error',
+      }),
+    );
+  });
+
+  it('counts a primitive value and its underscore sidecar as one choice variant', () => {
+    const resource = {
+      resourceType: 'Group',
+      characteristic: [{
+        valueBoolean: true,
+        _valueBoolean: { extension: [{ url: 'http://example.test/ext', valueString: 'x' }] },
+      }],
+    };
+
+    expect(validateChoiceTypeProperties(resource, GROUP_SD).filter(issue =>
+      issue.code === 'structural-choice-type-multiple'
+    )).toHaveLength(0);
   });
 
   it('does not error on structurally valid resources without the slot at all', () => {

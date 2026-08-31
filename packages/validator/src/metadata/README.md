@@ -156,7 +156,6 @@ have migrated to the new structure, the old file will be deprecated.
 ## Testing
 
 Each validator module should have corresponding unit tests:
-- ✅ `service-container.test.ts` (DI container)
 - 🚧 `metadata-types.test.ts` (TODO)
 - 🚧 `uri-validators.test.ts` (TODO)
 - 🚧 `completeness-checker.test.ts` (TODO)

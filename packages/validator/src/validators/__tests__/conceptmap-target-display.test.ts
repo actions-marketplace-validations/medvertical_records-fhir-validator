@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TerminologyResourceValidator } from '../terminology-resource-validator';
-import { valueSetCache } from '../valueset-cache';
+import { ValueSetCache } from '../valueset-cache';
+
+const valueSetCache = new ValueSetCache();
 
 describe('TerminologyResourceValidator — ConceptMap target-display checks', () => {
-  const validator = new TerminologyResourceValidator();
+  const validator = new TerminologyResourceValidator(valueSetCache);
 
   const targetCsUrl = 'http://example.org/target-cs';
 
@@ -96,6 +98,19 @@ describe('TerminologyResourceValidator — ConceptMap target-display checks', ()
       ],
     }));
     expect(issues.some(i => i.code === 'tx-conceptmap-target-display-invalid')).toBe(false);
+  });
+
+  it('does not read CodeSystems from another validator cache', () => {
+    const isolatedValidator = new TerminologyResourceValidator(new ValueSetCache());
+    const issues = isolatedValidator.validate(cm({
+      source: 'http://example.org/source',
+      target: targetCsUrl,
+      element: [
+        { code: 'src1', target: [{ code: 'c1', display: 'Wrong', relationship: 'equivalent' }] },
+      ],
+    }));
+
+    expect(issues.some(issue => issue.code === 'tx-conceptmap-target-display-invalid')).toBe(false);
   });
 
   it('skips entries when the target code is not in the CodeSystem', () => {

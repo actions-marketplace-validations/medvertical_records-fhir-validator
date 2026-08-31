@@ -1,246 +1,32 @@
-/**
- * Reference Type Constraint Validator
- * 
- * Validates that FHIR references match the expected resource types defined in StructureDefinition constraints.
- * Checks reference.type and targetProfile constraints for correctness.
- * 
- * Task 6.2: Implement reference type validation against StructureDefinition constraints
- */
-
 import { extractResourceType as _extractResourceType, parseReference, type ReferenceParseResult } from './reference-type-extractor';
+import {
+  REFERENCE_TYPE_CONSTRAINTS,
+  type ReferenceTypeConstraint,
+} from './reference-type-constraints';
 
-// ============================================================================
-// Types
-// ============================================================================
-
-export interface ReferenceTypeConstraint {
-  /** Allowed target resource types for this reference */
-  targetTypes: string[];
-  /** Allowed target profiles (canonical URLs) */
-  targetProfiles?: string[];
-  /** Whether the reference type must be specified */
-  requireType?: boolean;
-  /** Field path for the reference */
-  fieldPath: string;
-  /** Whether this reference is required */
-  required?: boolean;
-}
+export { REFERENCE_TYPE_CONSTRAINTS } from './reference-type-constraints';
+export type { ReferenceTypeConstraint } from './reference-type-constraints';
 
 export interface ReferenceTypeValidationResult {
-  /** Whether the reference type is valid */
   isValid: boolean;
-  /** Validation message */
   message: string;
-  /** Severity level */
   severity: 'error' | 'warning' | 'info';
-  /** Error code if invalid */
   code?: string;
-  /** Expected resource types */
   expectedTypes?: string[];
-  /** Actual resource type found */
   actualType?: string | null;
-  /** Parse result details */
   parseResult?: ReferenceParseResult;
 }
 
-// ============================================================================
-// Reference Type Constraints by Resource Type
-// ============================================================================
+const UNSAFE_CONSTRAINT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-/**
- * Common reference type constraints from FHIR specification
- * Based on StructureDefinition element definitions
- */
-export const REFERENCE_TYPE_CONSTRAINTS: Record<string, Record<string, ReferenceTypeConstraint>> = {
-  Patient: {
-    'generalPractitioner': {
-      fieldPath: 'generalPractitioner',
-      targetTypes: ['Practitioner', 'PractitionerRole', 'Organization'],
-      required: false,
-    },
-    'managingOrganization': {
-      fieldPath: 'managingOrganization',
-      targetTypes: ['Organization'],
-      required: false,
-    },
-    'link.other': {
-      fieldPath: 'link.other',
-      targetTypes: ['Patient', 'RelatedPerson'],
-      required: false,
-    },
-  },
-  
-  Observation: {
-    'subject': {
-      fieldPath: 'subject',
-      targetTypes: ['Patient', 'Group', 'Device', 'Location'],
-      required: false,
-    },
-    'encounter': {
-      fieldPath: 'encounter',
-      targetTypes: ['Encounter'],
-      required: false,
-    },
-    'performer': {
-      fieldPath: 'performer',
-      targetTypes: ['Practitioner', 'PractitionerRole', 'Organization', 'CareTeam', 'Patient', 'RelatedPerson'],
-      required: false,
-    },
-    'specimen': {
-      fieldPath: 'specimen',
-      targetTypes: ['Specimen'],
-      required: false,
-    },
-    'device': {
-      fieldPath: 'device',
-      targetTypes: ['Device', 'DeviceMetric'],
-      required: false,
-    },
-    'hasMember': {
-      fieldPath: 'hasMember',
-      targetTypes: ['Observation', 'QuestionnaireResponse', 'MolecularSequence'],
-      required: false,
-    },
-    'derivedFrom': {
-      fieldPath: 'derivedFrom',
-      targetTypes: ['DocumentReference', 'ImagingStudy', 'Media', 'QuestionnaireResponse', 'Observation', 'MolecularSequence'],
-      required: false,
-    },
-    'focus': {
-      fieldPath: 'focus',
-      targetTypes: ['Resource'], // Can reference any resource
-      required: false,
-    },
-  },
-  
-  Condition: {
-    'subject': {
-      fieldPath: 'subject',
-      targetTypes: ['Patient', 'Group'],
-      required: true,
-    },
-    'encounter': {
-      fieldPath: 'encounter',
-      targetTypes: ['Encounter'],
-      required: false,
-    },
-    'recorder': {
-      fieldPath: 'recorder',
-      targetTypes: ['Practitioner', 'PractitionerRole', 'Patient', 'RelatedPerson'],
-      required: false,
-    },
-    'asserter': {
-      fieldPath: 'asserter',
-      targetTypes: ['Practitioner', 'PractitionerRole', 'Patient', 'RelatedPerson'],
-      required: false,
-    },
-    'stage.assessment': {
-      fieldPath: 'stage.assessment',
-      targetTypes: ['ClinicalImpression', 'DiagnosticReport', 'Observation'],
-      required: false,
-    },
-    'evidence.detail': {
-      fieldPath: 'evidence.detail',
-      targetTypes: ['Resource'], // Can reference any resource
-      required: false,
-    },
-  },
-  
-  Encounter: {
-    'subject': {
-      fieldPath: 'subject',
-      targetTypes: ['Patient', 'Group'],
-      required: false,
-    },
-    'episodeOfCare': {
-      fieldPath: 'episodeOfCare',
-      targetTypes: ['EpisodeOfCare'],
-      required: false,
-    },
-    'basedOn': {
-      fieldPath: 'basedOn',
-      targetTypes: ['ServiceRequest'],
-      required: false,
-    },
-    'participant.individual': {
-      fieldPath: 'participant.individual',
-      targetTypes: ['Practitioner', 'PractitionerRole', 'RelatedPerson'],
-      required: false,
-    },
-    'appointment': {
-      fieldPath: 'appointment',
-      targetTypes: ['Appointment'],
-      required: false,
-    },
-    'reasonReference': {
-      fieldPath: 'reasonReference',
-      targetTypes: ['Condition', 'Procedure', 'Observation', 'ImmunizationRecommendation'],
-      required: false,
-    },
-    'account': {
-      fieldPath: 'account',
-      targetTypes: ['Account'],
-      required: false,
-    },
-    'serviceProvider': {
-      fieldPath: 'serviceProvider',
-      targetTypes: ['Organization'],
-      required: false,
-    },
-    'partOf': {
-      fieldPath: 'partOf',
-      targetTypes: ['Encounter'],
-      required: false,
-    },
-  },
-  
-  DiagnosticReport: {
-    'subject': {
-      fieldPath: 'subject',
-      targetTypes: ['Patient', 'Group', 'Device', 'Location'],
-      required: false,
-    },
-    'encounter': {
-      fieldPath: 'encounter',
-      targetTypes: ['Encounter'],
-      required: false,
-    },
-    'performer': {
-      fieldPath: 'performer',
-      targetTypes: ['Practitioner', 'PractitionerRole', 'Organization', 'CareTeam'],
-      required: false,
-    },
-    'resultsInterpreter': {
-      fieldPath: 'resultsInterpreter',
-      targetTypes: ['Practitioner', 'PractitionerRole', 'Organization', 'CareTeam'],
-      required: false,
-    },
-    'specimen': {
-      fieldPath: 'specimen',
-      targetTypes: ['Specimen'],
-      required: false,
-    },
-    'result': {
-      fieldPath: 'result',
-      targetTypes: ['Observation'],
-      required: false,
-    },
-    'imagingStudy': {
-      fieldPath: 'imagingStudy',
-      targetTypes: ['ImagingStudy'],
-      required: false,
-    },
-    'media.link': {
-      fieldPath: 'media.link',
-      targetTypes: ['Media'],
-      required: false,
-    },
-  },
-};
+function isSafeConstraintKey(key: string): boolean {
+  return key.length > 0 && !UNSAFE_CONSTRAINT_KEYS.has(key);
+}
 
-// ============================================================================
-// Reference Type Constraint Validator Class
-// ============================================================================
+function getOwnConstraintMap(constraints: Record<string, Record<string, ReferenceTypeConstraint>>, resourceType: string): Record<string, ReferenceTypeConstraint> | undefined {
+  if (!isSafeConstraintKey(resourceType)) return undefined;
+  return Object.prototype.hasOwnProperty.call(constraints, resourceType) ? constraints[resourceType] : undefined;
+}
 
 export class ReferenceTypeConstraintValidator {
   private constraints: Record<string, Record<string, ReferenceTypeConstraint>>;
@@ -249,16 +35,12 @@ export class ReferenceTypeConstraintValidator {
     this.constraints = customConstraints || REFERENCE_TYPE_CONSTRAINTS;
   }
 
-  /**
-   * Validate that a reference matches the type constraints for a field
-   */
   validateReferenceType(
     reference: string,
     resourceType: string,
     fieldPath: string
   ): ReferenceTypeValidationResult {
-    // Get constraints for this resource type and field
-    const resourceConstraints = this.constraints[resourceType];
+    const resourceConstraints = getOwnConstraintMap(this.constraints, resourceType);
     if (!resourceConstraints) {
       return {
         isValid: true,
@@ -267,7 +49,10 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    const fieldConstraints = resourceConstraints[fieldPath];
+    const fieldConstraints = isSafeConstraintKey(fieldPath)
+      && Object.prototype.hasOwnProperty.call(resourceConstraints, fieldPath)
+      ? resourceConstraints[fieldPath]
+      : undefined;
     if (!fieldConstraints) {
       return {
         isValid: true,
@@ -276,7 +61,6 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // Parse the reference to extract the resource type
     const parseResult = parseReference(reference);
     
     if (!parseResult.isValid) {
@@ -289,7 +73,6 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // For contained references, we can't validate type without resolving
     if (parseResult.referenceType === 'contained') {
       return {
         isValid: true,
@@ -300,9 +83,18 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // Check if the extracted resource type matches allowed types
     const actualType = parseResult.resourceType;
     if (!actualType) {
+      if (parseResult.referenceType === 'absolute') {
+        return {
+          isValid: true,
+          message: `Absolute reference target type cannot be inferred for ${resourceType}.${fieldPath}`,
+          severity: 'info',
+          code: 'absolute-reference-type-unknown',
+          parseResult,
+        };
+      }
+
       return {
         isValid: false,
         message: `Could not extract resource type from reference: ${reference}`,
@@ -312,9 +104,8 @@ export class ReferenceTypeConstraintValidator {
       };
     }
 
-    // Check if actual type is in allowed types
     const isTypeAllowed = fieldConstraints.targetTypes.includes(actualType) ||
-                          fieldConstraints.targetTypes.includes('Resource'); // 'Resource' means any type allowed
+                          fieldConstraints.targetTypes.includes('Resource');
 
     if (!isTypeAllowed) {
       return {
@@ -338,9 +129,6 @@ export class ReferenceTypeConstraintValidator {
     };
   }
 
-  /**
-   * Validate reference object with type property
-   */
   validateReferenceObject(
     referenceObject: { reference: string; type?: string; display?: string },
     resourceType: string,
@@ -348,14 +136,12 @@ export class ReferenceTypeConstraintValidator {
   ): ReferenceTypeValidationResult {
     const { reference, type: declaredType } = referenceObject;
 
-    // First validate the reference string itself
     const referenceValidation = this.validateReferenceType(reference, resourceType, fieldPath);
     
     if (!referenceValidation.isValid) {
       return referenceValidation;
     }
 
-    // If reference.type is provided, validate it matches the extracted type
     if (declaredType && referenceValidation.actualType) {
       if (declaredType !== referenceValidation.actualType) {
         return {
@@ -373,41 +159,33 @@ export class ReferenceTypeConstraintValidator {
     return referenceValidation;
   }
 
-  /**
-   * Get type constraints for a specific field
-   */
   getConstraintsForField(resourceType: string, fieldPath: string): ReferenceTypeConstraint | null {
-    return this.constraints[resourceType]?.[fieldPath] || null;
+    if (!isSafeConstraintKey(fieldPath)) return null;
+    const resourceConstraints = getOwnConstraintMap(this.constraints, resourceType);
+    return resourceConstraints && Object.prototype.hasOwnProperty.call(resourceConstraints, fieldPath)
+      ? resourceConstraints[fieldPath]
+      : null;
   }
 
-  /**
-   * Check if a field has type constraints
-   */
   hasConstraints(resourceType: string, fieldPath: string): boolean {
-    return !!this.constraints[resourceType]?.[fieldPath];
+    return this.getConstraintsForField(resourceType, fieldPath) !== null;
   }
 
-  /**
-   * Get all constrained fields for a resource type
-   */
   getConstrainedFields(resourceType: string): string[] {
-    const resourceConstraints = this.constraints[resourceType];
+    const resourceConstraints = getOwnConstraintMap(this.constraints, resourceType);
     return resourceConstraints ? Object.keys(resourceConstraints) : [];
   }
 
-  /**
-   * Add or update constraints for a field
-   */
   setConstraints(resourceType: string, fieldPath: string, constraints: ReferenceTypeConstraint): void {
-    if (!this.constraints[resourceType]) {
+    if (!isSafeConstraintKey(resourceType) || !isSafeConstraintKey(fieldPath)) {
+      throw new TypeError('Constraint keys must not modify object prototypes');
+    }
+    if (!Object.prototype.hasOwnProperty.call(this.constraints, resourceType)) {
       this.constraints[resourceType] = {};
     }
     this.constraints[resourceType][fieldPath] = constraints;
   }
 
-  /**
-   * Batch validate multiple references
-   */
   validateMultipleReferences(
     references: Array<{ reference: string; fieldPath: string }>,
     resourceType: string
@@ -418,21 +196,10 @@ export class ReferenceTypeConstraintValidator {
   }
 }
 
-// ============================================================================
-// Singleton Instance
-// ============================================================================
-
-let validatorInstance: ReferenceTypeConstraintValidator | null = null;
-
 export function getReferenceTypeConstraintValidator(): ReferenceTypeConstraintValidator {
-  if (!validatorInstance) {
-    validatorInstance = new ReferenceTypeConstraintValidator();
-  }
-  return validatorInstance;
+  return new ReferenceTypeConstraintValidator();
 }
 
 export function resetReferenceTypeConstraintValidator(): void {
-  validatorInstance = null;
+  // Retained as a compatibility no-op now that validators are request-local.
 }
-
-

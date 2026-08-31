@@ -39,6 +39,12 @@ describe('URI Validators', () => {
         expect(result.type).toBe('url');
         // Actual behavior: lenient - accepts any http: URI with content after colon
       });
+
+      it('should reject URLs with raw whitespace', () => {
+        const result = validateUriFormat('http://example.com/fhir/StructureDefinition/bad profile');
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toBe('URI must not contain whitespace');
+      });
     });
 
     describe('URN validation', () => {
@@ -206,6 +212,7 @@ describe('URI Validators', () => {
       expect(isValidUrl('not-a-url')).toBe(false);
       expect(isValidUrl('http://')).toBe(false);
       expect(isValidUrl('://example.com')).toBe(false);
+      expect(isValidUrl('http://example.com/fhir/StructureDefinition/bad profile')).toBe(false);
     });
 
     it('should handle edge cases', () => {
@@ -214,4 +221,3 @@ describe('URI Validators', () => {
     });
   });
 });
-

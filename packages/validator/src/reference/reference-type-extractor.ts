@@ -7,124 +7,26 @@
  * Task 6.1: Add resource type extraction from reference strings
  */
 
+import {
+  CANONICAL_PATTERNS,
+  KNOWN_FHIR_RESOURCE_TYPES,
+  getKnownFhirResourceTypes,
+  isFhirVersionPathSegment,
+} from './reference-resource-types';
+import type {
+  ReferenceParseResult,
+  ReferenceTypeExtractionOptions,
+} from './reference-type-extractor-types';
+import { parseAbsoluteReference, parseCanonicalReference } from './reference-url-parser';
+
+export type {
+  ReferenceParseResult,
+  ReferenceTypeExtractionOptions,
+} from './reference-type-extractor-types';
+
 // ============================================================================
 // Types
 // ============================================================================
-
-export interface ReferenceParseResult {
-  /** The extracted resource type (e.g., "Patient", "Observation") */
-  resourceType: string | null;
-  /** The resource ID if present */
-  resourceId: string | null;
-  /** The reference type category */
-  referenceType: 'relative' | 'absolute' | 'canonical' | 'contained' | 'fragment' | 'invalid';
-  /** Whether the reference is valid */
-  isValid: boolean;
-  /** The original reference string */
-  originalReference: string;
-  /** Base URL for absolute references */
-  baseUrl?: string;
-  /** Version information if present */
-  version?: string;
-  /** Additional metadata */
-  metadata?: {
-    isHistorical?: boolean;
-    hasVersion?: boolean;
-    isBundle?: boolean;
-    bundleType?: string;
-  };
-}
-
-export interface ReferenceTypeExtractionOptions {
-  /** Whether to allow contained references (default: true) */
-  allowContained?: boolean;
-  /** Whether to allow canonical references (default: true) */
-  allowCanonical?: boolean;
-  /** Whether to extract version information (default: true) */
-  extractVersion?: boolean;
-  /** Whether to validate resource type against known FHIR resources (default: false) */
-  validateResourceType?: boolean;
-}
-
-// ============================================================================
-// Constants
-// ============================================================================
-
-/**
- * Known FHIR R4/R5 resource types for validation
- */
-const KNOWN_FHIR_RESOURCE_TYPES = new Set([
-  // Foundation
-  'Resource', 'DomainResource', 'Element', 'BackboneElement', 'Narrative',
-  
-  // Clinical
-  'Patient', 'Practitioner', 'PractitionerRole', 'RelatedPerson', 'Person', 'Group',
-  'Organization', 'OrganizationAffiliation', 'Location', 'HealthcareService', 'Endpoint',
-  'Device', 'DeviceDefinition', 'DeviceMetric', 'DeviceRequest', 'DeviceUseStatement',
-  'Substance', 'SubstanceDefinition', 'SubstanceNucleicAcid', 'SubstancePolymer',
-  'SubstanceProtein', 'SubstanceReferenceInformation', 'SubstanceSourceMaterial',
-  'SubstanceSpecification', 'Medication', 'MedicationAdministration', 'MedicationDispense',
-  'MedicationKnowledge', 'MedicationRequest', 'MedicationStatement', 'MedicationUsage',
-  'Immunization', 'ImmunizationEvaluation', 'ImmunizationRecommendation',
-  
-  // Diagnostics
-  'Observation', 'DiagnosticReport', 'ServiceRequest', 'Specimen', 'SpecimenDefinition',
-  'BodyStructure', 'ImagingStudy', 'Media', 'QuestionnaireResponse',
-  
-  // Care Management
-  'Condition', 'Procedure', 'AllergyIntolerance', 'AdverseEvent', 'DetectedIssue',
-  'ClinicalImpression', 'RiskAssessment', 'FamilyMemberHistory', 'Goal', 'CarePlan',
-  'CareTeam', 'ServiceRequest', 'NutritionOrder', 'VisionPrescription',
-  
-  // Request & Response
-  'Task', 'Appointment', 'AppointmentResponse', 'Schedule', 'Slot', 'Encounter',
-  'EpisodeOfCare', 'Flag', 'List', 'Library', 'Measure', 'MeasureReport',
-  
-  // Foundation
-  'Composition', 'DocumentManifest', 'DocumentReference', 'CatalogEntry',
-  'Basic', 'Binary', 'Bundle', 'Linkage', 'MessageDefinition', 'MessageHeader',
-  'OperationDefinition', 'OperationOutcome', 'Parameters', 'Subscription',
-  'SubscriptionStatus', 'SubscriptionTopic',
-  
-  // Conformance
-  'CapabilityStatement', 'StructureDefinition', 'StructureMap', 'ImplementationGuide',
-  'SearchParameter', 'CompartmentDefinition', 'ExampleScenario', 'GraphDefinition',
-  'TestReport', 'TestScript',
-  
-  // Terminology
-  'CodeSystem', 'ValueSet', 'ConceptMap', 'NamingSystem', 'TerminologyCapabilities',
-  
-  // Security
-  'AuditEvent', 'Consent', 'Provenance', 'Signature',
-  
-  // Financial
-  'Account', 'ChargeItem', 'ChargeItemDefinition', 'Contract', 'Coverage',
-  'CoverageEligibilityRequest', 'CoverageEligibilityResponse', 'EnrollmentRequest',
-  'EnrollmentResponse', 'Claim', 'ClaimResponse', 'Invoice', 'PaymentNotice',
-  'PaymentReconciliation', 'ExplanationOfBenefit', 'InsurancePlan',
-  
-  // Specialized
-  'Citation', 'Evidence', 'EvidenceReport', 'EvidenceVariable', 'ResearchDefinition',
-  'ResearchElementDefinition', 'ResearchStudy', 'ResearchSubject', 'ActivityDefinition',
-  'PlanDefinition', 'Questionnaire', 'Requirements', 'ActorDefinition'
-]);
-
-/**
- * Common FHIR canonical URL patterns (for conformance resources)
- * These are NOT regular resource instance URLs
- */
-const CANONICAL_PATTERNS = [
-  /^https?:\/\/hl7\.org\/fhir\/StructureDefinition\//,
-  /^https?:\/\/hl7\.org\/fhir\/ValueSet\//,
-  /^https?:\/\/hl7\.org\/fhir\/CodeSystem\//,
-  /^https?:\/\/hl7\.org\/fhir\/ConceptMap\//,
-  /^https?:\/\/hl7\.org\/fhir\/ImplementationGuide\//,
-  /^https?:\/\/fhir\.kbv\.de\/StructureDefinition\//,
-  /^https?:\/\/fhir\.de\/StructureDefinition\//,
-  /^https?:\/\/.*\.medizininformatik-initiative\.de\/fhir\//,
-  /^https?:\/\/build\.fhir\.org\/ig\//,
-  /^https?:\/\/simplifier\.net\/.*\/StructureDefinition\//,
-];
 
 // ============================================================================
 // Reference Type Extractor Class
@@ -175,6 +77,13 @@ export class ReferenceTypeExtractor {
       return this.parseAbsoluteReference(trimmedRef);
     }
 
+    // Handle conditional references (ResourceType?search-params). These are
+    // relative URLs used primarily in transaction bundles and still carry a
+    // target resource type for type-constraint checks.
+    if (this.isConditionalReference(trimmedRef)) {
+      return this.parseConditionalReference(trimmedRef);
+    }
+
     // Handle relative references (ResourceType/id)
     return this.parseRelativeReference(trimmedRef);
   }
@@ -206,138 +115,33 @@ export class ReferenceTypeExtractor {
    * Parse absolute URL reference
    */
   private parseAbsoluteReference(reference: string): ReferenceParseResult {
-    try {
-      const url = new URL(reference);
-      const pathParts = url.pathname.split('/').filter(p => p);
-      
-      // Look for FHIR resource pattern: .../fhir/ResourceType/id
-      const fhirIndex = pathParts.findIndex(part => part.toLowerCase() === 'fhir');
-      
-      if (fhirIndex >= 0 && fhirIndex < pathParts.length - 1) {
-        const resourceType = pathParts[fhirIndex + 1];
-        const resourceId = pathParts[fhirIndex + 2];
-        
-        // Check for version in path (ResourceType/id/_history/version)
-        let version: string | undefined;
-        if (pathParts[fhirIndex + 3] === '_history' && pathParts[fhirIndex + 4]) {
-          version = pathParts[fhirIndex + 4];
-        }
+    return parseAbsoluteReference(reference, this.options.validateResourceType);
+  }
 
-        const isValidResourceType = this.isValidResourceType(resourceType);
-        
-        return {
-          resourceType: isValidResourceType ? resourceType : null,
-          resourceId: resourceId || null,
-          referenceType: 'absolute',
-          isValid: isValidResourceType && !!resourceId,
-          originalReference: reference,
-          baseUrl: `${url.protocol}//${url.host}${url.pathname.split('/fhir')[0]}/fhir`,
-          version,
-          metadata: {
-            isHistorical: !!version,
-            hasVersion: !!version,
-          },
-        };
-      }
+  private parseConditionalReference(reference: string): ReferenceParseResult {
+    const [resourceType] = reference.split('?', 1);
+    const isValidResourceType = this.isValidResourceType(resourceType);
 
-      // Fallback: try to extract from the last instance path segments.
-      // Public FHIR endpoints often include a version/base segment before the
-      // resource type, e.g. /R4/Patient/123/_history/<uuid>.
-      if (pathParts.length >= 4 && pathParts[pathParts.length - 2] === '_history') {
-        const resourceType = pathParts[pathParts.length - 4];
-        const resourceId = pathParts[pathParts.length - 3];
-        const version = pathParts[pathParts.length - 1];
-        const isValidResourceType = this.isValidResourceType(resourceType);
-
-        return {
-          resourceType: isValidResourceType ? resourceType : null,
-          resourceId,
-          referenceType: 'absolute',
-          isValid: isValidResourceType && !!resourceId,
-          originalReference: reference,
-          baseUrl: `${url.origin}/${pathParts.slice(0, -4).join('/')}`.replace(/\/$/, ''),
-          version,
-          metadata: {
-            isHistorical: true,
-            hasVersion: true,
-          },
-        };
-      }
-
-      // Fallback: try to extract from the last two path segments
-      if (pathParts.length >= 2) {
-        const resourceType = pathParts[pathParts.length - 2];
-        const resourceId = pathParts[pathParts.length - 1];
-        const isValidResourceType = this.isValidResourceType(resourceType);
-        
-        return {
-          resourceType: isValidResourceType ? resourceType : null,
-          resourceId,
-          referenceType: 'absolute',
-          isValid: isValidResourceType,
-          originalReference: reference,
-          baseUrl: url.origin,
-        };
-      }
-
-      return this.createInvalidResult(reference, 'Unable to extract resource type from absolute URL');
-    } catch (error) {
-      return this.createInvalidResult(reference, `Invalid URL format: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    return {
+      resourceType: isValidResourceType ? resourceType : null,
+      resourceId: null,
+      referenceType: isValidResourceType ? 'relative' : 'invalid',
+      isValid: isValidResourceType,
+      originalReference: reference,
+      metadata: {
+        isBundle: true,
+      },
+    };
   }
 
   /**
    * Parse canonical URL reference
    */
   private parseCanonicalReference(reference: string): ReferenceParseResult {
-    try {
-      // Handle version in canonical URL (url|version)
-      const [baseUrl, version] = reference.split('|');
-      const url = new URL(baseUrl);
-      const pathParts = url.pathname.split('/').filter(p => p);
-      
-      // Extract resource type from canonical URL patterns
-      // Pattern: http://hl7.org/fhir/StructureDefinition/Patient
-      // The second-to-last segment is typically the resource type
-      let resourceType: string | null = null;
-      
-      if (pathParts.length >= 2) {
-        const lastPart = pathParts[pathParts.length - 2];
-        if (this.isValidResourceType(lastPart)) {
-          resourceType = lastPart;
-        }
-      }
-
-      // Fallback: look for known resource types in the path
-      if (!resourceType) {
-        for (const part of pathParts) {
-          if (this.isValidResourceType(part)) {
-            resourceType = part;
-            break;
-          }
-        }
-      }
-
-      // Check if allowCanonical is disabled
-      if (!this.options.allowCanonical) {
-        return this.createInvalidResult(reference, 'Canonical references not allowed');
-      }
-
-      return {
-        resourceType,
-        resourceId: pathParts[pathParts.length - 1] || null,
-        referenceType: 'canonical',
-        isValid: !!resourceType,
-        originalReference: reference,
-        baseUrl: url.origin,
-        version: version?.trim() || undefined,
-        metadata: {
-          hasVersion: !!version,
-        },
-      };
-    } catch (error) {
-      return this.createInvalidResult(reference, `Invalid canonical URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
+    return parseCanonicalReference(reference, {
+      allowCanonical: this.options.allowCanonical,
+      validateKnownResourceType: this.options.validateResourceType,
+    });
   }
 
   /**
@@ -415,10 +219,18 @@ export class ReferenceTypeExtractor {
     return matchesPattern;
   }
 
+  private isConditionalReference(reference: string): boolean {
+    return /^[A-Z][a-zA-Z]+\?.+$/.test(reference);
+  }
+
   /**
    * Validate if a string is a known FHIR resource type
    */
   private isValidResourceType(resourceType: string): boolean {
+    if (isFhirVersionPathSegment(resourceType)) {
+      return false;
+    }
+
     if (!this.options.validateResourceType) {
       // If validation is disabled, assume valid if it looks like a resource type
       return /^[A-Z][a-zA-Z0-9]*$/.test(resourceType);
@@ -437,7 +249,7 @@ export class ReferenceTypeExtractor {
       referenceType: 'invalid',
       isValid: false,
       originalReference: reference,
-      metadata: { error: reason } as unknown as ReferenceParseResult['metadata'],
+      metadata: { error: reason },
     };
   }
 
@@ -519,7 +331,7 @@ export function isValidReference(reference: string): boolean {
  * Get all known FHIR resource types
  */
 export function getKnownResourceTypes(): string[] {
-  return Array.from(KNOWN_FHIR_RESOURCE_TYPES);
+  return getKnownFhirResourceTypes();
 }
 
 // ============================================================================

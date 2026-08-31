@@ -1,42 +1,24 @@
-/**
- * FHIR Package Downloader
- * 
- * Downloads FHIR packages from packages.fhir.org and installs them to the local cache.
- * 
- * Features:
- * - Atomic writes (temp directory → rename)
- * - Package verification
- * - Concurrent download prevention (lock mechanism)
- * - Disk space checks
- */
-
-import * as fs from 'fs/promises';
-import * as fsSync from 'fs';
-import * as path from 'path';
-import * as tar from 'tar';
-import { packageRegistryClient, PackageRegistryClient } from './package-registry-client.js';
+import { PackageRegistryClient } from './package-registry-client.js';
 import { logger } from '../logger';
+import {
+  packageErrorMetadata,
+  packageReferenceMetadata,
+} from './package-artifact-policy.js';
+import {
+  getDefaultPackageCachePath,
+  isValidPackageReference,
+  resolvePackageDownloadRequest,
+  resolvePackageInstallationTarget,
+} from './package-download-request-policy.js';
+import type {
+  PackageDownloadOptions,
+  ResolvedPackageDownloadOptions,
+} from './package-download-request-policy.js';
+import { PackageInstallationStore } from './package-installation-store.js';
+import { ForceAwareOperationLocks } from './package-operation-locks.js';
+import { PackageArchiveInstaller } from './package-archive-installer.js';
 
-// ============================================================================
-// Types
-// ============================================================================
-
-export interface PackageDownloadOptions {
-  /**
-   * Target cache directory (default: ~/.fhir/packages)
-   */
-  cachePath?: string;
-
-  /**
-   * Force re-download even if package exists
-   */
-  force?: boolean;
-
-  /**
-   * Maximum package size in bytes (default: 500 MB)
-   */
-  maxPackageSize?: number;
-}
+export type { PackageDownloadOptions } from './package-download-request-policy.js';
 
 export interface DownloadResult {
   success: boolean;
@@ -46,51 +28,58 @@ export interface DownloadResult {
   error?: string;
 }
 
-// ============================================================================
-// Package Downloader
-// ============================================================================
-
 export class PackageDownloader {
   private registryClient: PackageRegistryClient;
   private cachePath: string;
-  private downloadLocks: Set<string> = new Set();
+  private installationStore: PackageInstallationStore;
+  private archiveInstaller: PackageArchiveInstaller;
+  private requestLocks = new ForceAwareOperationLocks();
+  private installationLocks = new ForceAwareOperationLocks();
 
   constructor(
     cachePath?: string,
     registryClient?: PackageRegistryClient
   ) {
-    this.cachePath = cachePath || this.getDefaultCachePath();
-    this.registryClient = registryClient || packageRegistryClient;
+    this.cachePath = cachePath || getDefaultPackageCachePath();
+    this.registryClient = registryClient || new PackageRegistryClient();
+    this.installationStore = new PackageInstallationStore(this.cachePath);
+    this.archiveInstaller = new PackageArchiveInstaller(this.cachePath, this.installationStore);
   }
 
-  /**
-   * Download and install a FHIR package
-   */
   async downloadAndInstall(
     packageId: string,
     version?: string,
     options: PackageDownloadOptions = {}
   ): Promise<DownloadResult> {
-    const lockKey = `${packageId}#${version || 'latest'}`;
-
-    // Prevent concurrent downloads of the same package
-    if (this.downloadLocks.has(lockKey)) {
-      logger.info(`[PackageDownloader] Download already in progress: ${lockKey}`);
+    const request = resolvePackageDownloadRequest(
+      packageId,
+      version,
+      this.cachePath,
+      options,
+    );
+    if (!request.accepted) {
       return {
         success: false,
         packageId,
         version: version || 'unknown',
-        error: 'Download already in progress'
+        error: request.error,
       };
     }
+    return this.requestLocks.run(request.lockKey, request.options.force, () => (
+      this.resolveAndInstallPackage(packageId, version, request.options)
+    ));
+  }
 
-    this.downloadLocks.add(lockKey);
-
+  private async resolveAndInstallPackage(
+    packageId: string,
+    version: string | undefined,
+    options: ResolvedPackageDownloadOptions,
+  ): Promise<DownloadResult> {
     try {
       if (!options.force) {
-        const installed = await this.findInstalledPackage(packageId, version);
+        const installed = await this.installationStore.findInstalledPackage(packageId, version);
         if (installed) {
-          logger.info(`[PackageDownloader] ✓ Package already installed locally: ${installed.packageId}#${installed.version}`);
+          logger.info('[PackageDownloader] Package already installed locally', packageReferenceMetadata(installed.packageId, installed.version));
           return {
             success: true,
             packageId: installed.packageId,
@@ -100,13 +89,12 @@ export class PackageDownloader {
         }
       }
 
-      // Get package info
       const infoStartTime = Date.now();
-      logger.info(`[PackageDownloader] 📦 Fetching package info: ${packageId}@${version || 'latest'}`);
+      logger.info('[PackageDownloader] Fetching package metadata', packageReferenceMetadata(packageId, version));
       const packageInfo = await this.registryClient.getPackageInfo(packageId, version);
 
       if (!packageInfo) {
-        logger.warn(`[PackageDownloader] ✗ Package not found in registry: ${packageId}@${version || 'latest'}`);
+        logger.warn('[PackageDownloader] Package not found in registry', packageReferenceMetadata(packageId, version));
         return {
           success: false,
           packageId,
@@ -117,27 +105,62 @@ export class PackageDownloader {
 
       const infoTime = Date.now() - infoStartTime;
       const targetVersion = packageInfo.version;
-      const packageDir = path.join(this.cachePath, `${packageId}#${targetVersion}`);
-      logger.info(`[PackageDownloader] ✓ Package info retrieved: ${packageId}#${targetVersion} (FHIR ${packageInfo.fhirVersion || 'unknown'}, ${infoTime}ms)`);
+      const packageDir = resolvePackageInstallationTarget(
+        this.cachePath,
+        packageId,
+        packageInfo.packageId,
+        targetVersion,
+      );
+      logger.info('[PackageDownloader] Package metadata retrieved', {
+        ...packageReferenceMetadata(packageId, targetVersion),
+        durationMs: infoTime,
+      });
 
-      // Check if already installed
-      if (!options.force && await this.isPackageInstalled(packageDir)) {
-        logger.info(`[PackageDownloader] ✓ Package already installed: ${packageId}#${targetVersion}`);
+      const installationKey = `${packageInfo.packageId}#${targetVersion}`;
+      return this.installationLocks.run(installationKey, options.force, () => (
+        this.installResolvedPackage(packageId, targetVersion, packageDir, options)
+      ));
+    } catch (error: unknown) {
+      logger.error('[PackageDownloader] Package installation failed', {
+        ...packageReferenceMetadata(packageId, version),
+        ...packageErrorMetadata(error),
+      });
+      return {
+        success: false,
+        packageId,
+        version: version || 'unknown',
+        error: 'Package installation failed',
+      };
+    }
+  }
+
+  private async installResolvedPackage(
+    packageId: string,
+    targetVersion: string,
+    packageDir: string,
+    options: ResolvedPackageDownloadOptions,
+  ): Promise<DownloadResult> {
+    try {
+      if (!options.force && await this.installationStore.isPackageInstalled(
+        packageDir,
+        packageId,
+        targetVersion,
+      )) {
+        logger.info('[PackageDownloader] Package already installed', packageReferenceMetadata(packageId, targetVersion));
         return {
           success: true,
           packageId,
           version: targetVersion,
-          path: packageDir
+          path: packageDir,
         };
       }
-
-      // Download tarball
       const downloadStartTime = Date.now();
-      logger.info(`[PackageDownloader] ⬇️  Downloading tarball: ${packageId}#${targetVersion} from ${packageInfo.tarballUrl}`);
-      const tarballBuffer = await this.registryClient.downloadPackageTarball(packageId, targetVersion);
+      logger.info('[PackageDownloader] Downloading package tarball', packageReferenceMetadata(packageId, targetVersion));
+      const maxSize = options.maxPackageSize;
+      const tarballBuffer = await this.registryClient.downloadPackageTarball(packageId, targetVersion, maxSize);
 
       if (!tarballBuffer) {
-        logger.warn(`[PackageDownloader] ✗ Failed to download tarball: ${packageId}#${targetVersion}`);
+        logger.warn('[PackageDownloader] Package tarball download failed', packageReferenceMetadata(packageId, targetVersion));
         return {
           success: false,
           packageId,
@@ -148,12 +171,18 @@ export class PackageDownloader {
 
       const downloadTime = Date.now() - downloadStartTime;
       const tarballSizeMB = (tarballBuffer.length / 1024 / 1024).toFixed(2);
-      logger.info(`[PackageDownloader] ✓ Tarball downloaded: ${tarballSizeMB} MB (${downloadTime}ms)`);
+      logger.info('[PackageDownloader] Package tarball downloaded', {
+        ...packageReferenceMetadata(packageId, targetVersion),
+        bytes: tarballBuffer.length,
+        durationMs: downloadTime,
+      });
 
-      // Check size limit
-      const maxSize = options.maxPackageSize || 500 * 1024 * 1024; // 500 MB
       if (tarballBuffer.length > maxSize) {
-        logger.warn(`[PackageDownloader] ✗ Package too large: ${tarballSizeMB} MB (max: ${maxSize / 1024 / 1024} MB)`);
+        logger.warn('[PackageDownloader] Package tarball exceeds configured size limit', {
+          ...packageReferenceMetadata(packageId, targetVersion),
+          bytes: tarballBuffer.length,
+          maxBytes: maxSize,
+        });
         return {
           success: false,
           packageId,
@@ -162,276 +191,46 @@ export class PackageDownloader {
         };
       }
 
-      // Extract to temporary directory
-      const tempDir = path.join(this.cachePath, `.temp-${packageId}-${Date.now()}`);
-      await fs.mkdir(tempDir, { recursive: true });
-
-      try {
-        await this.extractTarball(tarballBuffer, tempDir);
-
-        // Verify package structure
-        if (!await this.verifyPackage(tempDir)) {
-          throw new Error('Package verification failed');
-        }
-
-        // Atomic move: temp → final
-        await fs.mkdir(this.cachePath, { recursive: true });
-        
-        // Remove existing if force install
-        if (await this.isPackageInstalled(packageDir)) {
-          await fs.rm(packageDir, { recursive: true, force: true });
-        }
-
-        await fs.rename(tempDir, packageDir);
-
-        logger.info(`[PackageDownloader] ✅ Successfully installed: ${packageId}#${targetVersion} → ${packageDir}`);
-
-        return {
-          success: true,
-          packageId,
-          version: targetVersion,
-          path: packageDir
-        };
-
-      } catch (error: unknown) {
-        // Cleanup temp directory on error
-        try {
-          await fs.rm(tempDir, { recursive: true, force: true });
-        } catch {
-          // Ignore cleanup errors
-        }
-
-        throw error;
-      }
+      await this.archiveInstaller.install(
+        tarballBuffer,
+        packageId,
+        targetVersion,
+      );
+      logger.info('[PackageDownloader] Package installed', packageReferenceMetadata(packageId, targetVersion));
+      return {
+        success: true,
+        packageId,
+        version: targetVersion,
+        path: packageDir,
+      };
 
     } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.error(`[PackageDownloader] Error installing ${packageId}:`, err.message);
+      logger.error('[PackageDownloader] Package installation failed', {
+        ...packageReferenceMetadata(packageId, targetVersion),
+        ...packageErrorMetadata(error),
+      });
       return {
         success: false,
         packageId,
-        version: version || 'unknown',
-        error: err.message
+        version: targetVersion,
+        error: 'Package installation failed',
       };
-
-    } finally {
-      this.downloadLocks.delete(lockKey);
     }
   }
 
-  /**
-   * Extract tarball to target directory
-   */
-  private async extractTarball(tarballBuffer: Buffer, targetPath: string): Promise<void> {
-    try {
-      logger.info(`[PackageDownloader] Extracting tarball (${tarballBuffer.length} bytes) → ${targetPath}`);
-
-      // tar-stream expects a file path or stream
-      // We'll write the buffer to a temp file, extract, then delete
-      const tempTarballPath = path.join(targetPath, '.temp-tarball.tgz');
-      await fs.writeFile(tempTarballPath, tarballBuffer);
-
-      try {
-        // Extract using tar library
-        // Don't strip - we need to keep the "package" directory structure
-        // The loader expects: <packageId>#<version>/package/StructureDefinition-*.json
-        await tar.extract({
-          file: tempTarballPath,
-          cwd: targetPath
-        });
-
-        logger.info(`[PackageDownloader] Extraction complete`);
-
-      } finally {
-        // Cleanup temp tarball
-        try {
-          await fs.unlink(tempTarballPath);
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
-
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.error(`[PackageDownloader] Extraction error:`, err.message);
-      throw new Error(`Failed to extract tarball: ${err.message}`);
-    }
-  }
-
-  /**
-   * Verify package structure
-   */
-  private async verifyPackage(packagePath: string): Promise<boolean> {
-    try {
-      // Tarball structure: package/package.json (top-level "package" directory)
-      // After extraction: <packagePath>/package/package.json
-      const packageJsonPath = path.join(packagePath, 'package', 'package.json');
-      
-      try {
-        await fs.access(packageJsonPath);
-      } catch {
-        logger.error(`[PackageDownloader] Verification failed: package/package.json not found`);
-        return false;
-      }
-
-      // Read and validate package.json
-      try {
-        const packageJsonContent = await fs.readFile(packageJsonPath, 'utf-8');
-        const packageJson = JSON.parse(packageJsonContent);
-
-        if (!packageJson.name || !packageJson.version) {
-          logger.error(`[PackageDownloader] Verification failed: invalid package.json`);
-          return false;
-        }
-
-        logger.info(`[PackageDownloader] ✅ Package verified: ${packageJson.name}@${packageJson.version}`);
-        return true;
-
-      } catch (error) {
-        logger.error(`[PackageDownloader] Verification failed: invalid JSON`);
-        return false;
-      }
-
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.error(`[PackageDownloader] Verification error:`, err.message);
-      return false;
-    }
-  }
-
-  /**
-   * Check if package is already installed
-   */
-  private async isPackageInstalled(packagePath: string): Promise<boolean> {
-    try {
-      await fs.access(packagePath);
-      
-      // Also check for package.json to ensure it's complete
-      const packageJsonPath = path.join(packagePath, 'package', 'package.json');
-      await fs.access(packageJsonPath);
-
-      return true;
-
-    } catch {
-      return false;
-    }
-  }
-
-  private async findInstalledPackage(
-    packageId: string,
-    version?: string
-  ): Promise<{ packageId: string; version: string; path: string } | null> {
-    try {
-      const entries = await fs.readdir(this.cachePath, { withFileTypes: true });
-      const candidates = entries
-        .filter(entry => entry.isDirectory())
-        .map(entry => entry.name)
-        .filter(name => this.matchesInstalledPackageName(name, packageId, version));
-
-      for (const candidate of candidates) {
-        const packageDir = path.join(this.cachePath, candidate);
-        if (!await this.isPackageInstalled(packageDir)) {
-          continue;
-        }
-
-        const manifest = await this.readInstalledPackageManifest(packageDir);
-        const [namePart, versionPart] = candidate.split('#');
-        return {
-          packageId: manifest?.name || namePart,
-          version: manifest?.version || versionPart || version || 'unknown',
-          path: packageDir
-        };
-      }
-
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  private matchesInstalledPackageName(name: string, packageId: string, version?: string): boolean {
-    const [installedId, installedVersion] = name.split('#');
-    if (!installedId || !installedVersion) {
-      return false;
-    }
-
-    if (version && installedVersion !== version) {
-      return false;
-    }
-
-    return installedId === packageId || installedId.startsWith(`${packageId}.`);
-  }
-
-  private async readInstalledPackageManifest(
-    packageDir: string
-  ): Promise<{ name?: string; version?: string } | null> {
-    try {
-      const packageJsonPath = path.join(packageDir, 'package', 'package.json');
-      const content = await fs.readFile(packageJsonPath, 'utf-8');
-      return JSON.parse(content) as { name?: string; version?: string };
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Get default cache path
-   */
-  private getDefaultCachePath(): string {
-    const home = process.env.HOME || process.env.USERPROFILE;
-    if (!home) {
-      return '/tmp/fhir-packages';
-    }
-    return path.join(home, '.fhir', 'packages');
-  }
-
-  /**
-   * List installed packages
-   */
   async listInstalledPackages(): Promise<string[]> {
-    try {
-      const entries = await fs.readdir(this.cachePath, { withFileTypes: true });
-      return entries
-        .filter(entry => entry.isDirectory() && entry.name.includes('#'))
-        .map(entry => entry.name);
-    } catch {
-      return [];
-    }
+    return this.installationStore.listInstalledPackages();
   }
 
-  /**
-   * Remove a package
-   */
   async removePackage(packageId: string, version: string): Promise<boolean> {
-    try {
-      const packageDir = path.join(this.cachePath, `${packageId}#${version}`);
-      
-      if (!await this.isPackageInstalled(packageDir)) {
-        logger.warn(`[PackageDownloader] Package not installed: ${packageId}#${version}`);
-        return false;
-      }
-
-      await fs.rm(packageDir, { recursive: true, force: true });
-      logger.info(`[PackageDownloader] ✅ Removed: ${packageId}#${version}`);
-      return true;
-
-    } catch (error: unknown) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.error(`[PackageDownloader] Error removing ${packageId}#${version}:`, err.message);
-      return false;
-    }
+    if (!isValidPackageReference(packageId, version)) return false;
+    return this.installationLocks.runExclusive(
+      `${packageId}#${version}`,
+      () => this.installationStore.removePackage(packageId, version),
+    );
   }
 
-  /**
-   * Get cache directory path
-   */
   getCachePath(): string {
     return this.cachePath;
   }
 }
-
-// ============================================================================
-// Singleton Instance
-// ============================================================================
-
-export const packageDownloader = new PackageDownloader();

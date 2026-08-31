@@ -65,16 +65,25 @@ runs:
   using: composite
   steps:
     - name: Setup Node
-      uses: actions/setup-node@v6
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
       with:
         node-version: '20'
 
     - name: Install @records-fhir/validator
       shell: bash
+      env:
+        VALIDATOR_VERSION: ${{ inputs.validator-version }}
       run: |
         set -euo pipefail
+        node -e '
+          const version = process.env.VALIDATOR_VERSION ?? "";
+          if (version.length === 0 || version.length > 100 || !/^[0-9A-Za-z*^~<>=|.+ -]+$/.test(version)) {
+            console.error("validator-version must be an npm tag or semver range");
+            process.exit(1);
+          }
+        '
         npm install --no-save --no-audit --no-fund \
-          "@records-fhir/validator@${{ inputs.validator-version }}"
+          -- "@records-fhir/validator@${VALIDATOR_VERSION}"
 
     - name: Run validator
       id: validate
@@ -86,4 +95,5 @@ runs:
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_OUTPUT_FILE: ${{ inputs.output-file }}
         INPUT_LOG_LEVEL: ${{ inputs.log-level }}
-      run: node "${{ github.action_path }}/action-run.mjs"
+        ACTION_PATH: ${{ github.action_path }}
+      run: node "${ACTION_PATH}/action-run.mjs"

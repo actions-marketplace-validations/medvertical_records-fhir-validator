@@ -45,6 +45,19 @@ describe('TagValidator', () => {
       expect(invalidObjectIssue?.severity).toBe('error');
     });
 
+    it('should continue validating after a null tag', () => {
+      const tags = [
+        null,
+        { system: 'http://example.com/tags', code: 'duplicate' },
+        { system: 'http://example.com/tags', code: 'duplicate' },
+      ];
+
+      const issues = validator.validate(tags, 'Patient');
+
+      expect(issues.some(issue => issue.code === 'metadata-tag-invalid-object')).toBe(true);
+      expect(issues.some(issue => issue.code === 'metadata-tag-duplicate')).toBe(true);
+    });
+
     it('should warn about missing system and code', () => {
       const tags = [{}];
       const issues = validator.validate(tags, 'Patient');
@@ -70,6 +83,26 @@ describe('TagValidator', () => {
       const _invalidSystemIssue = issues.find(i => i.code === 'metadata-tag-invalid-system-uri');
       // The validator may accept this, so we just check that validation runs
       expect(issues.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('includes the invalid system in the rendered issue message', () => {
+      const issues = validator.validate([{
+        system: 'not a uri',
+        code: 'test',
+      }], 'Patient');
+
+      expect(issues.find(issue => issue.code === 'metadata-tag-invalid-system-uri')?.message)
+        .toBe('Tag system is not a valid URI: not a uri');
+    });
+
+    it('accepts a relative URI in Coding.system', () => {
+      const issues = validator.validate([{
+        system: 'docattr_documentsubtype',
+        code: 'test',
+      }], 'DocumentReference');
+
+      expect(issues.find(issue => issue.code === 'metadata-tag-invalid-system-uri'))
+        .toBeUndefined();
     });
 
     it('should validate code is string', () => {
@@ -151,6 +184,8 @@ describe('TagValidator', () => {
       // Should not have missing system-code issue
       const missingIssue = issues.find(i => i.code === 'metadata-tag-missing-system-code');
       expect(missingIssue).toBeUndefined();
+      const missingCodeIssue = issues.find(i => i.code === 'metadata-tag-missing-code');
+      expect(missingCodeIssue).toBeUndefined();
     });
 
     it('should accept tags with only code', () => {

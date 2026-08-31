@@ -2,10 +2,11 @@
  * Validation Messages and Issues
  * 
  * Types related to validation issues, messages, and error reporting.
- * Extracted from shared/types/validation.ts
+ * Extracted from the former shared validation type module.
  */
 
 import type { ValidationSeverity } from './enums';
+import type { AdvisorRuleApplication } from './settings-policies';
 
 // ============================================================================
 // Validation Issue
@@ -14,7 +15,19 @@ import type { ValidationSeverity } from './enums';
 /**
  * A single validation issue/error/warning
  */
+export interface ValidationIssueTarget {
+  /** Semantic FHIR path used for tree navigation. */
+  path: string;
+  /** StructureDefinition element id, including slice qualifiers when known. */
+  elementId?: string;
+  /** Canonical URL for extension and modifierExtension constraints. */
+  extensionUrl?: string;
+  /** Profile slice name when the target belongs to a named slice. */
+  sliceName?: string;
+}
+
 export interface ValidationIssue {
+  [key: string]: unknown;
   id?: string;
   aspect: string;
   severity: ValidationSeverity;
@@ -22,7 +35,7 @@ export interface ValidationIssue {
   path?: string;
   code?: string;
   profile?: string; // Core field: profile URL this validation message belongs to
-  details?: string | Record<string, any>; // Accept both string and structured objects (optional metadata only)
+  details?: string | Record<string, unknown>; // Accept both string and structured objects (optional metadata only)
   suggestions?: string[];
   timestamp?: Date | string; // Accept both Date and ISO string
   humanReadable?: string; // Human-readable description for UI display
@@ -34,6 +47,13 @@ export interface ValidationIssue {
   text?: string; // Alternative text field (some validators use this instead of message)
   customMessage?: string; // Custom validation message override
   tags?: string[]; // semantic tags (e.g. ['best-practice', 'security'])
+  target?: ValidationIssueTarget;
+  /** Immutable validator output before strictness and advisory governance. */
+  rawSeverity?: ValidationSeverity;
+  rawMessage?: string;
+  /** Effective governance state; suppressed evidence is retained outside active issue views. */
+  disposition?: 'active' | 'suppressed';
+  advisoryApplications?: AdvisorRuleApplication[];
 }
 
 // ============================================================================
@@ -51,7 +71,7 @@ export interface ValidationError {
   path?: string;
   recoverable: boolean;
   retryAfter?: number;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -79,5 +99,3 @@ export interface ValidationRetryAttempt {
   error?: ValidationError;
   duration: number;
 }
-
-

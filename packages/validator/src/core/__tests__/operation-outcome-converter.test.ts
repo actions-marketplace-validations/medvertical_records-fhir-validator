@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import {
   toOperationOutcome,
   fromOperationOutcome,
+  detailedResultToOperationOutcome,
   mapToHl7IssueType,
   normalizeToHl7Severity,
   issueToOperationOutcomeIssue,
@@ -29,25 +30,42 @@ describe('mapToHl7IssueType', () => {
     // Java emits 'structure' for type mismatches (see bb-obs-value-is-not-quantity baseline)
     expect(mapToHl7IssueType('structural-type-mismatch')).toBe('structure');
     expect(mapToHl7IssueType('structural-unknown-element')).toBe('structure');
+    expect(mapToHl7IssueType('structural-invalid-format')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-invalid-base64-format')).toBe('structure');
+    expect(mapToHl7IssueType('structural-validation-error')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-primitive-type-mismatch')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-primitive-array-alignment')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-resource-id-extension')).toBe('business-rule');
     expect(mapToHl7IssueType('structural-invalid-id')).toBe('invalid');
     expect(mapToHl7IssueType('structural-empty-array')).toBe('invalid');
+    expect(mapToHl7IssueType('structural-contained-id-missing')).toBe('invalid');
+    expect(mapToHl7IssueType('string-whitespace-only')).toBe('invalid');
+    expect(mapToHl7IssueType('bundle-link-relation-duplicate')).toBe('invalid');
     expect(mapToHl7IssueType('structural-other-thing')).toBe('structure');
   });
 
   it('maps profile codes to correct HL7 types', () => {
+    expect(mapToHl7IssueType('constraint-violation-que-1b')).toBe('invariant');
     expect(mapToHl7IssueType('profile-constraint-violation')).toBe('invariant');
     expect(mapToHl7IssueType('profile-slice-matching')).toBe('structure');
     expect(mapToHl7IssueType('profile-extension-missing')).toBe('extension');
+    expect(mapToHl7IssueType('profile-extension-context-wrong')).toBe('structure');
     expect(mapToHl7IssueType('profile-not-found')).toBe('structure');
+    expect(mapToHl7IssueType('profile-not-resolved')).toBe('structure');
     expect(mapToHl7IssueType('profile-download')).toBe('transient');
     expect(mapToHl7IssueType('profile-load-error')).toBe('transient');
     expect(mapToHl7IssueType('profile-other')).toBe('invalid');
   });
 
   it('maps terminology codes to code-invalid', () => {
+    expect(mapToHl7IssueType('terminology-display-mismatch')).toBe('invalid');
     expect(mapToHl7IssueType('terminology-binding-strength')).toBe('code-invalid');
     expect(mapToHl7IssueType('terminology-valueset-expansion')).toBe('code-invalid');
     expect(mapToHl7IssueType('terminology-unknown')).toBe('code-invalid');
+  });
+
+  it('maps unresolvable CodeSystem diagnostics to not-found', () => {
+    expect(mapToHl7IssueType('terminology-codesystem-unresolvable')).toBe('not-found');
   });
 
   it('maps reference codes to correct HL7 types', () => {
@@ -77,6 +95,20 @@ describe('mapToHl7IssueType', () => {
 
   it('maps invariant codes', () => {
     expect(mapToHl7IssueType('invariant-dom-6')).toBe('invariant');
+  });
+
+  it('maps dom-3 violations to invalid at the issue boundary', () => {
+    const outcome = issueToOperationOutcomeIssue({
+      id: 'dom-3',
+      aspect: 'profile',
+      severity: 'error',
+      code: 'profile-constraint-violation',
+      message: 'Contained resource is not referenced',
+      path: 'Condition',
+      timestamp: new Date(),
+      details: { constraintKey: 'dom-3' },
+    });
+    expect(outcome.code).toBe('invalid');
   });
 
   it('preserves exact HL7 issue-type codes', () => {
@@ -365,6 +397,81 @@ describe('fromOperationOutcome', () => {
 
     const issues = fromOperationOutcome(outcome);
     expect(issues[0].path).toBe('Bundle.entry[0].resource');
+  });
+
+  it('creates deterministic IDs for identical imported findings', () => {
+    const outcome: FhirOperationOutcome = {
+      resourceType: 'OperationOutcome',
+      issue: [{
+        severity: 'error',
+        code: 'value',
+        diagnostics: 'Invalid value',
+        expression: ['Patient.birthDate'],
+      }],
+    };
+
+    expect(fromOperationOutcome(outcome)[0].id)
+      .toBe(fromOperationOutcome(outcome)[0].id);
+  });
+
+  it.each([
+    ['business-final-status-no-value', 'custom_rule'],
+    ['constraint-violation-pat-1', 'profile'],
+  ])('maps Records code %s to the canonical aspect', (recordsCode, aspect) => {
+    const issues = fromOperationOutcome({
+      resourceType: 'OperationOutcome',
+      issue: [{
+        severity: 'error',
+        code: 'business-rule',
+        details: {
+          coding: [{
+            system: 'https://records.medvertical.com/fhir/issue-code',
+            code: recordsCode,
+          }],
+        },
+      }],
+    });
+
+    expect(issues[0].aspect).toBe(aspect);
+  });
+
+  it('ignores malformed issue entries and malformed codings', () => {
+    const issues = fromOperationOutcome({
+      resourceType: 'OperationOutcome',
+      issue: [
+        null,
+        'invalid',
+        {
+          severity: 'unexpected',
+          code: 'processing',
+          details: { coding: [null, 'invalid'] },
+        },
+      ],
+    });
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      aspect: 'structural',
+      severity: 'info',
+      code: 'processing',
+    });
+  });
+
+  it('returns no findings for malformed OperationOutcome roots', () => {
+    expect(fromOperationOutcome({ issue: 'invalid' })).toEqual([]);
+    expect(fromOperationOutcome(42)).toEqual([]);
+  });
+});
+
+describe('detailedResultToOperationOutcome boundary', () => {
+  it('ignores malformed result roots and issue entries', () => {
+    expect(detailedResultToOperationOutcome(null)).toEqual({
+      resourceType: 'OperationOutcome',
+      issue: [],
+    });
+    expect(detailedResultToOperationOutcome({
+      issues: [null, 'invalid', { severity: 'error', message: 'Failure' }],
+    }).issue).toHaveLength(1);
   });
 });
 

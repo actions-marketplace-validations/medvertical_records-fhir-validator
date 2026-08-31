@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildSnapshotIndex,
   detectUnknownProperties,
@@ -60,6 +60,95 @@ describe('unknown-property-walker', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('does not flag base resource keys when a profile snapshot is sparse', async () => {
+    const sparsePatientIndex = buildSnapshotIndex({
+      url: 'http://nictiz.nl/fhir/StructureDefinition/nl-core-Patient',
+      snapshot: {
+        element: [
+          { path: 'Patient' },
+          { path: 'Patient.extension', type: [{ code: 'Extension' }] },
+        ],
+      },
+    } as any);
+
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'Patient',
+        identifier: [{ system: 'http://fhir.nl/fhir/NamingSystem/bsn', value: '999911120' }],
+        name: [{ family: 'Pietersen' }],
+        telecom: [{ system: 'phone', value: '+31611234567' }],
+        gender: 'female',
+        birthDate: '1998-12-03',
+        deceasedBoolean: false,
+        multipleBirthBoolean: false,
+      },
+      sparsePatientIndex,
+      'Patient',
+      'http://nictiz.nl/fhir/StructureDefinition/nl-core-Patient',
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it('uses the base resource snapshot when a profile snapshot omits inherited top-level elements', async () => {
+    const sparseObservationIndex = buildSnapshotIndex({
+      url: 'https://example.org/fhir/StructureDefinition/sparse-observation-profile',
+      snapshot: {
+        element: [
+          { path: 'Observation' },
+          { path: 'Observation.method', type: [{ code: 'CodeableConcept' }] },
+          { path: 'Observation.value[x]', type: [{ code: 'Quantity' }] },
+        ],
+      },
+    } as any);
+    const sdLoader = {
+      loadProfile: async (url: string) => {
+        if (url !== 'http://hl7.org/fhir/StructureDefinition/Observation') {
+          throw new Error(`Unexpected profile load: ${url}`);
+        }
+        return {
+          url,
+          snapshot: {
+            element: [
+              { path: 'Observation' },
+              { path: 'Observation.status', type: [{ code: 'code' }] },
+              { path: 'Observation.category', type: [{ code: 'CodeableConcept' }] },
+              { path: 'Observation.code', type: [{ code: 'CodeableConcept' }] },
+              { path: 'Observation.subject', type: [{ code: 'Reference' }] },
+              { path: 'Observation.effective[x]', type: [{ code: 'Period' }] },
+              { path: 'Observation.value[x]', type: [{ code: 'Quantity' }] },
+            ],
+          },
+        };
+      },
+    } as any;
+
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'Observation',
+        status: 'final',
+        category: [{ coding: [{ system: 'http://terminology.hl7.org/CodeSystem/observation-category', code: 'vital-signs' }] }],
+        code: { coding: [{ system: 'http://loinc.org', code: '8310-5' }] },
+        subject: { reference: 'Patient/example' },
+        effectivePeriod: { start: '2026-07-03T07:30:00Z' },
+        method: { text: 'oral' },
+        valueQuantity: { value: 37, system: 'http://unitsofmeasure.org', code: 'Cel' },
+        statuz: 'typo',
+      },
+      sparseObservationIndex,
+      'Observation',
+      'https://example.org/fhir/StructureDefinition/sparse-observation-profile',
+      makeWalkerDeps(sdLoader),
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: 'structural-unknown-element',
+      path: 'Observation.statuz',
+      severity: 'error',
+    });
+  });
+
   it('flags unknown top-level keys as error severity', async () => {
     const issues = await detectUnknownProperties(
       { resourceType: 'TestRes', namee: { family: 'Doe' } },
@@ -69,6 +158,52 @@ describe('unknown-property-walker', () => {
     expect(issues[0].code).toBe('structural-unknown-element');
     expect(issues[0].path).toBe('TestRes.namee');
     expect(issues[0].severity).toBe('error');
+  });
+
+  it('flags unknown fields inside primitive extension sidecars', async () => {
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'TestRes',
+        id: 'a',
+        _id: { fhir_comments: ['not a legal Element property'] },
+      },
+      index, 'TestRes', sd.url,
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: 'structural-unknown-element',
+      path: 'TestRes.id',
+      severity: 'error',
+    });
+  });
+
+  it('accepts id and extension in primitive extension sidecars', async () => {
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'TestRes',
+        id: 'a',
+        _id: {
+          id: 'primitive-element-id',
+          extension: [{ url: 'http://example.org/ext', valueString: 'ok' }],
+        },
+      },
+      index, 'TestRes', sd.url,
+    );
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it('leaves malformed orphan sidecars to the canonical structural sanity diagnostic', async () => {
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'TestRes',
+        _valueString: { value: 'not a legal primitive sidecar field' },
+      },
+      index, 'TestRes', sd.url,
+    );
+
+    expect(issues).toHaveLength(0);
   });
 
   it('flags nested unknown keys inside BackboneElements as warning', async () => {
@@ -165,6 +300,29 @@ describe('unknown-property-walker', () => {
     expect(loadCount).toBe(1);
   });
 
+  it('retries unresolved datatype profiles after packages become available', async () => {
+    let available = false;
+    const sdLoader = {
+      loadProfile: vi.fn(async () => available ? {
+        snapshot: {
+          element: [
+            { path: 'HumanName' },
+            { path: 'HumanName.family', type: [{ code: 'string' }] },
+          ],
+        },
+      } : null),
+    } as any;
+    const deps = makeWalkerDeps(sdLoader, 'R4');
+    const resource = { resourceType: 'TestRes', name: { faimly: 'typo' } };
+
+    expect(await detectUnknownProperties(resource, index, 'TestRes', sd.url, deps))
+      .toHaveLength(0);
+    available = true;
+    expect(await detectUnknownProperties(resource, index, 'TestRes', sd.url, deps))
+      .toContainEqual(expect.objectContaining({ path: 'HumanName.faimly' }));
+    expect(sdLoader.loadProfile).toHaveBeenCalledTimes(2);
+  });
+
   it('expands choice-type properties (value[x] -> valueString / valueQuantity)', async () => {
     expect(await detectUnknownProperties(
       { resourceType: 'TestRes', valueString: 'hello' }, index, 'TestRes', sd.url,
@@ -175,6 +333,81 @@ describe('unknown-property-walker', () => {
     expect(await detectUnknownProperties(
       { resourceType: 'TestRes', valueBogus: 'x' }, index, 'TestRes', sd.url,
     )).toHaveLength(1);
+  });
+
+  it('expands complex choice-type properties such as definitionDataRequirement', async () => {
+    const evidenceVariableIndex = buildSnapshotIndex({
+      url: 'http://hl7.org/fhir/StructureDefinition/EvidenceVariable',
+      snapshot: {
+        element: [
+          { path: 'EvidenceVariable' },
+          { path: 'EvidenceVariable.characteristic', type: [{ code: 'BackboneElement' }] },
+          {
+            path: 'EvidenceVariable.characteristic.definition[x]',
+            type: [{ code: 'DataRequirement' }, { code: 'Reference' }, { code: 'CodeableConcept' }],
+          },
+        ],
+      },
+    } as any);
+
+    expect(await detectUnknownProperties(
+      {
+        resourceType: 'EvidenceVariable',
+        characteristic: [{ definitionDataRequirement: { type: 'Coding' } }],
+      },
+      evidenceVariableIndex,
+      'EvidenceVariable',
+      'http://hl7.org/fhir/StructureDefinition/EvidenceVariable',
+    )).toHaveLength(0);
+
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'EvidenceVariable',
+        characteristic: [{ definitionBogus: { type: 'Coding' } }],
+      },
+      evidenceVariableIndex,
+      'EvidenceVariable',
+      'http://hl7.org/fhir/StructureDefinition/EvidenceVariable',
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      code: 'structural-unknown-element',
+      path: 'EvidenceVariable.characteristic.definitionBogus',
+      severity: 'warning',
+    });
+  });
+
+  it('does not load primitive choice suffixes as datatype StructureDefinitions', async () => {
+    const planDefinitionIndex = buildSnapshotIndex({
+      url: 'http://hl7.org/fhir/StructureDefinition/PlanDefinition',
+      snapshot: {
+        element: [
+          { path: 'PlanDefinition' },
+          { path: 'PlanDefinition.action', type: [{ code: 'BackboneElement' }] },
+          {
+            path: 'PlanDefinition.action.definition[x]',
+            type: [{ code: 'canonical' }, { code: 'uri' }],
+          },
+        ],
+      },
+    } as any);
+    const sdLoader = {
+      loadProfile: vi.fn(async () => null),
+    } as any;
+
+    const issues = await detectUnknownProperties(
+      {
+        resourceType: 'PlanDefinition',
+        action: [{ definitionCanonical: 'ActivityDefinition/example' }],
+      },
+      planDefinitionIndex,
+      'PlanDefinition',
+      'http://hl7.org/fhir/StructureDefinition/PlanDefinition',
+      makeWalkerDeps(sdLoader, 'R4'),
+    );
+
+    expect(issues).toHaveLength(0);
+    expect(sdLoader.loadProfile).not.toHaveBeenCalled();
   });
 
   it('skips primitive-extension sidecar keys (underscore prefix)', async () => {
@@ -255,5 +488,17 @@ describe('unknown-property-walker', () => {
       index, 'TestRes', sd.url,
     );
     expect(issues).toHaveLength(0);
+  });
+
+  it('terminates when an in-memory repeating element contains a cycle', async () => {
+    const contact: unknown[] = [];
+    contact.push(contact);
+
+    await expect(detectUnknownProperties(
+      { resourceType: 'TestRes', contact },
+      index,
+      'TestRes',
+      sd.url,
+    )).resolves.toEqual([]);
   });
 });

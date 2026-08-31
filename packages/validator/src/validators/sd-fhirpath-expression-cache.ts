@@ -1,0 +1,35 @@
+import fhirpath from 'fhirpath';
+
+import { getFhirPathModel } from '../core/fhirpath-context';
+import { rewriteCollectionTypeOperators } from './fhirpath-as-operator-rewrite';
+import { logger } from '../logger';
+import { VersionedExpressionCache } from './fhirpath-expression-cache-core';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+
+function compileSDFHIRPathExpression(expression: string, fhirVersion: 'R4' | 'R5' | 'R6') {
+    return fhirpath.compile(
+        rewriteCollectionTypeOperators(expression),
+        getFhirPathModel(fhirVersion),
+        { async: false },
+    );
+}
+
+export type CompiledSDFHIRPathExpression = ReturnType<typeof compileSDFHIRPathExpression>;
+
+export class SDFHIRPathExpressionCache extends
+    VersionedExpressionCache<CompiledSDFHIRPathExpression | null> {
+    constructor() {
+        super({
+            maxSize: 1000,
+            keySeparator: ':',
+            compile: compileSDFHIRPathExpression,
+            onCompileError: (expression, error) => {
+                logger.warn('[SDFHIRPathExecutor] Failed to compile expression', {
+                    expressionLength: expression.length,
+                    ...validationFailureMetadata(error),
+                });
+            },
+            errorValue: () => null,
+        });
+    }
+}

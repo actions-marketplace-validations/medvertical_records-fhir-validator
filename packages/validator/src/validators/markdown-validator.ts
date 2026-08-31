@@ -324,6 +324,3 @@ export class MarkdownValidator {
         return issues;
     }
 }
-
-// Singleton
-export const markdownValidator = new MarkdownValidator();

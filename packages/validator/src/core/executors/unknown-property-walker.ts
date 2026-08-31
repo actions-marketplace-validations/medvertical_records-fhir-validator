@@ -27,9 +27,11 @@
  */
 
 import type { ValidationIssue } from '../../types';
-import type { StructureDefinition } from '../structure-definition-types';
 import type { StructureDefinitionLoader } from '../structure-definition-loader';
 import { createValidationIssue } from '../../issues';
+import { buildSnapshotIndex, type SnapshotIndex } from './unknown-property-snapshot-index';
+
+export { buildSnapshotIndex, type SnapshotIndex } from './unknown-property-snapshot-index';
 
 const SPECIAL_RESOURCE_KEYS = new Set([
   'resourceType', 'id', 'meta', 'implicitRules', 'language',
@@ -40,15 +42,7 @@ const SPECIAL_BACKBONE_KEYS = new Set([
   'id', 'extension', 'modifierExtension',
 ]);
 
-const CHOICE_TYPE_SUFFIXES = [
-  'String', 'Boolean', 'Integer', 'Decimal', 'DateTime', 'Date', 'Time',
-  'Instant', 'Uri', 'Url', 'Canonical', 'Base64Binary', 'Code', 'Oid', 'Id',
-  'Markdown', 'UnsignedInt', 'PositiveInt', 'Uuid', 'Quantity', 'Range',
-  'Ratio', 'Period', 'Coding', 'CodeableConcept', 'Identifier', 'Reference',
-  'Attachment', 'Address', 'Age', 'Annotation', 'ContactPoint', 'Count',
-  'Distance', 'Duration', 'HumanName', 'Money', 'SampledData', 'Signature',
-  'Timing',
-];
+const PRIMITIVE_SIDECAR_KEYS = new Set(['id', 'extension']);
 
 const PRIMITIVE_TYPES = new Set([
   'boolean', 'integer', 'string', 'decimal', 'uri', 'url', 'canonical',
@@ -65,48 +59,24 @@ const BACKBONE_LIKE_TYPES = new Set([
 ]);
 
 const FHIR_DATATYPE_BASE_URL = 'http://hl7.org/fhir/StructureDefinition/';
+type ObjectRecord = Record<string, unknown>;
 
-interface PathInfo {
-  type?: string;
-}
-
-export interface SnapshotIndex {
-  knownPaths: Set<string>;
-  byPath: Map<string, PathInfo>;
+export interface SnapshotIndexCache {
+  has(key: string): boolean;
+  get(key: string): SnapshotIndex | null | undefined;
+  set(key: string, value: SnapshotIndex | null): void;
 }
 
 export interface WalkerDeps {
   sdLoader: StructureDefinitionLoader;
   fhirVersion: 'R4' | 'R5' | 'R6';
-  typeIndexCache: Map<string, SnapshotIndex | null>;
-}
-
-export function buildSnapshotIndex(sd: StructureDefinition | undefined): SnapshotIndex {
-  const knownPaths = new Set<string>();
-  const byPath = new Map<string, PathInfo>();
-  for (const el of sd?.snapshot?.element || []) {
-    if (!el?.path) continue;
-    if (typeof el.id === 'string' && el.id.includes(':')) continue;
-    const type = (el as any)?.type?.[0]?.code;
-    byPath.set(el.path, { type });
-    if (el.path.endsWith('[x]')) {
-      const base = el.path.slice(0, -3);
-      knownPaths.add(base);
-      for (const suffix of CHOICE_TYPE_SUFFIXES) {
-        knownPaths.add(base + suffix);
-        byPath.set(base + suffix, { type: suffix });
-      }
-    } else {
-      knownPaths.add(el.path);
-    }
-  }
-  return { knownPaths, byPath };
+  typeIndexCache: SnapshotIndexCache;
 }
 
 export function makeWalkerDeps(
   sdLoader: StructureDefinitionLoader,
   fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
-  typeIndexCache: Map<string, SnapshotIndex | null> = new Map(),
+  typeIndexCache: SnapshotIndexCache = new Map(),
 ): WalkerDeps {
   return { sdLoader, fhirVersion, typeIndexCache };
 }
@@ -117,7 +87,7 @@ export function makeWalkerDeps(
  * when a `WalkerDeps` is provided — into complex datatype children too.
  */
 export async function detectUnknownProperties(
-  resource: any,
+  resource: unknown,
   index: SnapshotIndex,
   resourceType: string,
   sdUrl: string | undefined,
@@ -126,36 +96,80 @@ export async function detectUnknownProperties(
   if (index.knownPaths.size <= 1 && index.knownPaths.has(resourceType)) {
     return [];
   }
+  if (hasSparseTopLevelSnapshot(resource, index, resourceType)) {
+    return [];
+  }
 
   const issues: ValidationIssue[] = [];
-  await walk(resource, resourceType, index, sdUrl, issues, true, deps);
+  await walk(resource, resourceType, index, sdUrl, issues, true, deps, new WeakSet());
   return issues;
 }
 
+function hasSparseTopLevelSnapshot(resource: unknown, index: SnapshotIndex, resourceType: string): boolean {
+  if (!isObjectRecord(resource)) return false;
+
+  let knownNonSpecialKeys = 0;
+  let missingNonSpecialKeys = 0;
+
+  for (const key of Object.keys(resource)) {
+    if (SPECIAL_RESOURCE_KEYS.has(key) || key.startsWith('_')) continue;
+    const path = `${resourceType}.${key}`;
+    if (index.knownPaths.has(path)) {
+      knownNonSpecialKeys += 1;
+    } else {
+      missingNonSpecialKeys += 1;
+    }
+  }
+
+  return missingNonSpecialKeys >= 3 && knownNonSpecialKeys <= 1;
+}
+
 async function walk(
-  value: any,
+  value: unknown,
   pathPrefix: string,
   index: SnapshotIndex,
   sdUrl: string | undefined,
   issues: ValidationIssue[],
   isRoot: boolean,
   deps: WalkerDeps | undefined,
+  visited: WeakSet<object>,
 ): Promise<void> {
-  if (!value || typeof value !== 'object') return;
+  if (typeof value !== 'object' || value === null || visited.has(value)) return;
+  visited.add(value);
   if (Array.isArray(value)) {
-    for (const item of value) await walk(item, pathPrefix, index, sdUrl, issues, false, deps);
+    for (const item of value) {
+      await walk(item, pathPrefix, index, sdUrl, issues, false, deps, visited);
+    }
     return;
   }
+  if (!isObjectRecord(value)) return;
 
   const allowedSpecial = isRoot ? SPECIAL_RESOURCE_KEYS : SPECIAL_BACKBONE_KEYS;
 
   for (const key of Object.keys(value)) {
     if (allowedSpecial.has(key)) continue;
-    if (key.startsWith('_')) continue;
+    if (key.startsWith('_')) {
+      // The structural sanity pass already emits the canonical invalid
+      // property diagnostic for an orphan primitive sidecar. Avoid adding a
+      // second nested unknown-field error for the same malformed property.
+      if (!Object.prototype.hasOwnProperty.call(value, key.slice(1))) continue;
+      validatePrimitiveSidecarProperties(
+        value[key],
+        `${pathPrefix}.${key.slice(1)}`,
+        sdUrl,
+        issues,
+        isRoot,
+      );
+      continue;
+    }
 
     const childPath = `${pathPrefix}.${key}`;
 
     if (!index.knownPaths.has(childPath)) {
+      if (isRoot && deps && await isKnownBaseResourcePath(childPath, pathPrefix, deps)) {
+        continue;
+      }
+
       issues.push(createValidationIssue({
         code: 'structural-unknown-element',
         path: childPath,
@@ -168,14 +182,14 @@ async function walk(
     }
 
     const info = index.byPath.get(childPath);
-    const childValue = (value as any)[key];
+    const childValue = value[key];
 
     if (!info?.type) continue;
-    if (PRIMITIVE_TYPES.has(info.type)) continue;
+    if (isPrimitiveTypeInfo(info.type)) continue;
     if (RESOURCE_LIKE_TYPES.has(info.type)) continue;
 
     if (BACKBONE_LIKE_TYPES.has(info.type)) {
-      await walk(childValue, childPath, index, sdUrl, issues, false, deps);
+      await walk(childValue, childPath, index, sdUrl, issues, false, deps, visited);
       continue;
     }
 
@@ -185,10 +199,53 @@ async function walk(
     if (deps) {
       const subIndex = await loadTypeIndex(info.type, deps);
       if (subIndex) {
-        await walk(childValue, info.type, subIndex, sdUrl, issues, false, deps);
+        await walk(childValue, info.type, subIndex, sdUrl, issues, false, deps, visited);
       }
     }
   }
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Primitive extension sidecars (`_id`, `_given`, …) are Elements and may
+ * contain only `id` and `extension`. Treating every underscore-prefixed key
+ * as opaque allowed malformed JSON such as `_id.fhir_comments` to pass the
+ * recursive unknown-property check.
+ */
+function validatePrimitiveSidecarProperties(
+  sidecar: unknown,
+  primitivePath: string,
+  sdUrl: string | undefined,
+  issues: ValidationIssue[],
+  isRoot: boolean,
+): void {
+  const entries = Array.isArray(sidecar) ? sidecar : [sidecar];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    for (const sidecarKey of Object.keys(entry)) {
+      if (PRIMITIVE_SIDECAR_KEYS.has(sidecarKey)) continue;
+      issues.push(createValidationIssue({
+        code: 'structural-unknown-element',
+        path: primitivePath,
+        resourceType: primitivePath.split('.')[0],
+        customMessage:
+          `Unknown element '${sidecarKey}' in primitive extension sidecar - ` +
+          `not defined in ${sdUrl || 'StructureDefinition'}`,
+        severityOverride: isRoot ? undefined : 'warning',
+      }));
+    }
+  }
+}
+
+function isPrimitiveTypeInfo(type: string): boolean {
+  if (PRIMITIVE_TYPES.has(type)) return true;
+  if (!type) return false;
+
+  const choicePrimitive = type.charAt(0).toLowerCase() + type.slice(1);
+  return PRIMITIVE_TYPES.has(choicePrimitive);
 }
 
 async function loadTypeIndex(
@@ -204,14 +261,38 @@ async function loadTypeIndex(
       deps.fhirVersion,
     );
     if (!sd?.snapshot?.element?.length) {
-      deps.typeIndexCache.set(typeCode, null);
       return null;
     }
     const idx = buildSnapshotIndex(sd);
     deps.typeIndexCache.set(typeCode, idx);
     return idx;
   } catch {
-    deps.typeIndexCache.set(typeCode, null);
     return null;
+  }
+}
+
+async function isKnownBaseResourcePath(
+  childPath: string,
+  resourceType: string,
+  deps: WalkerDeps,
+): Promise<boolean> {
+  const cacheKey = `resource:${resourceType}`;
+  if (deps.typeIndexCache.has(cacheKey)) {
+    return deps.typeIndexCache.get(cacheKey)?.knownPaths.has(childPath) === true;
+  }
+
+  try {
+    const sd = await deps.sdLoader.loadProfile(
+      `${FHIR_DATATYPE_BASE_URL}${resourceType}`,
+      deps.fhirVersion,
+    );
+    if (!sd?.snapshot?.element?.length) {
+      return false;
+    }
+    const idx = buildSnapshotIndex(sd);
+    deps.typeIndexCache.set(cacheKey, idx);
+    return idx.knownPaths.has(childPath);
+  } catch {
+    return false;
   }
 }

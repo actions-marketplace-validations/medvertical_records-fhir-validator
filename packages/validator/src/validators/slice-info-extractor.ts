@@ -9,48 +9,38 @@
 
 import type { StructureDefinition, ElementDefinition, SlicingDefinition } from '../core/structure-definition-types';
 import type { SliceDefinition } from './slice-types';
-import { extractPatternFromElement, extractFixedFromElement } from './slice-utils';
+import {
+  extractFixedFromElement,
+  extractPatternFromElement,
+} from './slice-utils';
+import { inferChoiceSliceType } from './slice-choice-type-inference';
 import { logger } from '../logger';
+import {
+  sensitiveValueMetadata,
+  terminologyTargetMetadata,
+} from '../utils/sensitive-logging-metadata';
+import {
+  childBindingAppliesToDiscriminatorPath,
+  collectChildBindingDiscriminatorPaths,
+  getElementTypes,
+  getNonEmptyString,
+  getProfileElements,
+  getSlicingDefinition,
+  inferInheritedSlicing,
+  isSliceInScope,
+  normalizeCodes,
+} from './slice-info-input';
+import {
+  applyRootSliceConstraints,
+  mergeAncestorTypeProfileSliceMetadata,
+  mergeTypeProfilePatterns,
+  type TypeProfileResolverFn,
+} from './slice-info-inheritance';
 
-export type TypeProfileResolverFn = ((url: string) => Promise<StructureDefinition | null>) | null;
+export type { TypeProfileResolverFn } from './slice-info-inheritance';
 
 export interface ValueSetLoaderLike {
   loadValueSet(url: string): Promise<string[] | null>;
-}
-
-async function mergeTypeProfilePatterns(
-  element: ElementDefinition,
-  childPatterns: Map<string, any>,
-  childFixed: Map<string, any>,
-  resolver: TypeProfileResolverFn,
-): Promise<void> {
-  if (!resolver || !element.type) return;
-
-  for (const typeSpec of element.type) {
-    if (!typeSpec.profile || typeSpec.profile.length === 0) continue;
-    for (const profileUrl of typeSpec.profile) {
-      try {
-        const typeSd = await resolver(profileUrl);
-        if (!typeSd) continue;
-        const typeElements = typeSd.snapshot?.element || typeSd.differential?.element || [];
-        const typeRoot = typeSd.type || '';
-        for (const typeEl of typeElements) {
-          if (!typeEl.path.startsWith(typeRoot + '.')) continue;
-          const relativePath = typeEl.path.substring(typeRoot.length + 1);
-          if (!childPatterns.has(relativePath)) {
-            const tp = extractPatternFromElement(typeEl);
-            if (tp !== undefined) childPatterns.set(relativePath, tp);
-          }
-          if (!childFixed.has(relativePath)) {
-            const tf = extractFixedFromElement(typeEl);
-            if (tf !== undefined) childFixed.set(relativePath, tf);
-          }
-        }
-      } catch (err) {
-        logger.debug(`[SlicingValidator] Failed to resolve type profile ${profileUrl}: ${err}`);
-      }
-    }
-  }
 }
 
 export async function extractSlicingInfo(
@@ -60,42 +50,66 @@ export async function extractSlicingInfo(
   valueSetLoader: ValueSetLoaderLike | null,
   slicingElementId?: string,
 ): Promise<{ slicing: SlicingDefinition; slices: SliceDefinition[] } | null> {
-  const elements = profileSD.snapshot?.element || profileSD.differential?.element || [];
+  const elements = getProfileElements(profileSD);
 
   const baseElement = slicingElementId
-    ? elements.find(e => e.id === slicingElementId && e.path === elementPath && e.slicing)
-    : elements.find(e => e.path === elementPath && e.slicing);
-  if (!baseElement || !baseElement.slicing) return null;
+    ? elements.find(element =>
+        element.id === slicingElementId
+        && element.path === elementPath
+        && getSlicingDefinition(element)
+      )
+    : elements.find(element =>
+        element.path === elementPath && getSlicingDefinition(element)
+      );
+  const candidateSliceElements = elements.filter(element =>
+    element.path === elementPath &&
+    typeof element.sliceName === 'string' &&
+    element.sliceName.length > 0 &&
+    isSliceInScope(element, slicingElementId)
+  );
+  if ((!baseElement || !baseElement.slicing) && candidateSliceElements.length === 0) return null;
 
-  const slicingDef: SlicingDefinition = baseElement.slicing;
+  const slicingDef = getSlicingDefinition(baseElement)
+    ?? inferInheritedSlicing(candidateSliceElements);
+  const childBindingDiscriminatorPaths = collectChildBindingDiscriminatorPaths(slicingDef);
   const slices: SliceDefinition[] = [];
-  const nestedSlicePrefix = baseElement.id ? `${baseElement.id}:` : null;
+  const sliceScopeId = slicingElementId ?? getNonEmptyString(baseElement?.id);
+  const seenSliceIds = new Set<string>();
 
   for (const element of elements) {
-    if (element.path !== elementPath || !element.sliceName) continue;
-    if (nestedSlicePrefix && !element.id?.startsWith(nestedSlicePrefix)) continue;
+    if (
+      element.path !== elementPath
+      || typeof element.sliceName !== 'string'
+      || element.sliceName.length === 0
+      || !isSliceInScope(element, sliceScopeId)
+    ) continue;
+    const sliceIdentity = getNonEmptyString(element.id)
+      ?? `${element.path}:${element.sliceName}`;
+    if (seenSliceIds.has(sliceIdentity)) continue;
+    seenSliceIds.add(sliceIdentity);
 
     const sliceDef: SliceDefinition = {
       sliceName: element.sliceName,
       path: element.path,
-      min: element.min !== undefined ? element.min : 0,
-      max: element.max || '*',
+      min: typeof element.min === 'number' && Number.isFinite(element.min)
+        ? element.min
+        : 0,
+      max: getNonEmptyString(element.max) ?? '*',
       discriminator: slicingDef.discriminator,
-      type: element.type,
+      type: getElementTypes(element),
     };
 
-    const rootPattern = extractPatternFromElement(element);
-    if (rootPattern !== undefined) sliceDef.pattern = rootPattern;
-
-    const rootFixed = extractFixedFromElement(element);
-    if (rootFixed !== undefined) sliceDef.fixed = rootFixed;
+    applyRootSliceConstraints(sliceDef, element);
 
     const slicePrefix = element.id
       ? `${element.id}.`
       : `${elementPath}:${element.sliceName}.`;
-    const childPatterns = new Map<string, any>();
-    const childFixed = new Map<string, any>();
-    const childTypes = new Map<string, Array<{ code: string; profile?: string[] }>>();
+    const childPatterns = new Map<string, unknown>();
+    const childFixed = new Map<string, unknown>();
+    const childMin = new Map<string, number>();
+    const childTypes = new Map<string, Array<{ code: string; profile?: string[]; targetProfile?: string[] }>>();
+    const childBindingValueSets = new Map<string, string>();
+    const childBindingCodes = new Map<string, Set<string>>();
 
     for (const candidate of elements) {
       if (typeof candidate.id !== 'string') continue;
@@ -106,35 +120,123 @@ export async function extractSlicingInfo(
       if (childPattern !== undefined) childPatterns.set(relativePath, childPattern);
       const childFixedValue = extractFixedFromElement(candidate);
       if (childFixedValue !== undefined) childFixed.set(relativePath, childFixedValue);
-      if (candidate.type && candidate.type.length > 0) {
-        childTypes.set(relativePath, candidate.type);
+      if ((candidate.min ?? 0) > 0) {
+        childMin.set(relativePath, candidate.min!);
       }
-    }
-
-    await mergeTypeProfilePatterns(element, childPatterns, childFixed, typeProfileResolver);
-
-    if (childPatterns.size > 0) sliceDef.childPatterns = childPatterns;
-    if (childFixed.size > 0) sliceDef.childFixed = childFixed;
-    if (childTypes.size > 0) sliceDef.childTypes = childTypes;
-
-    if (!sliceDef.pattern && !sliceDef.fixed) {
-      const binding = element.binding;
-      if (binding?.valueSet && valueSetLoader) {
+      const candidateTypes = getElementTypes(candidate);
+      if (candidateTypes.length > 0) {
+        childTypes.set(relativePath, candidateTypes);
+      }
+      const bindingValueSet = candidate.binding?.valueSet;
+      if (
+        bindingValueSet &&
+        valueSetLoader &&
+        childBindingAppliesToDiscriminatorPath(relativePath, childBindingDiscriminatorPaths)
+      ) {
+        childBindingValueSets.set(relativePath, bindingValueSet);
         try {
-          const codes = await valueSetLoader.loadValueSet(binding.valueSet);
-          if (codes && codes.length > 0) {
-            sliceDef.bindingCodes = new Set(codes);
-            logger.debug(`[SlicingValidator] Loaded ${codes.length} binding codes for slice ${element.sliceName}`);
+          const codes = normalizeCodes(await valueSetLoader.loadValueSet(bindingValueSet));
+          if (codes.length > 0) {
+            childBindingCodes.set(relativePath, new Set(codes));
+            logChildBindingLoaded(codes.length, element.sliceName, relativePath);
           }
         } catch {
-          logger.debug(`[SlicingValidator] Failed to load binding ValueSet for slice ${element.sliceName}`);
+          logChildBindingLoadFailed(element.sliceName, relativePath, bindingValueSet);
         }
       }
     }
 
+    await mergeTypeProfilePatterns(element, childPatterns, childFixed, childMin, typeProfileResolver);
+    await mergeAncestorTypeProfileSliceMetadata({
+      element,
+      elements,
+      elementPath,
+      sliceDef,
+      childPatterns,
+      childFixed,
+      childMin,
+      childTypes,
+      resolver: typeProfileResolver,
+    });
+    inferChoiceSliceType(sliceDef, elementPath);
+
+    if (childPatterns.size > 0) sliceDef.childPatterns = childPatterns;
+    if (childFixed.size > 0) sliceDef.childFixed = childFixed;
+    if (childMin.size > 0) sliceDef.childMin = childMin;
+    if (childTypes.size > 0) sliceDef.childTypes = childTypes;
+    if (childBindingValueSets.size > 0) sliceDef.childBindingValueSets = childBindingValueSets;
+    if (childBindingCodes.size > 0) sliceDef.childBindingCodes = childBindingCodes;
+
+    await mergeRootBindingCodes(sliceDef, element, valueSetLoader);
+
     slices.push(sliceDef);
   }
 
-  logger.debug(`[SlicingValidator] Found ${slices.length} slices for ${elementPath}`);
+  logSliceExtraction(slices.length, elementPath);
   return { slicing: slicingDef, slices };
+}
+
+async function mergeRootBindingCodes(
+  sliceDef: SliceDefinition,
+  element: ElementDefinition,
+  valueSetLoader: ValueSetLoaderLike | null,
+): Promise<void> {
+  if (
+    sliceDef.pattern !== undefined
+    || sliceDef.fixed !== undefined
+    || !element.binding?.valueSet
+    || !valueSetLoader
+  ) return;
+
+  sliceDef.bindingValueSet = element.binding.valueSet;
+  try {
+    const codes = normalizeCodes(
+      await valueSetLoader.loadValueSet(element.binding.valueSet),
+    );
+    if (codes.length > 0) {
+      sliceDef.bindingCodes = new Set(codes);
+      logRootBindingLoaded(codes.length, element.sliceName);
+    }
+  } catch {
+    logRootBindingLoadFailed(element.sliceName, element.binding.valueSet);
+  }
+}
+
+function logChildBindingLoaded(codeCount: number, sliceName?: string, relativePath?: string): void {
+  logger.debug('[SlicingValidator] Loaded child binding codes', {
+    codeCount,
+    ...sensitiveValueMetadata(sliceName, relativePath),
+  });
+}
+
+function logChildBindingLoadFailed(
+  sliceName: string | undefined,
+  relativePath: string,
+  valueSet: string,
+): void {
+  logger.debug('[SlicingValidator] Failed to load child binding ValueSet', {
+    ...sensitiveValueMetadata(sliceName, relativePath),
+    ...terminologyTargetMetadata(valueSet),
+  });
+}
+
+function logSliceExtraction(sliceCount: number, elementPath: string): void {
+  logger.debug('[SlicingValidator] Slice extraction complete', {
+    sliceCount,
+    ...sensitiveValueMetadata(elementPath),
+  });
+}
+
+function logRootBindingLoaded(codeCount: number, sliceName?: string): void {
+  logger.debug('[SlicingValidator] Loaded root binding codes', {
+    codeCount,
+    ...sensitiveValueMetadata(sliceName),
+  });
+}
+
+function logRootBindingLoadFailed(sliceName: string | undefined, valueSet: string): void {
+  logger.debug('[SlicingValidator] Failed to load root binding ValueSet', {
+    ...sensitiveValueMetadata(sliceName),
+    ...terminologyTargetMetadata(valueSet),
+  });
 }

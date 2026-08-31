@@ -1,5 +1,5 @@
 /**
- * Composite-action runner for `medvertical/records-fhir-validator@v1`.
+ * Composite-action runner for `medvertical/records-fhir-validator@v0`.
  *
  * Reads inputs from `INPUT_*` env vars (set by action.yml), expands the
  * `paths` glob, validates each JSON file via `@records-fhir/validator`,
@@ -147,7 +147,11 @@ for (const file of files) {
 
   let issues;
   try {
-    issues = await recordsValidator.validate(resource, profileUrl, FHIR_VERSION);
+    issues = await recordsValidator.validateRequest({
+      resource,
+      profileUrl,
+      fhirVersion: FHIR_VERSION,
+    });
   } catch (err) {
     console.error(`::error file=${file}::Validator threw: ${err.message}`);
     aggregated.push({ file, error: `validator error: ${err.message}`, issues: [] });

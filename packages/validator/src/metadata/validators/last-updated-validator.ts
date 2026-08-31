@@ -9,6 +9,7 @@ import { parseISO, isValid, isAfter, isBefore, isSameSecond, subYears, differenc
 import type { ValidationIssue } from '../../types';
 import { createValidationIssue } from '../../issues';
 import { logger } from '../../logger';
+import { validationFailureMetadata } from '../../utils/validation-execution-failure';
 
 const PATH = 'meta.lastUpdated';
 
@@ -19,7 +20,7 @@ export class LastUpdatedValidator {
   /**
    * Validate lastUpdated format for R4
    */
-  validate(lastUpdated: string, resourceType: string, profileUrl?: string): ValidationIssue[] {
+  validate(lastUpdated: unknown, resourceType: string, profileUrl?: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
@@ -51,15 +52,6 @@ export class LastUpdatedValidator {
         return issues;
       }
 
-      // Recommend UTC — but +00:00 / -00:00 are semantically UTC
-      if (!this.isUtc(lastUpdated) && this.hasTimezone(lastUpdated)) {
-        issues.push(createValidationIssue({
-          code: 'metadata-last-updated-non-utc',
-          path: PATH, resourceType, profile: profileUrl,
-          messageParams: { value: lastUpdated },
-        }));
-      }
-
       if (!this.hasSeconds(lastUpdated)) {
         issues.push(createValidationIssue({
           code: 'metadata-last-updated-missing-seconds',
@@ -71,11 +63,12 @@ export class LastUpdatedValidator {
       this.validateTimeBounds(parsedDate, lastUpdated, resourceType, profileUrl, issues);
 
     } catch (error) {
-      logger.error('[LastUpdatedValidator] validation failed:', error);
+      logger.error('[LastUpdatedValidator] validation failed', validationFailureMetadata(error));
       issues.push(createValidationIssue({
         code: 'metadata-last-updated-validation-error',
         path: PATH, resourceType, profile: profileUrl,
-        messageParams: { error: error instanceof Error ? error.message : 'Unknown error' },
+        messageParams: { error: 'Operational validation failure' },
+        details: validationFailureMetadata(error),
       }));
     }
 
@@ -127,10 +120,6 @@ export class LastUpdatedValidator {
     return timestamp.endsWith('Z') || /(?:[+-]\d{2}:\d{2})$/.test(timestamp);
   }
 
-  private isUtc(timestamp: string): boolean {
-    return timestamp.endsWith('Z') || /[+-]00:00$/.test(timestamp);
-  }
-
   private hasSeconds(timestamp: string): boolean {
     return /T\d{2}:\d{2}:\d{2}/.test(timestamp);
   }
@@ -176,7 +165,10 @@ export class LastUpdatedValidator {
       }
 
     } catch (error) {
-      logger.error('[LastUpdatedValidator] Chronological validation failed:', error);
+      logger.error(
+        '[LastUpdatedValidator] Chronological validation failed',
+        validationFailureMetadata(error),
+      );
     }
 
     return issues;

@@ -1,100 +1,92 @@
 import type { StructureDefinition } from './structure-definition-types';
-import type { PackageDownloader } from '../package/package-downloader.js';
-import type { PackageRegistryClient } from '../package/package-registry-client.js';
-import type { ProfileSourcesConfig } from '../types';
+import { normalizeProfileSourcesConfig } from '@records-fhir/validation-types';
 import { logger } from '../logger';
-import { loadFromLocalCache } from './sd-loader-filesystem';
-import { isPackageAllowed } from './sd-loader-package-config';
+import { getProfileSourceRevision } from '../persistence';
+import { isPublicProfileUrl } from './remote-profile-url-policy';
+import { BoundedLruCache } from '../cache/bounded-lru-cache';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
+import {
+  executeAutoDownload,
+  type AutoDownloadAttemptResult,
+  type AutoDownloadSourceContext,
+} from './sd-loader-auto-download-sources';
 
-export interface AutoDownloadContext {
-  registryClient: PackageRegistryClient;
-  packageDownloader: PackageDownloader;
-  allowedPackages: string[];
-  packageVersionPins?: Record<string, string>;
-  packageSources: string[];
-  cache: Map<string, StructureDefinition>;
-  availableProfiles: Set<string>;
-  /** Profile sources settings (optional - defaults to all enabled) */
-  profileSourcesConfig?: ProfileSourcesConfig;
-  /** FHIR client for loading profiles from connected server (optional) */
-  fhirClient?: any;
-  /** FHIR version for package filtering (defaults to R4) */
-  fhirVersion?: 'R4' | 'R5' | 'R6';
-}
+export type { AutoDownloadAttemptResult } from './sd-loader-auto-download-sources';
 
-/** Default profile sources - all enabled */
-const DEFAULT_PROFILE_SOURCES: ProfileSourcesConfig = {
-  fhirServer: true,
-  simplifier: true,
-  packageRegistry: true
-};
-
-function isCoreFhirStructureDefinition(url: string): boolean {
-  return url.startsWith('http://hl7.org/fhir/StructureDefinition/') &&
-    !url.includes('/us/') &&
-    !url.includes('/uv/') &&
-    !url.includes('/extensions/');
-}
-
-function fhirVersionFamily(sd: StructureDefinition): 'R4' | 'R5' | 'R6' | null {
-  const sdFhirVersion = (sd as { fhirVersion?: string }).fhirVersion;
-  if (!sdFhirVersion) return null;
-  if (sdFhirVersion.startsWith('4.')) return 'R4';
-  if (sdFhirVersion.startsWith('5.')) return 'R5';
-  if (sdFhirVersion.startsWith('6.')) return 'R6';
-  return null;
-}
-
-function matchesRequestedFhirVersion(sd: StructureDefinition, requested: 'R4' | 'R5' | 'R6'): boolean {
-  const family = fhirVersionFamily(sd);
-  return !family || family === requested;
-}
-
-function urlFhirVersionFamily(url: string): 'R4' | 'R5' | 'R6' | null {
-  const match = url.match(/\/fhir\/([456])\.0(?:\.\d+)?\/StructureDefinition\//);
-  if (!match) return null;
-  if (match[1] === '4') return 'R4';
-  if (match[1] === '5') return 'R5';
-  if (match[1] === '6') return 'R6';
-  return null;
-}
-
-function urlMatchesRequestedFhirVersion(url: string, requested: 'R4' | 'R5' | 'R6'): boolean {
-  const family = urlFhirVersionFamily(url);
-  return !family || family === requested;
-}
-
-function cacheDownloadedProfile(url: string, sd: StructureDefinition, context: AutoDownloadContext): void {
-  const requested = context.fhirVersion || 'R4';
-  const family = fhirVersionFamily(sd) ?? requested;
-  context.cache.set(`${url}:${family}`, sd);
-  context.availableProfiles.add(url);
+export interface AutoDownloadContext extends AutoDownloadSourceContext {
+  /** Mutable deduplication/miss state owned by one StructureDefinitionLoader. */
+  autoDownloadState?: AutoDownloadState;
 }
 
 // ============================================================================
 // Request Deduplication and Negative Caching
 // ============================================================================
 
-/** In-flight requests to prevent duplicate parallel fetches */
-const pendingRequests = new Map<string, Promise<StructureDefinition | null>>();
+/** Short per-resolution-policy miss cache; request batches still avoid repeated remote calls. */
+const NOT_FOUND_CACHE_TTL_MS = 30 * 1000;
 
-/** Negative cache for profiles that weren't found (TTL: 30 minutes - long enough for batch validation runs) */
-const NOT_FOUND_CACHE_TTL_MS = 30 * 60 * 1000;
-const notFoundCache = new Map<string, number>(); // url -> timestamp
+export class AutoDownloadState {
+  private readonly pendingRequests = new Map<string, Promise<AutoDownloadAttemptResult>>();
+  private readonly notFoundCache = new BoundedLruCache<string, number>(2_000);
+  private cacheRevision = 0;
+
+  get revision(): number {
+    return this.cacheRevision;
+  }
+
+  getPending(key: string): Promise<AutoDownloadAttemptResult> | undefined {
+    return this.pendingRequests.get(key);
+  }
+
+  setPending(key: string, request: Promise<AutoDownloadAttemptResult>): void {
+    this.pendingRequests.set(key, request);
+  }
+
+  deletePending(key: string, request: Promise<AutoDownloadAttemptResult>): void {
+    if (this.pendingRequests.get(key) === request) this.pendingRequests.delete(key);
+  }
+
+  getMiss(key: string): number | undefined {
+    return this.notFoundCache.get(key);
+  }
+
+  setMiss(key: string, timestamp: number): void {
+    this.notFoundCache.set(key, timestamp);
+  }
+
+  deleteMiss(key: string): void {
+    this.notFoundCache.delete(key);
+  }
+
+  clearEntry(url: string): void {
+    this.cacheRevision += 1;
+    for (const key of this.notFoundCache.keys()) {
+      if (key.startsWith(`${url}\n`)) this.notFoundCache.delete(key);
+    }
+    for (const key of this.pendingRequests.keys()) {
+      if (key.startsWith(`${url}\n`)) this.pendingRequests.delete(key);
+    }
+  }
+
+  clear(): void {
+    this.cacheRevision += 1;
+    this.pendingRequests.clear();
+    this.notFoundCache.clear();
+  }
+}
 
 /**
  * Clear negative cache for a specific URL (for testing or manual refresh)
  */
-export function clearNotFoundCacheEntry(url: string): void {
-  notFoundCache.delete(url);
+export function clearNotFoundCacheEntry(url: string, state?: AutoDownloadState): void {
+  state?.clearEntry(url);
 }
 
 /**
  * Clear all caches (for testing)
  */
-export function clearAllCaches(): void {
-  pendingRequests.clear();
-  notFoundCache.clear();
+export function clearAllCaches(state?: AutoDownloadState): void {
+  state?.clear();
 }
 
 /**
@@ -105,155 +97,63 @@ export async function attemptAutoDownload(
   url: string,
   context: AutoDownloadContext
 ): Promise<StructureDefinition | null> {
+  const state = context.autoDownloadState ??= new AutoDownloadState();
+  const requestKey = autoDownloadRequestKey(url, context);
+  const requestRevision = state.revision;
+
   // 1. Check negative cache first - skip profiles we already know don't exist
-  const notFoundTimestamp = notFoundCache.get(url);
+  const notFoundTimestamp = state.getMiss(requestKey);
   if (notFoundTimestamp && Date.now() - notFoundTimestamp < NOT_FOUND_CACHE_TTL_MS) {
-    logger.debug(`[SDLoader] Skipping ${url} - cached as not-found`);
+    logger.debug('[SDLoader] Skipping cached not-found profile', profileCanonicalMetadata(url));
     return null;
   }
 
   // 2. Deduplicate in-flight requests - wait for existing request instead of duplicating
-  const pending = pendingRequests.get(url);
+  const pending = state.getPending(requestKey);
   if (pending) {
-    logger.debug(`[SDLoader] Waiting for pending request: ${url}`);
-    return pending;
+    logger.debug('[SDLoader] Waiting for pending profile request', profileCanonicalMetadata(url));
+    return (await pending).profile;
   }
 
   // 3. Execute actual download
   const promise = executeAutoDownload(url, context);
-  pendingRequests.set(url, promise);
+  state.setPending(requestKey, promise);
 
   try {
     const result = await promise;
 
     // 4. Cache negative result to avoid repeated lookups
-    if (result === null) {
-      notFoundCache.set(url, Date.now());
+    if (state.revision === requestRevision) {
+      if (result.profile === null && result.cacheableMiss) {
+        state.setMiss(requestKey, Date.now());
+      } else {
+        state.deleteMiss(requestKey);
+      }
     }
 
-    return result;
+    return result.profile;
   } finally {
-    pendingRequests.delete(url);
+    state.deletePending(requestKey, promise);
   }
 }
 
-/**
- * Internal implementation of auto-download logic
- * Tries sources based on profileSourcesConfig settings
- */
-async function executeAutoDownload(
+function autoDownloadRequestKey(
   url: string,
-  context: AutoDownloadContext
-): Promise<StructureDefinition | null> {
-  const requestedFhirVersion = context.fhirVersion || 'R4';
-  if (!urlMatchesRequestedFhirVersion(url, requestedFhirVersion)) {
-    logger.info(`[SDLoader] Skipping auto-download for FHIR-version-incompatible profile URL: ${url} (${requestedFhirVersion})`);
-    return null;
-  }
-
-  const config = context.profileSourcesConfig || DEFAULT_PROFILE_SOURCES;
-  logger.info(`[SDLoader] Profile not found locally, trying remote sources for: ${url}`);
-  logger.debug(`[SDLoader] Enabled sources: FHIR=${config.fhirServer}, Simplifier=${config.simplifier}, Registry=${config.packageRegistry}`);
-
-  try {
-    // Wrap auto-download in a timeout to prevent indefinite hangs
-    const result = await Promise.race([
-      (async () => {
-        // Step 1: Try FHIR Server if enabled and client available
-        if (config.fhirServer && context.fhirClient && !isCoreFhirStructureDefinition(url)) {
-          try {
-            logger.info(`[SDLoader] Trying FHIR Server for: ${url}`);
-            const bundle = await context.fhirClient.searchResources(
-              'StructureDefinition',
-              { url },
-              1,
-              { priority: 1 }
-            );
-
-            if (bundle?.entry?.[0]?.resource) {
-              const sd = bundle.entry[0].resource as StructureDefinition;
-              if (!matchesRequestedFhirVersion(sd, requestedFhirVersion)) {
-                logger.warn(`[SDLoader] Ignoring FHIR Server profile with mismatched fhirVersion: ${url}`);
-              } else {
-                cacheDownloadedProfile(url, sd, context);
-                logger.info(`[SDLoader] ✅ Profile fetched from FHIR Server: ${url}`);
-                return sd;
-              }
-            }
-            logger.debug(`[SDLoader] Profile not found on FHIR Server`);
-          } catch (fhirError: any) {
-            logger.debug(`[SDLoader] FHIR Server fetch failed:`, fhirError.message);
-          }
-        }
-
-        // Step 2: Try the embedder's external-fetch fallback (server
-        // wires Simplifier.net here; standalone callers skip).
-        if (config.simplifier) {
-          try {
-            const { getProfileSource } = await import('../persistence');
-            const fetchExternal = getProfileSource().fetchExternalProfile;
-            if (fetchExternal) {
-              logger.info(`[SDLoader] Trying external-fetch fallback for: ${url}`);
-              const sd = await fetchExternal(url);
-              if (sd) {
-                if (!matchesRequestedFhirVersion(sd, requestedFhirVersion)) {
-                  logger.warn(`[SDLoader] Ignoring external profile with mismatched fhirVersion: ${url}`);
-                } else {
-                  cacheDownloadedProfile(url, sd as StructureDefinition, context);
-                  logger.info(`[SDLoader] ✅ Profile fetched via external fallback: ${url}`);
-                  return sd as StructureDefinition;
-                }
-              }
-              logger.debug(`[SDLoader] Profile not found via external fallback`);
-            }
-          } catch (simplifierError: any) {
-            logger.debug(`[SDLoader] External-fetch fallback failed:`, simplifierError.message);
-          }
-        }
-
-        // Step 3: Try package registry if enabled
-        if (config.packageRegistry) {
-          const packageId = await context.registryClient.detectPackageForProfile(url);
-          if (packageId && isPackageAllowed(packageId, context.allowedPackages)) {
-            const pinnedVersion = context.packageVersionPins?.[packageId];
-            logger.info(`[SDLoader] Detected package: ${packageId}${pinnedVersion ? `#${pinnedVersion}` : ''}`);
-
-            const downloadResult = await context.packageDownloader.downloadAndInstall(packageId, pinnedVersion);
-
-            if (downloadResult.success) {
-              logger.info(`[SDLoader] ✅ Package downloaded: ${packageId}#${downloadResult.version}`);
-
-              const sd = await loadFromLocalCache(url, context.packageSources, context.fhirVersion || 'R4');
-
-              if (sd) {
-                cacheDownloadedProfile(url, sd, context);
-                logger.info(`[SDLoader] ✅ Profile loaded from package: ${url}`);
-                return sd;
-              }
-              logger.warn(`[SDLoader] Profile still not found after downloading package: ${url}`);
-            } else {
-              logger.warn(`[SDLoader] Failed to download package ${packageId}: ${downloadResult.error}`);
-            }
-          } else if (!packageId) {
-            logger.debug(`[SDLoader] Package not found in registry for: ${url}`);
-          } else {
-            logger.warn(`[SDLoader] Package ${packageId} is not in allowed list`);
-          }
-        }
-
-        return null;
-      })(),
-      new Promise<null>((_, reject) =>
-        setTimeout(() => reject(new Error('Auto-download timeout after 20s')), 20000)
-      )
-    ]);
-
-    return result;
-  } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    logger.warn(`[SDLoader] Auto-download failed or timed out for ${url}:`, err.message);
-    return null;
-  }
+  context: AutoDownloadContext,
+): string {
+  const config = normalizeProfileSourcesConfig(context.profileSourcesConfig);
+  const policy = {
+    fhirVersion: context.fhirVersion ?? 'R4',
+    simplifier: config.simplifier,
+    packageRegistry: config.packageRegistry,
+    profileSourceRevision: getProfileSourceRevision(),
+    allowedPackages: [...context.allowedPackages].sort(),
+    packageSources: [...context.packageSources].sort(),
+    packageVersionPins: Object.entries(context.packageVersionPins ?? {})
+      .sort(([left], [right]) => left.localeCompare(right)),
+    selectedCorePackageId: context.selectedCorePackageId,
+  };
+  return `${url}\n${JSON.stringify(policy)}`;
 }
 
 /**
@@ -263,11 +163,5 @@ async function executeAutoDownload(
  * Returns false for internal/urn:uuid: style URLs.
  */
 export function isPublicProfile(url: string): boolean {
-  // Any HTTP/HTTPS URL is considered public and can be fetched
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    return true;
-  }
-
-  // Local/internal URLs are not public
-  return false;
+  return isPublicProfileUrl(url);
 }

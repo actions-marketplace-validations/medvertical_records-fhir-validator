@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ProfileExecutor, type ProfileValidationContext } from '../profile-executor';
 import type { StructureDefinition, ElementDefinition } from '../../structure-definition-types';
 import type { ValidationIssue } from '../../../types';
+import { getValueAtPath as resolveValidationPath } from '../../validation-utils';
 
 // Mock dependencies
 vi.mock('../../../../validators/extension-validator', () => ({
@@ -184,7 +185,10 @@ describe('ProfileExecutor', () => {
       expect(validateSlicingSpy).toHaveBeenCalledWith(
         ['not-an-array'],
         'Patient.identifier',
-        expect.anything()
+        expect.anything(),
+        undefined,
+        undefined,
+        'R4', expect.anything()
       );
     });
 
@@ -276,8 +280,676 @@ describe('ProfileExecutor', () => {
       expect(validateSlicingSpy).toHaveBeenCalledWith(
         mockContext.resource.component,
         'Observation.component',
-        expect.anything()
+        expect.anything(),
+        undefined,
+        'Observation.component',
+        'R4', expect.anything()
       );
+    });
+
+    it('should scope sub-extension slicing to the matching parent extension slice', async () => {
+      const qualificationExtension = {
+        url: 'http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/qualification',
+        extension: [
+          { url: 'identifier', valueIdentifier: { value: 'qualification-1' } },
+          { url: 'code', valueCodeableConcept: { text: 'Mental Health Counselor' } },
+        ],
+      };
+      const newPatientsExtension = {
+        url: 'http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/newpatients',
+        extension: [
+          { url: 'acceptingPatients', valueCodeableConcept: { text: 'new patients' } },
+        ],
+      };
+
+      mockContext.resource = {
+        resourceType: 'PractitionerRole',
+        extension: [
+          newPatientsExtension,
+          {
+            url: 'http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/network-reference',
+            valueReference: { reference: 'Organization/network' },
+          },
+          qualificationExtension,
+        ],
+      };
+      mockContext.resourceType = 'PractitionerRole';
+      mockContext.structureDef.type = 'PractitionerRole';
+      mockStructureDef.type = 'PractitionerRole';
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'PractitionerRole.extension',
+          path: 'PractitionerRole.extension',
+          min: 0,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'PractitionerRole.extension:qualification',
+          path: 'PractitionerRole.extension',
+          sliceName: 'qualification',
+          min: 0,
+          max: '*',
+        } as ElementDefinition,
+        {
+          id: 'PractitionerRole.extension:qualification.url',
+          path: 'PractitionerRole.extension.url',
+          fixedUri: 'http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/qualification',
+        } as ElementDefinition,
+        {
+          id: 'PractitionerRole.extension:qualification.extension',
+          path: 'PractitionerRole.extension.extension',
+          min: 0,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+      expect(validateSlicingSpy).toHaveBeenCalledTimes(2);
+      expect(validateSlicingSpy).toHaveBeenNthCalledWith(
+        1,
+        mockContext.resource.extension,
+        'PractitionerRole.extension',
+        expect.anything(),
+        undefined,
+        'PractitionerRole.extension',
+        'R4', expect.anything(),
+      );
+      expect(validateSlicingSpy).toHaveBeenNthCalledWith(
+        2,
+        qualificationExtension.extension,
+        'PractitionerRole.extension.extension',
+        expect.anything(),
+        undefined,
+        'PractitionerRole.extension:qualification.extension',
+        'R4', expect.anything(),
+      );
+    });
+
+    it('should not apply nested sliced extension rules to a different single parent extension', async () => {
+      const newPatientsExtension = {
+        url: 'http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/newpatients',
+        extension: [
+          { url: 'acceptingPatients', valueCodeableConcept: { text: 'new patients' } },
+          { url: 'fromNetwork', valueReference: { reference: 'Organization/network' } },
+          { url: 'characteristics', valueString: 'John Doe' },
+        ],
+      };
+
+      mockContext.resource = {
+        resourceType: 'PractitionerRole',
+        extension: [newPatientsExtension],
+      };
+      mockContext.resourceType = 'PractitionerRole';
+      mockContext.structureDef.type = 'PractitionerRole';
+      mockStructureDef.type = 'PractitionerRole';
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'PractitionerRole.extension',
+          path: 'PractitionerRole.extension',
+          min: 0,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'PractitionerRole.extension:qualification',
+          path: 'PractitionerRole.extension',
+          sliceName: 'qualification',
+          min: 0,
+          max: '*',
+        } as ElementDefinition,
+        {
+          id: 'PractitionerRole.extension:qualification.url',
+          path: 'PractitionerRole.extension.url',
+          fixedUri: 'http://hl7.org/fhir/us/davinci-pdex-plan-net/StructureDefinition/qualification',
+        } as ElementDefinition,
+        {
+          id: 'PractitionerRole.extension:qualification.extension',
+          path: 'PractitionerRole.extension.extension',
+          min: 0,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+      expect(validateSlicingSpy).toHaveBeenCalledTimes(1);
+      expect(validateSlicingSpy).toHaveBeenCalledWith(
+        mockContext.resource.extension,
+        'PractitionerRole.extension',
+        expect.anything(),
+        undefined,
+        'PractitionerRole.extension',
+        'R4', expect.anything(),
+      );
+    });
+
+    it('should scope nested extension value slicing by parent Extension type.profile', async () => {
+      const assertedDateExtension = {
+        url: 'http://hl7.org/fhir/StructureDefinition/condition-assertedDate',
+        valueDateTime: '2022-09-29',
+      };
+      const dueToExtension = {
+        url: 'http://hl7.org/fhir/StructureDefinition/condition-dueTo',
+        valueCodeableConcept: {
+          coding: [{ system: 'http://snomed.info/sct', code: '123456' }],
+        },
+      };
+
+      mockContext.resource = {
+        resourceType: 'Condition',
+        extension: [dueToExtension, assertedDateExtension],
+      };
+      mockContext.resourceType = 'Condition';
+      mockContext.structureDef.type = 'Condition';
+      mockStructureDef.type = 'Condition';
+      mockContext.getValueAtPath = resolveValidationPath;
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'Condition.extension',
+          path: 'Condition.extension',
+          min: 1,
+          max: '7',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Festgestellt_am',
+          path: 'Condition.extension',
+          sliceName: 'Festgestellt_am',
+          min: 1,
+          type: [{
+            code: 'Extension',
+            profile: ['http://hl7.org/fhir/StructureDefinition/condition-assertedDate'],
+          }],
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Festgestellt_am.value[x]',
+          path: 'Condition.extension.value[x]',
+          slicing: {
+            discriminator: [{ type: 'type', path: '$this' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Festgestellt_am.value[x]:valueDateTime',
+          path: 'Condition.extension.value[x]',
+          sliceName: 'valueDateTime',
+          min: 1,
+          type: [{ code: 'dateTime' }],
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Ursache',
+          path: 'Condition.extension',
+          sliceName: 'Ursache',
+          type: [{
+            code: 'Extension',
+            profile: ['http://hl7.org/fhir/StructureDefinition/condition-dueTo'],
+          }],
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Ursache.value[x]',
+          path: 'Condition.extension.value[x]',
+          slicing: {
+            discriminator: [{ type: 'type', path: '$this' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Condition.extension:Ursache.value[x]:valueCodeableConcept',
+          path: 'Condition.extension.value[x]',
+          sliceName: 'valueCodeableConcept',
+          min: 1,
+          type: [{ code: 'CodeableConcept' }],
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+      expect(validateSlicingSpy).toHaveBeenCalledWith(
+        [dueToExtension, assertedDateExtension],
+        'Condition.extension',
+        expect.anything(),
+        undefined,
+        'Condition.extension',
+        'R4', expect.anything(),
+      );
+      expect(validateSlicingSpy).toHaveBeenCalledWith(
+        ['2022-09-29'],
+        'Condition.extension.value[x]',
+        expect.anything(),
+        undefined,
+        'Condition.extension:Festgestellt_am.value[x]',
+        'R4', expect.anything(),
+      );
+      expect(validateSlicingSpy).toHaveBeenCalledWith(
+        [dueToExtension.valueCodeableConcept],
+        'Condition.extension.value[x]',
+        expect.anything(),
+        undefined,
+        'Condition.extension:Ursache.value[x]',
+        'R4', expect.anything(),
+      );
+    });
+
+    it('should resolve primitive sidecar extensions for nested primitive extension slicing', async () => {
+      const ownNameExtension = {
+        url: 'http://hl7.org/fhir/StructureDefinition/humanname-own-name',
+        valueString: 'Topp-Gluecklich',
+      };
+
+      mockContext.resource = {
+        resourceType: 'Practitioner',
+        name: [{
+          use: 'official',
+          family: 'Topp-Gluecklich',
+          _family: { extension: [ownNameExtension] },
+        }],
+      };
+      mockContext.resourceType = 'Practitioner';
+      mockContext.structureDef.type = 'Practitioner';
+      mockStructureDef.type = 'Practitioner';
+      mockContext.getValueAtPath = resolveValidationPath;
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'Practitioner.name',
+          path: 'Practitioner.name',
+          min: 1,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'use' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Practitioner.name:name',
+          path: 'Practitioner.name',
+          sliceName: 'name',
+          min: 1,
+          max: '*',
+        } as ElementDefinition,
+        {
+          id: 'Practitioner.name:name.use',
+          path: 'Practitioner.name.use',
+          fixedCode: 'official',
+        } as ElementDefinition,
+        {
+          id: 'Practitioner.name:name.family.extension',
+          path: 'Practitioner.name.family.extension',
+          min: 1,
+          max: '3',
+          slicing: {
+            discriminator: [{ type: 'value', path: 'url' }],
+            rules: 'closed',
+          },
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+    expect(validateSlicingSpy).toHaveBeenCalledWith(
+      [ownNameExtension],
+      'Practitioner.name.family.extension',
+      expect.anything(),
+      undefined,
+      'Practitioner.name:name.family.extension',
+      'R4', expect.anything(),
+    );
+  });
+
+  it('should resolve repeating primitive sidecar extensions for nested primitive extension slicing', async () => {
+    const prefixQualifierExtension = {
+      url: 'http://hl7.org/fhir/StructureDefinition/iso21090-EN-qualifier',
+      valueCode: 'AC',
+    };
+
+    mockContext.resource = {
+      resourceType: 'Practitioner',
+      name: [{
+        use: 'official',
+        prefix: ['Dr. med.'],
+        _prefix: [{ extension: [prefixQualifierExtension] }],
+      }],
+    };
+    mockContext.resourceType = 'Practitioner';
+    mockContext.structureDef.type = 'Practitioner';
+    mockStructureDef.type = 'Practitioner';
+    mockContext.getValueAtPath = resolveValidationPath;
+    mockStructureDef.snapshot!.element = [
+      {
+        id: 'Practitioner.name',
+        path: 'Practitioner.name',
+        min: 1,
+        max: '*',
+        slicing: {
+          discriminator: [{ type: 'value', path: 'use' }],
+          rules: 'open',
+        },
+      } as ElementDefinition,
+      {
+        id: 'Practitioner.name:name',
+        path: 'Practitioner.name',
+        sliceName: 'name',
+        min: 1,
+        max: '*',
+      } as ElementDefinition,
+      {
+        id: 'Practitioner.name:name.use',
+        path: 'Practitioner.name.use',
+        fixedCode: 'official',
+      } as ElementDefinition,
+      {
+        id: 'Practitioner.name:name.prefix.extension',
+        path: 'Practitioner.name.prefix.extension',
+        min: 1,
+        max: '1',
+        slicing: {
+          discriminator: [{ type: 'value', path: 'url' }],
+          rules: 'closed',
+        },
+      } as ElementDefinition,
+    ];
+
+    const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+    mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+    await executor.validate(mockContext);
+
+    expect(validateSlicingSpy).toHaveBeenCalledWith(
+      [prefixQualifierExtension],
+      'Practitioner.name.prefix.extension',
+      expect.anything(),
+      undefined,
+      'Practitioner.name:name.prefix.extension',
+      'R4', expect.anything(),
+    );
+  });
+
+  it('should scope nested child slicing to pattern-matched parent slice items', async () => {
+    const systolic = {
+      code: {
+          coding: [
+            { system: 'http://loinc.org', code: '8480-6' },
+            { system: 'http://snomed.info/sct', code: '271649006' },
+          ],
+        },
+      };
+      const mean = {
+        code: {
+          coding: [
+            { system: 'http://loinc.org', code: '8478-0' },
+            { system: 'http://snomed.info/sct', code: '6797001' },
+          ],
+        },
+      };
+      const diastolic = {
+        code: {
+          coding: [
+            { system: 'http://loinc.org', code: '8462-4' },
+            { system: 'http://snomed.info/sct', code: '271650006' },
+          ],
+        },
+      };
+
+      mockContext.resource = {
+        resourceType: 'Observation',
+        component: [systolic, mean, diastolic],
+      };
+      mockContext.resourceType = 'Observation';
+      mockContext.structureDef.type = 'Observation';
+      mockStructureDef.type = 'Observation';
+      mockContext.getValueAtPath = (resource: any, path: string) => {
+        const parts = path.split('.').slice(1);
+        let current = resource;
+        for (const part of parts) {
+          if (Array.isArray(current)) {
+            current = current.flatMap((item: any) => item?.[part]).filter((item: any) => item !== undefined);
+          } else {
+            current = current?.[part];
+          }
+        }
+        return current;
+      };
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'Observation.component',
+          path: 'Observation.component',
+          min: 2,
+          max: '3',
+          slicing: {
+            discriminator: [{ type: 'pattern', path: 'code' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:SystolicBP',
+          path: 'Observation.component',
+          sliceName: 'SystolicBP',
+          min: 1,
+          max: '1',
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:SystolicBP.code',
+          path: 'Observation.component.code',
+          patternCodeableConcept: {
+            coding: [{ system: 'http://loinc.org', code: '8480-6' }],
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:SystolicBP.code.coding',
+          path: 'Observation.component.code.coding',
+          min: 2,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'pattern', path: '$this' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:SystolicBP.code.coding:loinc',
+          path: 'Observation.component.code.coding',
+          sliceName: 'loinc',
+          min: 1,
+          max: '1',
+          patternCoding: { system: 'http://loinc.org', code: '8480-6' },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:DiastolicBP',
+          path: 'Observation.component',
+          sliceName: 'DiastolicBP',
+          min: 1,
+          max: '1',
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:DiastolicBP.code',
+          path: 'Observation.component.code',
+          patternCodeableConcept: {
+            coding: [{ system: 'http://loinc.org', code: '8462-4' }],
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:DiastolicBP.code.coding',
+          path: 'Observation.component.code.coding',
+          min: 2,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'pattern', path: '$this' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:DiastolicBP.code.coding:loinc',
+          path: 'Observation.component.code.coding',
+          sliceName: 'loinc',
+          min: 1,
+          max: '1',
+          patternCoding: { system: 'http://loinc.org', code: '8462-4' },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:meanBP',
+          path: 'Observation.component',
+          sliceName: 'meanBP',
+          min: 0,
+          max: '1',
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:meanBP.code',
+          path: 'Observation.component.code',
+          patternCodeableConcept: {
+            coding: [{ system: 'http://loinc.org', code: '8478-0' }],
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:meanBP.code.coding',
+          path: 'Observation.component.code.coding',
+          min: 2,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'pattern', path: '$this' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:meanBP.code.coding:loinc',
+          path: 'Observation.component.code.coding',
+          sliceName: 'loinc',
+          min: 1,
+          max: '1',
+          patternCoding: { system: 'http://loinc.org', code: '8478-0' },
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+      const nestedCalls = validateSlicingSpy.mock.calls.filter(
+        call => call[1] === 'Observation.component.code.coding',
+      );
+      expect(nestedCalls).toHaveLength(3);
+      expect(nestedCalls.map(call => [call[4], call[0][0].code])).toEqual([
+        ['Observation.component:SystolicBP.code.coding', '8480-6'],
+        ['Observation.component:DiastolicBP.code.coding', '8462-4'],
+        ['Observation.component:meanBP.code.coding', '8478-0'],
+      ]);
+    });
+
+    it('should scope nested child slicing by child patterns when parent slice patterns are inherited', async () => {
+      const systolic = {
+        code: {
+          coding: [
+            { system: 'http://loinc.org', code: '8480-6' },
+            { system: 'urn:iso:std:iso:11073:10101', code: '150065' },
+          ],
+        },
+      };
+      const diastolic = {
+        code: {
+          coding: [
+            { system: 'http://loinc.org', code: '8462-4' },
+            { system: 'urn:iso:std:iso:11073:10101', code: '150066' },
+          ],
+        },
+      };
+
+      mockContext.resource = {
+        resourceType: 'Observation',
+        component: [systolic, diastolic],
+      };
+      mockContext.resourceType = 'Observation';
+      mockContext.structureDef.type = 'Observation';
+      mockStructureDef.type = 'Observation';
+      mockContext.getValueAtPath = (resource: any, path: string) => {
+        const parts = path.split('.').slice(1);
+        let current = resource;
+        for (const part of parts) {
+          if (Array.isArray(current)) {
+            current = current.flatMap((item: any) => item?.[part]).filter((item: any) => item !== undefined);
+          } else {
+            current = current?.[part];
+          }
+        }
+        return current;
+      };
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'Observation.component',
+          path: 'Observation.component',
+          min: 2,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'pattern', path: 'code' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:SystolicBP',
+          path: 'Observation.component',
+          sliceName: 'SystolicBP',
+          min: 1,
+          max: '1',
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:SystolicBP.code.coding',
+          path: 'Observation.component.code.coding',
+          min: 2,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'pattern', path: '$this' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+        {
+          id: 'Observation.component:SystolicBP.code.coding:IEEE-11073',
+          path: 'Observation.component.code.coding',
+          sliceName: 'IEEE-11073',
+          min: 1,
+          max: '1',
+          patternCoding: { system: 'urn:iso:std:iso:11073:10101', code: '150065' },
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+      const nestedCalls = validateSlicingSpy.mock.calls.filter(
+        call => call[1] === 'Observation.component.code.coding',
+      );
+      expect(nestedCalls).toHaveLength(1);
+      expect(nestedCalls[0][4]).toBe('Observation.component:SystolicBP.code.coding');
+      expect(nestedCalls[0][0][0].code).toBe('8480-6');
     });
 
     it('should validate child slicing per parent when max is numeric and repeating', async () => {
@@ -320,13 +992,83 @@ describe('ProfileExecutor', () => {
         1,
         [{ value: 120 }],
         'Observation.component.value[x]',
-        expect.anything()
+        expect.anything(),
+        undefined,
+        'Observation.component.value[x]',
+        'R4', expect.anything()
       );
       expect(validateSlicingSpy).toHaveBeenNthCalledWith(
         2,
         [{ value: 80 }],
         'Observation.component.value[x]',
-        expect.anything()
+        expect.anything(),
+        undefined,
+        'Observation.component.value[x]',
+        'R4', expect.anything()
+      );
+    });
+
+    it('should validate choice child slicing per parent item', async () => {
+      mockContext.resource = {
+        resourceType: 'Medication',
+        ingredient: [
+          {
+            itemCodeableConcept: {
+              coding: [{ system: 'http://fhir.de/CodeSystem/ifa/pzn', code: '00266040' }],
+            },
+          },
+          {
+            itemCodeableConcept: {
+              coding: [{ system: 'http://fhir.de/CodeSystem/ifa/pzn', code: '01126111' }],
+            },
+          },
+        ],
+      };
+      mockContext.resourceType = 'Medication';
+      mockContext.structureDef.type = 'Medication';
+      mockStructureDef.type = 'Medication';
+      mockStructureDef.snapshot!.element = [
+        {
+          id: 'Medication.ingredient',
+          path: 'Medication.ingredient',
+          min: 0,
+          max: '*',
+        } as ElementDefinition,
+        {
+          id: 'Medication.ingredient.item[x].coding',
+          path: 'Medication.ingredient.item[x].coding',
+          min: 0,
+          max: '*',
+          slicing: {
+            discriminator: [{ type: 'pattern', path: '$this' }],
+            rules: 'open',
+          },
+        } as ElementDefinition,
+      ];
+
+      const validateSlicingSpy = vi.fn().mockResolvedValue([]);
+      mockSlicingValidator.validateSlicing = validateSlicingSpy;
+
+      await executor.validate(mockContext);
+
+      expect(validateSlicingSpy).toHaveBeenCalledTimes(2);
+      expect(validateSlicingSpy).toHaveBeenNthCalledWith(
+        1,
+        [{ system: 'http://fhir.de/CodeSystem/ifa/pzn', code: '00266040' }],
+        'Medication.ingredient.item[x].coding',
+        expect.anything(),
+        undefined,
+        'Medication.ingredient.item[x].coding',
+        'R4', expect.anything()
+      );
+      expect(validateSlicingSpy).toHaveBeenNthCalledWith(
+        2,
+        [{ system: 'http://fhir.de/CodeSystem/ifa/pzn', code: '01126111' }],
+        'Medication.ingredient.item[x].coding',
+        expect.anything(),
+        undefined,
+        'Medication.ingredient.item[x].coding',
+        'R4', expect.anything()
       );
     });
 
@@ -356,7 +1098,10 @@ describe('ProfileExecutor', () => {
       expect(validateSlicingSpy).toHaveBeenCalledWith(
         [],
         'Encounter.type',
-        expect.anything()
+        expect.anything(),
+        undefined,
+        undefined,
+        'R4', expect.anything()
       );
     });
 
@@ -474,26 +1219,25 @@ describe('ProfileExecutor', () => {
       mockContext.getValueAtPath = () => {
         throw new Error('Test error');
       };
-
       const issues = await executor.validate(mockContext);
-      
       expect(issues).toHaveLength(1);
       expect(issues[0].aspect).toBe('profile');
       expect(issues[0].severity).toBe('error');
       expect(issues[0].code).toBe('validation-error');
-      expect(issues[0].message).toContain('Profile validation failed');
-      expect(issues[0].message).toContain('Test error');
+      expect(issues[0].message)
+        .toBe('Profile validation could not be completed because the validator encountered an operational error.');
+      expect(issues[0].message).not.toContain('Test error');
     });
 
     it('should handle non-Error exceptions', async () => {
       mockContext.getValueAtPath = () => {
         throw 'String error';
       };
-
       const issues = await executor.validate(mockContext);
-      
       expect(issues).toHaveLength(1);
-      expect(issues[0].message).toContain('String error');
+      expect(issues[0].message)
+        .toBe('Profile validation could not be completed because the validator encountered an operational error.');
+      expect(issues[0].message).not.toContain('String error');
     });
 
     it('should handle different strictMode settings', async () => {

@@ -6,6 +6,7 @@
  */
 
 export interface StructureDefinition {
+  [key: string]: unknown;
   resourceType: 'StructureDefinition';
   id?: string;
   url: string;
@@ -17,6 +18,7 @@ export interface StructureDefinition {
   abstract: boolean;
   type: string;
   baseDefinition?: string;
+  extension?: StructureDefinitionExtension[];
   differential?: {
     element: ElementDefinition[];
   };
@@ -25,7 +27,14 @@ export interface StructureDefinition {
   };
 }
 
+export interface StructureDefinitionExtension {
+  url?: string;
+  valueCanonical?: string;
+  [key: string]: unknown;
+}
+
 export interface ElementDefinition {
+  [key: string]: unknown;
   id?: string;
   path: string;
   short?: string;
@@ -33,8 +42,12 @@ export interface ElementDefinition {
   min?: number;
   max?: string;
   type?: ElementType[];
+  contentReference?: string;
   constraint?: Constraint[];
+  extension?: Array<Record<string, unknown>>;
   binding?: Binding;
+  mustHaveValue?: boolean;
+  valueAlternatives?: string[];
   mustSupport?: boolean;
   isModifier?: boolean;
   sliceName?: string; // Name of the slice (if this element is part of a slice)
@@ -42,12 +55,12 @@ export interface ElementDefinition {
   // Additional properties used by deep-profile-validator
   maxLength?: number;
   // Fixed values (polymorphic - fixedString, fixedCode, etc.)
-  [key: `fixed${string}`]: any;
+  [key: `fixed${string}`]: unknown;
   // Pattern values (polymorphic - patternCodeableConcept, etc.)
-  [key: `pattern${string}`]: any;
+  [key: `pattern${string}`]: unknown;
   // Min/max values (polymorphic - minValueInteger, maxValueDecimal, etc.)
-  [key: `minValue${string}`]: any;
-  [key: `maxValue${string}`]: any;
+  [key: `minValue${string}`]: unknown;
+  [key: `maxValue${string}`]: unknown;
 }
 
 export interface SlicingDefinition {
@@ -81,5 +94,5 @@ export interface Binding {
   strength: 'required' | 'extensible' | 'preferred' | 'example';
   valueSet?: string;
   description?: string;
+  extension?: Array<Record<string, unknown>>;
 }
-

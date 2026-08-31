@@ -12,112 +12,45 @@
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import {
-  WG_PUBLISHER, WG_CONTACT_URL,
-  R4_ELEMENT_DEFINITION_ELEMENTS, STATUS_CONSISTENCY,
-  CHOICE_TYPE_BASES, VALID_CHOICE_TYPE_SUFFIXES,
-  CANONICAL_RESOURCE_TYPES,
+  R4_ELEMENT_DEFINITION_ELEMENTS, R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS,
 } from './sd-wg-mappings';
+import {
+  validateStructureDefinitionStatusConsistency,
+  validateStructureDefinitionWgConsistency,
+} from './structure-definition-metadata-rules';
+import type {
+  ElementDefinition,
+  StructureDefinition,
+} from '../core/structure-definition-types';
+import { validateStructureDefinitionPatterns } from './structure-definition-pattern-rules';
+import {
+  validateStructureDefinitionDifferentialPaths,
+  validateStructureDefinitionElementNames,
+} from './structure-definition-element-path-rules';
 
 // ============================================================================
 // Validator
 // ============================================================================
 
 export class StructureDefinitionValidator {
-  validate(resource: any): ValidationIssue[] {
-    const rt = resource?.resourceType;
-    if (!rt) return [];
+  validate(resource: unknown): ValidationIssue[] {
+    if (!isRecord(resource) || resource.resourceType !== 'StructureDefinition') return [];
+    const sd = resource as StructureDefinition;
 
     const issues: ValidationIssue[] = [];
-
-    if (CANONICAL_RESOURCE_TYPES.has(rt)) {
-      issues.push(...this.validateWgConsistency(resource));
-    }
-
-    if (rt === 'StructureDefinition') {
-      issues.push(...this.validateStatusConsistency(resource));
-      issues.push(...this.validateExtensionFixedUrl(resource));
-      issues.push(...this.validateContextValidity(resource));
-      issues.push(...this.validateExtensionContextType(resource));
-      issues.push(...this.validateRootSlicing(resource));
-      issues.push(...this.validateElementNames(resource));
-      issues.push(...this.validateDifferentialPaths(resource));
-      issues.push(...this.validateSliceMustSupport(resource));
-      issues.push(...this.validateBaseDefinition(resource));
-      issues.push(...this.validatePatternIdent1(resource));
-    }
+    issues.push(...validateStructureDefinitionWgConsistency(sd));
+    issues.push(...validateStructureDefinitionStatusConsistency(sd));
+    issues.push(...this.validateExtensionFixedUrl(sd));
+    issues.push(...this.validateContextValidity(sd));
+    issues.push(...this.validateExtensionContextType(sd));
+    issues.push(...this.validateRootSlicing(sd));
+    issues.push(...validateStructureDefinitionElementNames(sd));
+    issues.push(...validateStructureDefinitionDifferentialPaths(sd));
+    issues.push(...this.validateSliceMustSupport(sd));
+    issues.push(...this.validateBaseDefinition(sd));
+    issues.push(...validateStructureDefinitionPatterns(sd));
 
     return issues;
-  }
-
-  /**
-   * WG extension -> publisher / contact consistency.
-   * Java: "The nominated WG 'fhir' means that the publisher should be X but Y was found"
-   */
-  private validateWgConsistency(resource: any): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-    const rt = resource.resourceType;
-
-    const wgExt = (resource.extension || []).find(
-      (e: any) => e?.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-wg'
-    );
-    if (!wgExt?.valueCode) return issues;
-
-    const wg = wgExt.valueCode;
-    const expectedPublisher = WG_PUBLISHER[wg];
-
-    if (expectedPublisher && resource.publisher && resource.publisher !== expectedPublisher) {
-      issues.push(createValidationIssue({
-        code: 'business-rule-wg-publisher',
-        path: rt,
-        resourceType: rt,
-        customMessage:
-          `The nominated WG '${wg}' means that the publisher should be ` +
-          `'${expectedPublisher}' but '${resource.publisher}' was found`,
-        severityOverride: 'warning',
-      }));
-    }
-
-    const expectedUrl = WG_CONTACT_URL[wg];
-    if (expectedUrl) {
-      const allContactUrls = extractContactUrls(resource.contact);
-      if (!allContactUrls.includes(expectedUrl)) {
-        issues.push(createValidationIssue({
-          code: 'business-rule-wg-contact',
-          path: rt,
-          resourceType: rt,
-          customMessage:
-            `The nominated WG '${wg}' means that the contact url should be ` +
-            `'${expectedUrl}' but it was not found`,
-          severityOverride: 'warning',
-        }));
-      }
-    }
-
-    return issues;
-  }
-
-  /**
-   * standards-status vs publication status consistency.
-   * Java: "The resource status 'draft' and the standards status 'normative' are not consistent"
-   */
-  private validateStatusConsistency(sd: any): ValidationIssue[] {
-    const stdStatusExt = (sd.extension || []).find(
-      (e: any) => e?.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'
-    );
-    if (!stdStatusExt?.valueCode || !sd.status) return [];
-
-    const allowed = STATUS_CONSISTENCY[stdStatusExt.valueCode];
-    if (allowed && !allowed.includes(sd.status)) {
-      return [createValidationIssue({
-        code: 'business-rule-sd-status-consistency',
-        path: 'StructureDefinition',
-        resourceType: 'StructureDefinition',
-        customMessage:
-          `The resource status '${sd.status}' and the standards status '${stdStatusExt.valueCode}' are not consistent`,
-        severityOverride: 'warning',
-      })];
-    }
-    return [];
   }
 
   /**
@@ -126,12 +59,12 @@ export class StructureDefinitionValidator {
    * Case 1: fixedUri differs from the SD's own canonical URL.
    * Case 2: derived extension overrides fixedUri (violates fixed-value rule).
    */
-  private validateExtensionFixedUrl(sd: any): ValidationIssue[] {
-    if (sd.type !== 'Extension' || !sd.url) return [];
+  private validateExtensionFixedUrl(sd: StructureDefinition): ValidationIssue[] {
+    if (sd.type !== 'Extension' || typeof sd.url !== 'string' || !sd.url) return [];
     const issues: ValidationIssue[] = [];
 
-    for (const elem of sd.differential?.element || []) {
-      if (elem.path !== 'Extension.url' || !elem.fixedUri) continue;
+    for (const elem of getDifferentialElements(sd)) {
+      if (elem.path !== 'Extension.url' || typeof elem.fixedUri !== 'string') continue;
 
       if (elem.fixedUri !== sd.url) {
         issues.push(createValidationIssue({
@@ -146,6 +79,8 @@ export class StructureDefinitionValidator {
       } else if (
         sd.baseDefinition
         && sd.baseDefinition !== 'http://hl7.org/fhir/StructureDefinition/Extension'
+        && typeof sd.baseDefinition === 'string'
+        && looksLikeStructureDefinitionCanonical(sd.baseDefinition)
         && sd.url !== sd.baseDefinition
       ) {
         // Derived extension overrides fixedUri from parent
@@ -164,16 +99,19 @@ export class StructureDefinitionValidator {
   }
 
   /** Validate context expressions — e.g. ElementDefinition.targetProfile is not valid in R4. */
-  private validateContextValidity(sd: any): ValidationIssue[] {
-    if (!Array.isArray(sd.context)) return [];
+  private validateContextValidity(sd: StructureDefinition): ValidationIssue[] {
+    const contexts = getRecordArray(sd.context);
     const issues: ValidationIssue[] = [];
 
-    for (let i = 0; i < sd.context.length; i++) {
-      const ctx = sd.context[i];
-      if (ctx?.type !== 'element' || !ctx.expression) continue;
+    for (let i = 0; i < contexts.length; i++) {
+      const ctx = contexts[i];
+      if (ctx.type !== 'element' || typeof ctx.expression !== 'string') continue;
       if (ctx.expression.startsWith('ElementDefinition.')) {
         const sub = ctx.expression.replace('ElementDefinition.', '');
-        if (!R4_ELEMENT_DEFINITION_ELEMENTS.has(sub)) {
+        if (
+          !R4_ELEMENT_DEFINITION_ELEMENTS.has(sub) &&
+          !R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS.has(sub)
+        ) {
           issues.push(createValidationIssue({
             code: 'sd-context-invalid-element',
             path: `StructureDefinition.context[${i}]`,
@@ -188,14 +126,16 @@ export class StructureDefinitionValidator {
   }
 
   /** Extension context type review — "Element" context is suspicious. */
-  private validateExtensionContextType(sd: any): ValidationIssue[] {
-    if (sd.type !== 'Extension' || !Array.isArray(sd.context)) return [];
+  private validateExtensionContextType(sd: StructureDefinition): ValidationIssue[] {
+    const contexts = getRecordArray(sd.context);
+    if (sd.type !== 'Extension') return [];
     const issues: ValidationIssue[] = [];
 
-    for (let i = 0; i < sd.context.length; i++) {
-      const ctx = sd.context[i];
-      if (ctx?.type === 'element' && ctx.expression === 'Element') {
-        const name = sd.name || sd.id || sd.url?.split('/').pop() || 'unknown';
+    for (let i = 0; i < contexts.length; i++) {
+      const ctx = contexts[i];
+      if (ctx.type === 'element' && ctx.expression === 'Element') {
+        const canonicalName = typeof sd.url === 'string' ? sd.url.split('/').pop() : undefined;
+        const name = sd.name || sd.id || canonicalName || 'unknown';
         issues.push(createValidationIssue({
           code: 'business-rule-extension-context-element',
           path: `StructureDefinition.context[${i}]`,
@@ -211,12 +151,12 @@ export class StructureDefinitionValidator {
   }
 
   /** sdf-20: No slicing on the root element. */
-  private validateRootSlicing(sd: any): ValidationIssue[] {
-    const diffElements = sd.differential?.element || [];
+  private validateRootSlicing(sd: StructureDefinition): ValidationIssue[] {
+    const diffElements = getDifferentialElements(sd);
     if (diffElements.length === 0) return [];
 
-    const root = diffElements[0];
-    if (!root?.slicing || root.path !== sd.type) return [];
+    const rootIndex = diffElements.findIndex((element) => element.path === sd.type && element.slicing);
+    if (rootIndex < 0) return [];
 
     return [
       createValidationIssue({
@@ -228,7 +168,7 @@ export class StructureDefinitionValidator {
       }),
       createValidationIssue({
         code: 'sd-root-slicing-invalid',
-        path: 'StructureDefinition.differential.element[0]',
+        path: `StructureDefinition.differential.element[${rootIndex}]`,
         resourceType: 'StructureDefinition',
         customMessage: 'Slicing is not allowed at the root of a profile',
         severityOverride: 'error',
@@ -236,95 +176,10 @@ export class StructureDefinitionValidator {
     ];
   }
 
-  /** eld-19 / eld-20: element name constraints in differential. */
-  private validateElementNames(sd: any): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-    for (let i = 0; i < (sd.differential?.element || []).length; i++) {
-      const elem = sd.differential.element[i];
-      if (!elem?.path) continue;
-
-      const hasEmptySegment = elem.path.includes('..');
-      const parts = elem.path.split('.');
-      let eld19 = hasEmptySegment;
-      let eld20 = false;
-
-      for (const part of parts) {
-        if (!part || part === '[x]' || part.endsWith('[x]')) continue;
-        if (!eld19 && /[^a-zA-Z0-9_[\]]/.test(part)) eld19 = true;
-        const clean = part.replace(/\[x\]$/, '');
-        if (clean && !/^[A-Za-z0-9_]{1,64}$/.test(clean)) eld20 = true;
-      }
-
-      if (eld19) {
-        issues.push(createValidationIssue({
-          code: 'sd-eld-19-element-name',
-          path: `StructureDefinition.differential.element[${i}]`,
-          resourceType: 'StructureDefinition',
-          customMessage: `Constraint failed: eld-19: 'Element names cannot include some special characters'`,
-          severityOverride: 'error',
-        }));
-      }
-      if (eld20) {
-        issues.push(createValidationIssue({
-          code: 'sd-eld-20-element-name',
-          path: `StructureDefinition.differential.element[${i}]`,
-          resourceType: 'StructureDefinition',
-          customMessage: `Constraint failed: eld-20: 'Element names should be simple alphanumerics with a max of 64 characters, or code generation tools may be broken'`,
-          severityOverride: 'warning',
-        }));
-      }
-    }
-    return issues;
-  }
-
-  /** Detect bad paths in differential that would cause snapshot generation errors. */
-  private validateDifferentialPaths(sd: any): ValidationIssue[] {
-    const issues: ValidationIssue[] = [];
-    const baseType = sd.type;
-    if (!baseType) return issues;
-
-    for (const elem of sd.differential?.element || []) {
-      if (!elem?.path) continue;
-      if (elem.path.includes('..')) {
-        issues.push(createValidationIssue({
-          code: 'sd-snapshot-error-bad-path', path: 'StructureDefinition',
-          resourceType: 'StructureDefinition',
-          customMessage:
-            `Error generating Snapshot: Invalid path '${elem.path}' in differential` +
-            ` in ${sd.url || 'unknown'}: name portion missing ('..') ` +
-            `(this usually arises from a problem in the differential)`,
-          severityOverride: 'error',
-        }));
-      }
-      if (elem.path.startsWith(baseType + '.')) {
-        const sub = elem.path.slice(baseType.length + 1);
-        if (!sub.includes('.')) {
-          for (const base of CHOICE_TYPE_BASES) {
-            if (sub.startsWith(base) && sub !== base && sub !== `${base}[x]`) {
-              const suffix = sub.slice(base.length);
-              if (suffix.length > 0 && !VALID_CHOICE_TYPE_SUFFIXES.has(suffix)) {
-                issues.push(createValidationIssue({
-                  code: 'sd-snapshot-error-bad-choice', path: 'StructureDefinition',
-                  resourceType: 'StructureDefinition',
-                  customMessage:
-                    `Error generating Snapshot: The path must be '${baseType}.${base}[x]' ` +
-                    `not '${elem.path}' when the type list is not constrained ` +
-                    `(this usually arises from a problem in the differential)`,
-                  severityOverride: 'error',
-                }));
-              }
-            }
-          }
-        }
-      }
-    }
-    return issues;
-  }
-
   /** Must-support consistency: sliced elements with mustSupport=true expect slices to match. */
-  private validateSliceMustSupport(sd: any): ValidationIssue[] {
+  private validateSliceMustSupport(sd: StructureDefinition): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
-    const diffElements = sd.differential?.element || [];
+    const diffElements = getDifferentialElements(sd);
 
     for (const elem of diffElements) {
       if (!elem?.slicing || elem.mustSupport !== true) continue;
@@ -348,44 +203,13 @@ export class StructureDefinitionValidator {
     return issues;
   }
 
-  /**
-   * Apply Identifier ident-1 ("Identifier with no value has limited
-   * utility") to any patternIdentifier / fixedIdentifier value declared
-   * on a differential element. Java raises this warning whenever the
-   * pattern carries only a system/use without value or extension —
-   * see R5.cw-slice-adds-base baseline. Hard-coded here rather than via
-   * a generic pattern-as-instance evaluator; expand this list as more
-   * pattern-typed constraints come up in conformance baselines.
-   */
-  private validatePatternIdent1(sd: any): ValidationIssue[] {
-    const elements = sd?.differential?.element || [];
-    const issues: ValidationIssue[] = [];
-    for (let i = 0; i < elements.length; i++) {
-      const el = elements[i];
-      const ident = el?.patternIdentifier || el?.fixedIdentifier;
-      if (!ident || typeof ident !== 'object') continue;
-      const hasValue = typeof ident.value === 'string' && ident.value.length > 0;
-      const hasExtension = Array.isArray(ident.extension) && ident.extension.length > 0;
-      if (hasValue || hasExtension) continue;
-      const fieldKey = el.patternIdentifier ? 'patternIdentifier' : 'fixedIdentifier';
-      issues.push(createValidationIssue({
-        code: 'sd-pattern-ident-1',
-        path: `StructureDefinition.differential.element[${i}].${fieldKey}`,
-        resourceType: 'StructureDefinition',
-        customMessage:
-          `Constraint failed: ident-1: 'Identifier with no value has limited utility.  ` +
-          `If communicating that an identifier value has been suppressed or missing, ` +
-          `the value element SHOULD be present with an extension indicating the missing ` +
-          `semantic - e.g. data-absent-reason' (defined in http://hl7.org/fhir/StructureDefinition/Identifier)`,
-        severityOverride: 'warning',
-      }));
-    }
-    return issues;
-  }
-
   /** Detect self-referencing baseDefinition (circular). */
-  private validateBaseDefinition(sd: any): ValidationIssue[] {
-    if (!sd.baseDefinition || sd.baseDefinition !== sd.url) return [];
+  private validateBaseDefinition(sd: StructureDefinition): ValidationIssue[] {
+    if (
+      typeof sd.baseDefinition !== 'string' ||
+      typeof sd.url !== 'string' ||
+      sd.baseDefinition !== sd.url
+    ) return [];
     return [createValidationIssue({
       code: 'sd-base-circular',
       path: 'StructureDefinition',
@@ -397,19 +221,23 @@ export class StructureDefinitionValidator {
   }
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function extractContactUrls(contacts: any[] | undefined): string[] {
-  if (!Array.isArray(contacts)) return [];
-  const urls: string[] = [];
-  for (const contact of contacts) {
-    for (const telecom of contact?.telecom || []) {
-      if (telecom?.system === 'url' && telecom.value) urls.push(telecom.value);
-    }
-  }
-  return urls;
+function getDifferentialElements(sd: StructureDefinition): ElementDefinition[] {
+  return getElementArray(sd.differential);
 }
 
-export const structureDefinitionValidator = new StructureDefinitionValidator();
+function getElementArray(section: unknown): ElementDefinition[] {
+  if (!isRecord(section) || !Array.isArray(section.element)) return [];
+  return section.element.filter(isRecord) as ElementDefinition[];
+}
+
+function getRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function looksLikeStructureDefinitionCanonical(value: string): boolean {
+  return /\/StructureDefinition\/[^/]+$/.test(value);
+}

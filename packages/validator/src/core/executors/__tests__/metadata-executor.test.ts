@@ -39,6 +39,10 @@ describe('MetadataExecutor', () => {
       // Missing meta generates info-level issues, not errors
       const errors = issues.filter(i => i.severity === 'error');
       expect(errors).toEqual([]);
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'missing-meta',
+        severity: 'info',
+      }));
     });
 
     it('should return empty array for valid meta field', async () => {
@@ -46,6 +50,22 @@ describe('MetadataExecutor', () => {
       const errors = issues.filter(i => i.severity === 'error');
       expect(errors).toEqual([]);
     });
+
+    it.each(['', false, 0, []])(
+      'classifies present meta value %j as an invalid type',
+      async meta => {
+        mockContext.resource = {
+          resourceType: 'Patient',
+          id: 'test-001',
+          meta,
+        };
+
+        const issues = await executor.validate(mockContext);
+
+        expect(issues.some(issue => issue.code === 'invalid-meta-type')).toBe(true);
+        expect(issues.some(issue => issue.code === 'missing-meta')).toBe(false);
+      },
+    );
 
     it('should validate meta.profile is an array', async () => {
       mockContext.resource.meta.profile = 'not-an-array' as any;
@@ -69,6 +89,20 @@ describe('MetadataExecutor', () => {
         i.path?.includes('meta.profile')
       );
       expect(profileItemIssue).toBeDefined();
+    });
+
+    it('should reject meta.profile URLs with raw whitespace', async () => {
+      mockContext.resource.meta.profile = [
+        'http://h17.org.au/fhir/StructureDefinition/au-diagnostic request'
+      ];
+
+      const issues = await executor.validate(mockContext);
+
+      const profileUrlIssue = issues.find(i =>
+        i.code === 'metadata-profile-invalid-url' &&
+        i.path === 'meta.profile[0]'
+      );
+      expect(profileUrlIssue).toBeDefined();
     });
 
     it('should validate meta.lastUpdated is a string', async () => {
@@ -175,7 +209,7 @@ describe('MetadataExecutor', () => {
       expect(errors).toHaveLength(0);
     });
 
-    it('should handle error during validation gracefully', async () => {
+    it('should propagate engine failures instead of reporting them as resource findings', async () => {
       mockContext.resource = {
         resourceType: 'Patient',
         get meta() {
@@ -183,12 +217,7 @@ describe('MetadataExecutor', () => {
         }
       };
 
-      const issues = await executor.validate(mockContext);
-
-      expect(issues.length).toBeGreaterThan(0);
-      expect(issues[0].aspect).toBe('metadata');
-      expect(issues[0].severity).toBe('error');
-      expect(issues[0].code).toBe('validation-error');
+      await expect(executor.validate(mockContext)).rejects.toThrow('Test error');
     });
 
     it('should handle different resource types', async () => {

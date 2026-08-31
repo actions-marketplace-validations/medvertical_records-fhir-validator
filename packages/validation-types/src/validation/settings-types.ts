@@ -182,25 +182,41 @@ export const R5_ALL_RESOURCE_TYPES = [
 // R4 Default included resource types (most important for validation)
 export const R4_DEFAULT_INCLUDED_RESOURCE_TYPES = [
   // Core Clinical Resources (R4)
-  'Patient', 'Observation', 'Condition', 'Encounter', 'Procedure',
+  'Bundle', 'Patient', 'Observation', 'Condition', 'Encounter', 'Procedure',
   'Medication', 'MedicationRequest', 'DiagnosticReport', 'AllergyIntolerance',
   'Immunization', 'CarePlan', 'Goal', 'ServiceRequest',
 
   // Administrative Resources (R4)
   'Organization', 'Practitioner', 'PractitionerRole', 'Location',
-  'DocumentReference', 'Composition', 'List', 'Appointment', 'Schedule', 'Slot'
+  'DocumentReference', 'Composition', 'List', 'Appointment', 'Schedule', 'Slot',
+
+  // Additional clinical, workflow, consent, research, and financial resources
+  // that occur in real R4/MII datasets. Keeping these in the default cohort
+  // avoids a green run silently omitting supported server resources.
+  'MedicationStatement', 'MedicationAdministration', 'Specimen', 'Consent',
+  'Device', 'DeviceMetric', 'FamilyMemberHistory', 'RequestGroup',
+  'ClinicalImpression', 'Coverage', 'AdverseEvent', 'QuestionnaireResponse',
+  'Task', 'BodyStructure', 'Claim', 'ClaimResponse', 'ImagingStudy',
+  'ResearchStudy', 'RiskAssessment', 'Substance'
 ];
 
 // R5 Default included resource types (most important for validation)
 export const R5_DEFAULT_INCLUDED_RESOURCE_TYPES = [
   // Core Clinical Resources (R5 - includes new types)
-  'Patient', 'Observation', 'Condition', 'Encounter', 'Procedure',
+  'Bundle', 'Patient', 'Observation', 'Condition', 'Encounter', 'Procedure',
   'Medication', 'MedicationRequest', 'DiagnosticReport', 'AllergyIntolerance',
   'Immunization', 'CarePlan', 'Goal', 'ServiceRequest',
 
   // Administrative Resources (R5)
   'Organization', 'Practitioner', 'PractitionerRole', 'Location',
   'DocumentReference', 'Composition', 'List', 'Appointment', 'Schedule', 'Slot',
+
+  // Cross-version clinical and workflow coverage
+  'MedicationStatement', 'MedicationAdministration', 'Specimen', 'Consent',
+  'Device', 'DeviceMetric', 'FamilyMemberHistory', 'ClinicalImpression',
+  'Coverage', 'AdverseEvent', 'QuestionnaireResponse', 'Task', 'BodyStructure',
+  'Claim', 'ClaimResponse', 'ImagingStudy', 'ResearchStudy', 'RiskAssessment',
+  'Substance',
 
   // R5-specific new resource types
   'Evidence', 'EvidenceReport', 'EvidenceVariable', 'Citation'
@@ -216,7 +232,7 @@ export const VALIDATION_ASPECTS: ValidationAspect[] = [
   'terminology',
   'reference',
   'invariant',
-  'customRule',
+  'custom_rule',
   'metadata',
   'anomaly'
 ];
@@ -227,7 +243,7 @@ export const VALIDATION_ASPECT_LABELS: Record<ValidationAspect, string> = {
   terminology: 'Terminology Validation',
   reference: 'Reference Validation',
   invariant: 'Invariants',
-  customRule: 'Custom Rules',
+  custom_rule: 'Custom Rules',
   metadata: 'Metadata Validation',
   anomaly: 'Anomaly Detection'
 };
@@ -238,8 +254,7 @@ export const VALIDATION_ASPECT_DESCRIPTIONS: Record<ValidationAspect, string> = 
   terminology: 'Validates codes against code systems, value sets, and terminology bindings',
   reference: 'Verifies that references to other resources are valid and resolvable',
   invariant: 'Validates standard FHIR invariants and profile constraints (e.g. ele-1)',
-  customRule: 'Validates user-defined business logic and custom constraints',
+  custom_rule: 'Validates user-defined business logic and custom constraints',
   metadata: 'Validates resource metadata and provenance',
   anomaly: 'Cross-resource batch analysis: duplicates, orphan references, value-range outliers, temporal gaps'
 };
-

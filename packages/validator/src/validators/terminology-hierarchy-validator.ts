@@ -1,20 +1,12 @@
-/**
- * Terminology Hierarchy Validator
- * 
- * Advanced terminology validation for hierarchical CodeSystems:
- * - SNOMED CT subsumption checking ($subsumes operation)
- * - ICD-10 parent/child relationship validation
- * - CodeSystem hierarchy traversal
- * 
- * Uses tx.fhir.org for external terminology operations.
- */
-
 import axios from 'axios';
 import { logger } from '../logger';
-
-// ============================================================================
-// Types
-// ============================================================================
+import {
+    parseHierarchyResponse,
+    parseSubsumptionResponse,
+} from './terminology-hierarchy-response';
+import { BoundedLruCache } from '../cache/bounded-lru-cache';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
 
 export interface SubsumptionResult {
     /**
@@ -23,7 +15,6 @@ export interface SubsumptionResult {
      * treating `'not-subsumed'` as authoritative.
      */
     outcome: 'subsumes' | 'subsumed-by' | 'equivalent' | 'not-subsumed' | 'unknown';
-    /** True if any subsumption relationship exists */
     related: boolean;
     /**
      * Whether this result is authoritative. `false` when the terminology
@@ -31,7 +22,6 @@ export interface SubsumptionResult {
      * `'unknown'` in that case and `error` will carry the reason.
      */
     checkable: boolean;
-    /** Error message if check failed */
     error?: string;
 }
 
@@ -67,65 +57,42 @@ export interface HierarchyValidationResult {
     hierarchyInfo?: HierarchyInfo;
 }
 
-// ============================================================================
-// Well-known CodeSystem URLs
-// ============================================================================
-
 const SNOMED_CT_URL = 'http://snomed.info/sct';
 const ICD10_CM_URL = 'http://hl7.org/fhir/sid/icd-10-cm';
-// Reserved for future WHO-ICD10 and LOINC hierarchy support.
 const _ICD10_WHO_URL = 'http://hl7.org/fhir/sid/icd-10';
 const _LOINC_URL = 'http://loinc.org';
-
-// Default terminology server
 const DEFAULT_TX_SERVER = 'https://tx.fhir.org/r4';
-
-// ============================================================================
-// Terminology Hierarchy Validator
-// ============================================================================
-
+const DEFAULT_CACHE_ENTRIES = 2_000;
 export class TerminologyHierarchyValidator {
     private serverUrl: string;
     private timeout: number;
-    private subsumptionCache: Map<string, SubsumptionResult> = new Map();
-    private hierarchyCache: Map<string, HierarchyInfo> = new Map();
+    private subsumptionCache: BoundedLruCache<string, SubsumptionResult>;
+    private hierarchyCache: BoundedLruCache<string, HierarchyInfo>;
 
-    constructor(options?: { serverUrl?: string; timeout?: number }) {
-        this.serverUrl = options?.serverUrl || DEFAULT_TX_SERVER;
-        this.timeout = options?.timeout || 5000;
+    constructor(options?: { serverUrl?: string; timeout?: number; maxCacheEntries?: number }) {
+        this.serverUrl = normalizeServerUrl(options?.serverUrl);
+        this.timeout = isPositiveFiniteNumber(options?.timeout) ? options.timeout : 5000;
+        const maxCacheEntries = isPositiveFiniteNumber(options?.maxCacheEntries)
+            ? options.maxCacheEntries
+            : DEFAULT_CACHE_ENTRIES;
+        this.subsumptionCache = new BoundedLruCache(maxCacheEntries);
+        this.hierarchyCache = new BoundedLruCache(maxCacheEntries);
     }
 
-    /**
-     * Configure terminology server
-     */
     setServerUrl(url: string): void {
-        this.serverUrl = url;
-        // Clear caches when server changes
+        this.serverUrl = normalizeServerUrl(url);
         this.subsumptionCache.clear();
         this.hierarchyCache.clear();
     }
 
-    // ==========================================================================
-    // SNOMED CT Subsumption
-    // ==========================================================================
-
-    /**
-     * Check if codeA subsumes codeB in SNOMED CT
-     * Uses $subsumes operation on terminology server
-     * 
-     * @param codeA - The potential ancestor code
-     * @param codeB - The potential descendant code
-     * @returns Subsumption result
-     */
     async checkSnomedSubsumption(
         codeA: string,
         codeB: string
     ): Promise<SubsumptionResult> {
         const cacheKey = `${SNOMED_CT_URL}|${codeA}|${codeB}`;
 
-        if (this.subsumptionCache.has(cacheKey)) {
-            return this.subsumptionCache.get(cacheKey)!;
-        }
+        const cached = this.subsumptionCache.get(cacheKey);
+        if (cached) return { ...cached };
 
         try {
             const params = {
@@ -135,7 +102,10 @@ export class TerminologyHierarchyValidator {
                 _format: 'json'
             };
 
-            logger.debug(`[HierarchyValidator] Checking SNOMED subsumption: ${codeA} → ${codeB}`);
+            logger.debug(
+                '[HierarchyValidator] Checking SNOMED subsumption',
+                terminologyTargetMetadata(SNOMED_CT_URL, codeA, codeB),
+            );
 
             const response = await axios.get(`${this.serverUrl}/CodeSystem/$subsumes`, {
                 params,
@@ -143,10 +113,8 @@ export class TerminologyHierarchyValidator {
                 headers: { 'Accept': 'application/fhir+json' }
             });
 
-            const parameters = response.data;
-            if (parameters.resourceType === 'Parameters') {
-                const outcomeParam = parameters.parameter?.find((p: any) => p.name === 'outcome');
-                const outcome = outcomeParam?.valueCode as SubsumptionResult['outcome'] || 'not-subsumed';
+            const outcome = parseSubsumptionResponse(response.data);
+            if (outcome) {
 
                 const result: SubsumptionResult = {
                     outcome,
@@ -154,36 +122,32 @@ export class TerminologyHierarchyValidator {
                     checkable: true,
                 };
 
-                this.subsumptionCache.set(cacheKey, result);
+                this.subsumptionCache.set(cacheKey, { ...result });
                 logger.debug(`[HierarchyValidator] SNOMED subsumption result: ${outcome}`);
-                return result;
+                return { ...result };
             }
 
-            // Unexpected response shape — still counts as not-checkable
-            return { outcome: 'unknown', related: false, checkable: false };
-
-        } catch (error: unknown) {
-            const err = error instanceof Error ? error : new Error(String(error));
-            const errorMsg = err.message || 'Unknown error';
-            logger.warn(`[HierarchyValidator] SNOMED subsumption check failed: ${errorMsg}`);
-            // Not cached: don't poison the cache with transient network errors
             return {
                 outcome: 'unknown',
                 related: false,
                 checkable: false,
-                error: errorMsg,
+                error: 'Terminology server returned an unexpected response',
+            };
+
+        } catch (error: unknown) {
+            logger.warn(
+                '[HierarchyValidator] SNOMED subsumption check failed',
+                validationFailureMetadata(error),
+            );
+            return {
+                outcome: 'unknown',
+                related: false,
+                checkable: false,
+                error: 'Terminology server unavailable',
             };
         }
     }
 
-    /**
-     * Check if a SNOMED code is a descendant of a parent code.
-     *
-     * Returns `true` / `false` when the check is authoritative. Returns
-     * `'unknown'` when the terminology server was unreachable — callers
-     * should treat this case as "unverified" rather than a hard rejection
-     * to avoid false negatives during tx.fhir.org outages.
-     */
     async isSnomedDescendantOf(
         code: string,
         ancestorCode: string
@@ -193,14 +157,6 @@ export class TerminologyHierarchyValidator {
         return result.outcome === 'subsumes' || result.outcome === 'equivalent';
     }
 
-    /**
-     * Validate SNOMED code is in a specific hierarchy.
-     *
-     * Produces three distinguishable outcomes:
-     *   - `{ isValid: true,  checkable: true }`  — in hierarchy
-     *   - `{ isValid: false, checkable: true }`  — NOT in hierarchy (authoritative)
-     *   - `{ isValid: false, checkable: false }` — check failed (treat as unverified)
-     */
     async validateSnomedHierarchy(
         code: string,
         requiredAncestor: string,
@@ -233,22 +189,13 @@ export class TerminologyHierarchyValidator {
         };
     }
 
-    // ==========================================================================
-    // ICD-10 Hierarchy
-    // ==========================================================================
-
-    /**
-     * Validate ICD-10 code format and hierarchy
-     * ICD-10 codes follow hierarchical patterns (e.g., A00-A09 are intestinal diseases)
-     */
     async validateIcd10Hierarchy(
         code: string,
         options?: {
-            allowBillable?: boolean;  // If true, code must be a billable (leaf) code
-            requiredCategory?: string;  // E.g., "A00-A09" for intestinal diseases
+            allowBillable?: boolean;
+            requiredCategory?: string;
         }
     ): Promise<HierarchyValidationResult> {
-        // Basic ICD-10 format validation
         const icd10Pattern = /^[A-TV-Z]\d{2}(\.\d{1,4})?$/i;
         if (!icd10Pattern.test(code)) {
             return {
@@ -258,10 +205,8 @@ export class TerminologyHierarchyValidator {
             };
         }
 
-        // Extract category (first 3 characters)
         const category = code.substring(0, 3).toUpperCase();
 
-        // Check if required category matches
         if (options?.requiredCategory) {
             const categoryMatch = this.icd10CategoryMatch(category, options.requiredCategory);
             if (!categoryMatch) {
@@ -273,9 +218,7 @@ export class TerminologyHierarchyValidator {
             }
         }
 
-        // Check billable requirement
         if (options?.allowBillable === false && code.includes('.')) {
-            // Non-billable (category) codes don't have decimals in many contexts
             return {
                 isValid: false,
                 checkable: true,
@@ -284,7 +227,6 @@ export class TerminologyHierarchyValidator {
         }
 
         if (options?.allowBillable === true && !code.includes('.')) {
-            // Billable codes typically have decimal specificity
             return {
                 isValid: false,
                 checkable: true,
@@ -303,38 +245,24 @@ export class TerminologyHierarchyValidator {
         };
     }
 
-    /**
-     * Check if ICD-10 category code falls within a range
-     */
     private icd10CategoryMatch(category: string, range: string): boolean {
-        // Handle range format like "A00-A09"
         const rangeMatch = range.match(/^([A-Z]\d{2})-([A-Z]\d{2})$/i);
         if (rangeMatch) {
             const [, start, end] = rangeMatch;
             return category >= start.toUpperCase() && category <= end.toUpperCase();
         }
 
-        // Handle single category
         return category.toUpperCase() === range.toUpperCase();
     }
 
-    // ==========================================================================
-    // Generic Hierarchy Lookup
-    // ==========================================================================
-
-    /**
-     * Look up hierarchy information for a code
-     * Uses $lookup operation on terminology server
-     */
     async getHierarchyInfo(
         code: string,
         system: string
     ): Promise<HierarchyInfo | null> {
         const cacheKey = `${system}|${code}`;
 
-        if (this.hierarchyCache.has(cacheKey)) {
-            return this.hierarchyCache.get(cacheKey)!;
-        }
+        const cached = this.hierarchyCache.get(cacheKey);
+        if (cached) return cloneHierarchyInfo(cached);
 
         try {
             const params = {
@@ -350,56 +278,29 @@ export class TerminologyHierarchyValidator {
                 headers: { 'Accept': 'application/fhir+json' }
             });
 
-            const parameters = response.data;
-            if (parameters.resourceType === 'Parameters') {
+            const parsed = parseHierarchyResponse(response.data);
+            if (parsed) {
                 const info: HierarchyInfo = { code, system };
 
-                // Extract display
-                const displayParam = parameters.parameter?.find((p: any) => p.name === 'display');
-                if (displayParam?.valueString) {
-                    info.display = displayParam.valueString;
-                }
+                if (parsed.display) info.display = parsed.display;
+                if (parsed.parents.length > 0) info.parents = parsed.parents;
+                if (parsed.children.length > 0) info.children = parsed.children;
 
-                // Extract parents
-                const parentParams = parameters.parameter?.filter(
-                    (p: any) => p.name === 'property' && p.part?.some((pp: any) => pp.name === 'code' && pp.valueCode === 'parent')
-                );
-                if (parentParams?.length > 0) {
-                    info.parents = parentParams.map((p: any) =>
-                        p.part?.find((pp: any) => pp.name === 'value')?.valueCode
-                    ).filter(Boolean);
-                }
-
-                // Extract children
-                const childParams = parameters.parameter?.filter(
-                    (p: any) => p.name === 'property' && p.part?.some((pp: any) => pp.name === 'code' && pp.valueCode === 'child')
-                );
-                if (childParams?.length > 0) {
-                    info.children = childParams.map((p: any) =>
-                        p.part?.find((pp: any) => pp.name === 'value')?.valueCode
-                    ).filter(Boolean);
-                }
-
-                this.hierarchyCache.set(cacheKey, info);
-                return info;
+                this.hierarchyCache.set(cacheKey, cloneHierarchyInfo(info));
+                return cloneHierarchyInfo(info);
             }
 
             return null;
 
         } catch (error: unknown) {
-            const err = error instanceof Error ? error : new Error(String(error));
-            logger.warn(`[HierarchyValidator] Hierarchy lookup failed: ${err.message}`);
+            logger.warn(
+                '[HierarchyValidator] Hierarchy lookup failed',
+                validationFailureMetadata(error),
+            );
             return null;
         }
     }
 
-    // ==========================================================================
-    // Cache Management
-    // ==========================================================================
-
-    /**
-     * Get cache statistics
-     */
     getCacheStats(): { subsumption: number; hierarchy: number } {
         return {
             subsumption: this.subsumptionCache.size,
@@ -407,25 +308,36 @@ export class TerminologyHierarchyValidator {
         };
     }
 
-    /**
-     * Clear all caches
-     */
     clearCaches(): void {
         this.subsumptionCache.clear();
         this.hierarchyCache.clear();
     }
 }
 
-// Singleton instance
-let hierarchyValidatorInstance: TerminologyHierarchyValidator | null = null;
+function cloneHierarchyInfo(info: HierarchyInfo): HierarchyInfo {
+    return {
+        ...info,
+        ...(info.parents ? { parents: [...info.parents] } : {}),
+        ...(info.children ? { children: [...info.children] } : {}),
+        ...(info.ancestors ? { ancestors: [...info.ancestors] } : {}),
+        ...(info.descendants ? { descendants: [...info.descendants] } : {}),
+    };
+}
+
+function normalizeServerUrl(value: unknown): string {
+    return typeof value === 'string' && value.trim().length > 0
+        ? value.trim().replace(/\/+$/, '')
+        : DEFAULT_TX_SERVER;
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
 
 export function getHierarchyValidator(): TerminologyHierarchyValidator {
-    if (!hierarchyValidatorInstance) {
-        hierarchyValidatorInstance = new TerminologyHierarchyValidator();
-    }
-    return hierarchyValidatorInstance;
+    return new TerminologyHierarchyValidator();
 }
 
 export function resetHierarchyValidator(): void {
-    hierarchyValidatorInstance = null;
+    // Compatibility no-op: validator instances are caller-owned.
 }

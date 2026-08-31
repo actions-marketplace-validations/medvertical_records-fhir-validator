@@ -1,9 +1,9 @@
 /**
  * FHIR Schema Boundary
  *
- * Prototype StructureDefinition → FHIRSchema converter. Internal to the
- * OSS validator for now (not exposed via package.json `exports`); will
- * become public once a consumer materialises in the validator runtime.
+ * Experimental StructureDefinition → FHIRSchema converter and validation graph.
+ * This surface is for evidence, dual-path comparison, and representation
+ * experiments. It is not the default runtime validation path.
  */
 
 export {
@@ -13,6 +13,12 @@ export {
     extractExtensionDefs,
     summarizeConversion,
 } from './sd-to-fhir-schema';
+export { compileFHIRSchemaToValidationGraph, summarizeGraph } from './validation-graph-compiler';
+export { validateResourceWithGraph } from './validation-graph-executor';
+export {
+    FHIR_SCHEMA_RUNTIME_POLICY,
+    isFhirSchemaDefaultRuntimeEnabled,
+} from './runtime-policy';
 
 export type {
     FHIRSchema,
@@ -22,4 +28,16 @@ export type {
     FHIRSchemaBinding,
     FHIRSchemaConstraint,
     BaseResolver,
+    SDElement,
+    StructureDefinition,
 } from './sd-to-fhir-schema';
+export type {
+    ValidationGraph,
+    ValidationGraphNode,
+    ValidationGraphStats,
+} from './validation-graph-types';
+export type {
+    FhirSchemaPromotionRequirement,
+    FhirSchemaRuntimeMode,
+    FhirSchemaRuntimePolicy,
+} from './runtime-policy';

@@ -27,6 +27,16 @@ export const StructuralCodes = {
         severity: 'error',
         description: 'Invalid JSON',
     },
+    'structural-invalid-format': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Primitive value format is invalid',
+    },
+    'structural-invalid-base64-format': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'base64Binary value format is invalid',
+    },
     'structural-cardinality-violation': {
         aspect: 'structural',
         severity: 'error',
@@ -47,6 +57,56 @@ export const StructuralCodes = {
         severity: 'error',
         description: 'Element type does not match',
     },
+    'structural-primitive-type-mismatch': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Primitive element type does not match',
+    },
+    'structural-attachment-size-mismatch': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Attachment.size does not match the decoded Attachment.data byte length',
+    },
+    'structural-attachment-hash-mismatch': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Attachment.hash does not match the SHA-1 digest of Attachment.data',
+    },
+    'attachment-att1-violation': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Attachment has data but no contentType (invariant att-1)',
+    },
+    'attachment-no-content': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'Attachment has neither data nor url, and no contentType or language',
+    },
+    'string-whitespace-padding': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'String value starts or ends with whitespace',
+    },
+    'string-whitespace-only': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'Primitive value consists only of whitespace',
+    },
+    'decimal-value-out-of-range': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'Decimal value is outside the range of commonly supported decimals',
+    },
+    'language-code-invalid': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'Resource.language is not a valid BCP-47 tag of IANA-registered subtags',
+    },
+    'string-illegal-xml-chars': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'String value contains control characters that are illegal in the XML version of FHIR',
+    },
     'structural-validation-error': {
         aspect: 'structural',
         severity: 'warning',
@@ -61,6 +121,26 @@ export const StructuralCodes = {
         aspect: 'structural',
         severity: 'error',
         description: 'Unknown element in resource',
+    },
+    'structural-contained-not-referenced': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Contained resource is not referenced from the containing resource and does not refer to it (dom-3)',
+    },
+    'structural-contained-id-missing': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Contained resource is missing its required id',
+    },
+    'bundle-link-relation-duplicate': {
+        aspect: 'structural',
+        severity: 'error',
+        description: 'Bundle.link relation type occurs more than once',
+    },
+    'questionnaire-reference-not-resolved': {
+        aspect: 'structural',
+        severity: 'warning',
+        description: 'QuestionnaireResponse.questionnaire could not be resolved',
     },
 
     // Narrative (text.div) XHTML validation

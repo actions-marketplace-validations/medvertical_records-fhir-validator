@@ -7,6 +7,7 @@
 
 import type { StructureDefinition } from '../core/structure-definition-loader';
 import { logger } from '../logger';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
 
 // ============================================================================
 // Types
@@ -15,6 +16,7 @@ import { logger } from '../logger';
 interface CacheEntry {
   profile: StructureDefinition;
   timestamp: number;
+  lastAccessedAt: number;
   hits: number;
 }
 
@@ -26,10 +28,11 @@ export class ProfileCache {
   private cache: Map<string, CacheEntry> = new Map();
   private enabled: boolean;
   private ttl: number = 3600000; // 1 hour TTL
-  private maxSize: number = 500; // Max 500 profiles in cache (increased to prevent evictions during batch validation)
+  private maxSize: number;
 
-  constructor(enabled: boolean = true) {
+  constructor(enabled: boolean = true, maxSize: number = 192) {
     this.enabled = enabled;
+    this.maxSize = normalizePositiveInteger(maxSize, 192);
   }
 
   /**
@@ -54,6 +57,9 @@ export class ProfileCache {
 
     // Increment hit counter
     entry.hits++;
+    entry.lastAccessedAt = Date.now();
+    this.cache.delete(url);
+    this.cache.set(url, entry);
 
     return entry.profile;
   }
@@ -66,15 +72,18 @@ export class ProfileCache {
       return;
     }
 
-    // Check if cache is full
-    if (this.cache.size >= this.maxSize) {
+    // Replacing an existing profile must not evict an unrelated entry.
+    if (!this.cache.has(url) && this.cache.size >= this.maxSize) {
       // Remove least recently used entry
       this.evictLRU();
     }
 
+    const now = Date.now();
+    this.cache.delete(url);
     this.cache.set(url, {
       profile,
-      timestamp: Date.now(),
+      timestamp: now,
+      lastAccessedAt: now,
       hits: 0
     });
   }
@@ -145,22 +154,19 @@ export class ProfileCache {
    */
   private evictLRU(): void {
     let oldestUrl: string | null = null;
-    let oldestTime = Infinity;
-    let lowestHits = Infinity;
+    let oldestAccess = Infinity;
 
-    // Find entry with oldest timestamp and lowest hits
+    // Find the least recently accessed entry.
     for (const [url, entry] of this.cache.entries()) {
-      if (entry.hits < lowestHits ||
-        (entry.hits === lowestHits && entry.timestamp < oldestTime)) {
+      if (entry.lastAccessedAt < oldestAccess) {
         oldestUrl = url;
-        oldestTime = entry.timestamp;
-        lowestHits = entry.hits;
+        oldestAccess = entry.lastAccessedAt;
       }
     }
 
     if (oldestUrl) {
       this.cache.delete(oldestUrl);
-      logger.info(`[ProfileCache] Evicted LRU entry: ${oldestUrl}`);
+      logger.debug('[ProfileCache] Evicted LRU entry', profileCanonicalMetadata(oldestUrl));
     }
   }
 
@@ -178,14 +184,14 @@ export class ProfileCache {
    * Set TTL (time to live) in milliseconds
    */
   setTTL(ttl: number): void {
-    this.ttl = ttl;
+    this.ttl = normalizePositiveInteger(ttl, this.ttl);
   }
 
   /**
    * Set max cache size
    */
   setMaxSize(maxSize: number): void {
-    this.maxSize = maxSize;
+    this.maxSize = normalizePositiveInteger(maxSize, this.maxSize);
 
     // Evict entries if cache is now too large
     while (this.cache.size > this.maxSize) {
@@ -194,3 +200,8 @@ export class ProfileCache {
   }
 }
 
+function normalizePositiveInteger(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0
+    ? Math.max(1, Math.trunc(value))
+    : fallback;
+}

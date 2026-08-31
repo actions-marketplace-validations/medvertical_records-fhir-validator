@@ -8,12 +8,14 @@
 // Bundle Entry Types
 // ============================================================================
 
+export type FhirResourceRecord = Record<string, unknown>;
+
 export interface BundleEntry {
     fullUrl?: string;
-    resource?: any;
+    resource?: FhirResourceRecord;
     request?: {
-        method: string;
-        url: string;
+        method?: string;
+        url?: string;
     };
     response?: {
         status: string;
@@ -29,7 +31,7 @@ export type ResolutionMethod = 'fullUrl' | 'uuid' | 'relative' | 'contained' | '
 
 export interface BundleReferenceResolutionResult {
     resolved: boolean;
-    resource?: any;
+    resource?: FhirResourceRecord;
     entry?: BundleEntry;
     errorMessage?: string;
     originalReference: string;
@@ -46,6 +48,7 @@ export interface BundleIssue {
     severity: IssueSeverity;
     code: string;
     message: string;
+    path?: string;
     entryIndex?: number;
     reference?: string;
 }

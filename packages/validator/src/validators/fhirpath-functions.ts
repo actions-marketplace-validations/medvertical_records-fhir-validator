@@ -1,4 +1,10 @@
 import { logger as _logger } from '../logger';
+import { createMemberOfFunction, extensionFunction } from './fhirpath-custom-functions';
+import { makeTypedResourceNode, unwrapFhirPathValue } from './fhirpath-node-unwrap';
+import { normalizeFhirReferenceKey } from '../core/fhir-reference-key';
+import { ValueSetCache } from './valueset-cache';
+
+export { extensionFunction } from './fhirpath-custom-functions';
 
 // ============================================================================
 // Types
@@ -6,12 +12,17 @@ import { logger as _logger } from '../logger';
 
 export interface FHIRPathContext {
     /** Root resource being validated */
-    rootResource: any;
+    rootResource: unknown;
     /** All resources in bundle/contained for reference resolution */
-    bundleResources?: Map<string, any>;
+    bundleResources?: Map<string, unknown>;
     /** ValueSet validator for memberOf */
-    valueSetValidator?: any;
+    valueSetCache?: ValueSetCache;
 }
+
+export type FHIRPathBundleInput =
+    | Map<string, unknown>
+    | unknown[]
+    | { entry?: unknown[] };
 
 // ============================================================================
 // resolve() function
@@ -20,45 +31,57 @@ export interface FHIRPathContext {
 /**
  * Resolves a Reference to the actual resource
  * Used in constraints like: reference.resolve().exists()
+ *
+ * Unresolvable references yield EMPTY (never the Reference itself), matching
+ * the HL7 validator's local resolve(). With an evaluation context the result
+ * is wrapped as a typed node so `resolve() is X` / `.ofType(X)` keep working.
  */
-export function resolveFunction(input: any[], context: FHIRPathContext): any[] {
-    const results: any[] = [];
+export function resolveFunction(
+    input: unknown[],
+    context: FHIRPathContext,
+    evaluationContext?: unknown,
+): unknown[] {
+    const results: unknown[] = [];
 
     for (const item of input) {
-        if (!item || typeof item !== 'object') continue;
-
-        // Handle Reference type
-        let reference = item.reference || item;
-        if (typeof reference !== 'string') continue;
-
-        // Try to resolve from bundle
-        if (context.bundleResources) {
-            // Try full URL
-            if (context.bundleResources.has(reference)) {
-                results.push(context.bundleResources.get(reference));
-                continue;
-            }
-
-            // Try relative reference (e.g., "Patient/123")
-            for (const [url, resource] of context.bundleResources) {
-                if (url.endsWith(reference) || url.includes(reference)) {
-                    results.push(resource);
-                    break;
-                }
-            }
-        }
-
-        // Try contained resources
-        if (context.rootResource?.contained) {
-            const refId = reference.startsWith('#') ? reference.substring(1) : reference;
-            const contained = context.rootResource.contained.find((r: any) => r.id === refId);
-            if (contained) {
-                results.push(contained);
-            }
+        const resolved = resolveReferenceValue(item, context);
+        if (resolved !== undefined) {
+            results.push(makeTypedResourceNode(item, evaluationContext, resolved));
         }
     }
 
     return results;
+}
+
+function resolveReferenceValue(item: unknown, context: FHIRPathContext): unknown {
+    const referenceValue = unwrapFhirPathValue(item);
+    if (!isObjectRecord(referenceValue)) return undefined;
+
+    const reference = referenceValue.reference;
+    if (typeof reference !== 'string') return undefined;
+
+    if (context.bundleResources) {
+        if (context.bundleResources.has(reference)) {
+            return context.bundleResources.get(reference);
+        }
+
+        const relativeKey = normalizeFhirReferenceKey(reference);
+        if (relativeKey && context.bundleResources.has(relativeKey)) {
+            return context.bundleResources.get(relativeKey);
+        }
+    }
+
+    if (reference.startsWith('#') && isObjectRecord(context.rootResource)) {
+        const containedResources = Array.isArray(context.rootResource.contained)
+            ? context.rootResource.contained
+            : [];
+        const refId = reference.substring(1);
+        return containedResources.find(resource =>
+            isObjectRecord(resource) && resource.id === refId
+        );
+    }
+
+    return undefined;
 }
 
 // ============================================================================
@@ -69,43 +92,21 @@ export function resolveFunction(input: any[], context: FHIRPathContext): any[] {
  * Checks if a code is a member of a ValueSet
  * Used in constraints like: code.memberOf('http://hl7.org/fhir/ValueSet/observation-status')
  */
-export function memberOfFunction(input: any[], valueSetUrl: string, context: FHIRPathContext): boolean[] {
-    const results: boolean[] = [];
+export function memberOfFunction(input: unknown[], valueSetUrl: string | string[], context: FHIRPathContext): boolean[] {
+    const url = Array.isArray(valueSetUrl) ? valueSetUrl[0] : valueSetUrl;
+    if (!url || input.length === 0) return [];
 
+    let sawDeterminate = false;
     for (const item of input) {
-        if (!item) {
-            results.push(false);
+        const result = createMemberOfFunction(context.valueSetCache ?? new ValueSetCache()).fn([item], [url]);
+        if (!Array.isArray(result) || result.length === 0) {
             continue;
         }
-
-        // Get code from Coding or code element
-        let code: string | undefined;
-        let _system: string | undefined;
-
-        if (typeof item === 'object') {
-            code = item.code;
-            _system = item.system;
-        } else if (typeof item === 'string') {
-            code = item;
-        }
-
-        if (!code) {
-            results.push(false);
-            continue;
-        }
-
-        // If we have a valueSetValidator, use it
-        if (context.valueSetValidator) {
-            // This would be async in real implementation
-            // For now, return true to avoid blocking
-            results.push(true);
-        } else {
-            // Without validator, we can't check - return true to not block
-            results.push(true);
-        }
+        sawDeterminate = true;
+        if (result[0] === false) return [false];
     }
 
-    return results.length > 0 ? results : [true];
+    return sawDeterminate ? [true] : [];
 }
 
 // ============================================================================
@@ -115,50 +116,30 @@ export function memberOfFunction(input: any[], valueSetUrl: string, context: FHI
 /**
  * Checks if a resource conforms to a profile
  * Used in constraints like: conformsTo('http://hl7.org/fhir/StructureDefinition/Patient')
+ *
+ * Empty input propagates to an empty result (constraints stay vacuously
+ * satisfied, matching the HL7 validator) instead of asserting conformance.
  */
-export function conformsToFunction(input: any[], profileUrl: string): boolean[] {
+export function conformsToFunction(input: unknown[], profileUrl: string): boolean[] {
     const results: boolean[] = [];
 
     for (const item of input) {
-        if (!item || typeof item !== 'object') {
+        const resource = unwrapFhirPathValue(item);
+        if (!isObjectRecord(resource)) {
             results.push(false);
             continue;
         }
 
         // Check meta.profile
-        if (item.meta?.profile && Array.isArray(item.meta.profile)) {
-            results.push(item.meta.profile.includes(profileUrl));
+        const meta = isObjectRecord(resource.meta) ? resource.meta : null;
+        if (meta && Array.isArray(meta.profile)) {
+            results.push(meta.profile.some(profile => profile === profileUrl));
         } else {
             // Check if resourceType matches profile
-            if (profileUrl.includes(item.resourceType)) {
+            if (typeof resource.resourceType === 'string' && profileUrl.includes(resource.resourceType)) {
                 results.push(true);
             } else {
                 results.push(false);
-            }
-        }
-    }
-
-    return results.length > 0 ? results : [true];
-}
-
-// ============================================================================
-// extension() function
-// ============================================================================
-
-/**
- * Gets extension by URL
- * Used in constraints like: extension('http://hl7.org/fhir/StructureDefinition/patient-birthPlace')
- */
-export function extensionFunction(input: any[], extensionUrl: string): any[] {
-    const results: any[] = [];
-
-    for (const item of input) {
-        if (!item || typeof item !== 'object') continue;
-
-        const extensions = item.extension || [];
-        for (const ext of extensions) {
-            if (ext.url === extensionUrl) {
-                results.push(ext);
             }
         }
     }
@@ -197,25 +178,50 @@ export const fhirPathCustomFunctions = {
  * Create a context object with bundle resources for reference resolution
  */
 export function createFHIRPathContext(
-    rootResource: any,
-    bundleResources?: any[]
+    rootResource: unknown,
+    bundleResources?: FHIRPathBundleInput,
+    cache: ValueSetCache = new ValueSetCache(),
 ): FHIRPathContext {
-    const resourceMap = new Map<string, any>();
+    const resourceMap = new Map<string, unknown>();
 
-    if (bundleResources) {
+    const addResource = (resource: unknown, explicitReference?: string) => {
+        if (!isObjectRecord(resource)) return;
+        if (explicitReference) {
+            resourceMap.set(explicitReference, resource);
+        }
+        if (typeof resource.id === 'string' && typeof resource.resourceType === 'string') {
+            resourceMap.set(`${resource.resourceType}/${resource.id}`, resource);
+        }
+        if (typeof resource.fullUrl === 'string') {
+            resourceMap.set(resource.fullUrl, resource);
+        }
+    };
+
+    if (bundleResources instanceof Map) {
+        for (const [reference, resource] of bundleResources) {
+            addResource(resource, typeof reference === 'string' ? reference : undefined);
+        }
+    } else if (Array.isArray(bundleResources)) {
         for (const resource of bundleResources) {
-            if (resource.id) {
-                const ref = `${resource.resourceType}/${resource.id}`;
-                resourceMap.set(ref, resource);
-            }
-            if (resource.fullUrl) {
-                resourceMap.set(resource.fullUrl, resource);
-            }
+            addResource(resource);
+        }
+    } else if (Array.isArray(bundleResources?.entry)) {
+        for (const entry of bundleResources.entry) {
+            if (!isObjectRecord(entry)) continue;
+            addResource(
+                entry.resource,
+                typeof entry.fullUrl === 'string' ? entry.fullUrl : undefined,
+            );
         }
     }
 
     return {
         rootResource,
-        bundleResources: resourceMap
+        bundleResources: resourceMap,
+        valueSetCache: cache,
     };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

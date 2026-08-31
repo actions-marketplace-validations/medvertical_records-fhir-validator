@@ -14,16 +14,38 @@
  */
 
 import type { ValidationIssue } from '../types';
-import type { StructureDefinition, ElementDefinition } from '../core/structure-definition-types';
+import type {
+    StructureDefinition,
+    ElementDefinition,
+} from '../core/structure-definition-types';
 import { createValidationIssue } from '../issues';
+import {
+    matchesPattern,
+    valueMatchesFixedConstraint,
+} from './slice-utils';
 import { logger } from '../logger';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
+import {
+    getValidationTargets,
+    type ValidationTarget,
+} from '../business-rules/element-validation-targets';
+import {
+    buildRequiredBindingDetails,
+    describePatternMismatch,
+    extractFixedConstraint,
+    extractMaxValue,
+    extractMinValue,
+    extractPatternValue,
+    formatProfileIssueValue,
+    hasRequiredBindingValue,
+} from './deep-profile-constraint-utils';
 
 // ============================================================================
 // Types
 // ============================================================================
 
 export interface DeepProfileValidationContext {
-    resource: any;
+    resource: unknown;
     resourceType: string;
     structureDef: StructureDefinition;
     profileUrl?: string;
@@ -42,19 +64,24 @@ export class DeepProfileValidator {
         const { resource, resourceType, structureDef } = context;
         const issues: ValidationIssue[] = [];
 
-        if (!structureDef?.snapshot?.element) {
+        const elements = structureDef?.snapshot?.element;
+        if (!Array.isArray(elements)) {
             return issues;
         }
 
-        logger.debug(`[DeepProfileValidator] Validating ${resourceType} against ${structureDef.url || 'unknown'}`);
+        logger.debug('[DeepProfileValidator] Validating resource against profile', {
+            resourceType,
+            ...profileCanonicalMetadata(structureDef.url || 'unknown'),
+        });
 
         // Iterate through all elements in the snapshot.
         // Skip named slice instances: their constraints apply only when the value matches
         // that specific slice discriminator, not unconditionally to all values at the path.
-        for (const elementDef of structureDef.snapshot.element) {
+        for (const elementDef of elements) {
+            if (!isElementDefinition(elementDef)) continue;
             if (elementDef.sliceName) continue;
             if (typeof elementDef.id === 'string' && elementDef.id.includes(':')) continue;
-            const elementIssues = this.validateElement(resource, resourceType, elementDef, structureDef);
+            const elementIssues = this.validateElement(resource, resourceType, elementDef);
             issues.push(...elementIssues);
         }
 
@@ -64,48 +91,57 @@ export class DeepProfileValidator {
     /**
      * Validate a single element definition against the resource
      */
-    // eslint-disable-next-line max-lines-per-function
     private validateElement(
-        resource: any,
+        resource: unknown,
         resourceType: string,
         elementDef: ElementDefinition,
-        _structureDef: StructureDefinition
     ): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
         const path = elementDef.path;
 
         // Skip root element
-        if (path === resourceType) {
-            return issues;
-        }
+        if (path === resourceType) return [];
 
-        // Get the actual value from resource
-        const value = this.getValueAtPath(resource, path, resourceType);
+        return getValidationTargets(resource, path).flatMap(target =>
+            this.validateTarget(target, resourceType, elementDef)
+        );
+    }
+
+    private validateTarget(
+        target: ValidationTarget,
+        resourceType: string,
+        elementDef: ElementDefinition,
+    ): ValidationIssue[] {
+        const issues: ValidationIssue[] = [];
+        const value = target.value;
+        const path = target.fullPath || elementDef.path;
 
         // 1. Check fixed values
-        const fixedValue = this.extractFixedValue(elementDef);
-        if (fixedValue !== undefined && value !== undefined) {
-            if (!this.valuesEqual(value, fixedValue)) {
+        const fixedConstraint = extractFixedConstraint(elementDef);
+        const fixedValue = fixedConstraint?.value;
+        if (fixedConstraint && fixedValue !== undefined && value !== undefined) {
+            if (!valueMatchesFixedConstraint(value, fixedValue, fixedConstraint.key)) {
                 issues.push(createValidationIssue({
                     code: 'profile-fixed-value-mismatch',
                     path,
                     resourceType,
-                    customMessage: `Value must be exactly '${JSON.stringify(fixedValue)}'`,
+                    customMessage: `Value must be exactly '${formatProfileIssueValue(fixedValue)}'`,
                     severityOverride: 'error',
                 }));
             }
         }
 
         // 2. Check pattern values
-        const patternValue = this.extractPatternValue(elementDef);
+        const patternValue = extractPatternValue(elementDef);
         if (patternValue !== undefined && value !== undefined) {
-            if (!this.matchesPattern(value, patternValue)) {
+            if (!matchesPattern(value, patternValue)) {
+                const mismatch = describePatternMismatch(path, value, patternValue);
                 issues.push(createValidationIssue({
                     code: 'profile-pattern-mismatch',
                     path,
                     resourceType,
-                    customMessage: `Value does not match required pattern`,
+                    customMessage: mismatch.message,
                     severityOverride: 'error',
+                    details: mismatch.details,
                 }));
             }
         }
@@ -114,13 +150,14 @@ export class DeepProfileValidator {
         // Skip named slice elements – their binding is enforced by the slicing/terminology
         // validator and should not be re-checked here against the parent array.
         if (elementDef.binding && elementDef.binding.strength === 'required' && !elementDef.sliceName) {
-            if (value !== undefined && !Array.isArray(value) && !this.hasBinding(value, elementDef.binding)) {
+            if (value !== undefined && !Array.isArray(value) && !hasRequiredBindingValue(value)) {
                 issues.push(createValidationIssue({
                     code: 'profile-required-binding-violation',
                     path,
                     resourceType,
                     customMessage: `Value does not satisfy required binding to ${elementDef.binding.valueSet}`,
                     severityOverride: 'error',
+                    details: buildRequiredBindingDetails(value, elementDef.binding),
                 }));
             }
         }
@@ -140,8 +177,8 @@ export class DeepProfileValidator {
 
         // 5. Check minValue/maxValue for numerical types
         if (typeof value === 'number') {
-            const minValue = this.extractMinValue(elementDef);
-            const maxValue = this.extractMaxValue(elementDef);
+            const minValue = extractMinValue(elementDef);
+            const maxValue = extractMaxValue(elementDef);
 
             if (minValue !== undefined && value < minValue) {
                 issues.push(createValidationIssue({
@@ -167,145 +204,14 @@ export class DeepProfileValidator {
         return issues;
     }
 
-    /**
-     * Get value at path, handling resource type prefix
-     */
-    private getValueAtPath(resource: any, path: string, resourceType: string): any {
-        // Remove resource type prefix
-        let relativePath = path;
-        if (path.startsWith(resourceType + '.')) {
-            relativePath = path.substring(resourceType.length + 1);
-        }
+}
 
-        if (!relativePath || relativePath === resourceType) {
-            return resource;
-        }
+function isElementDefinition(value: unknown): value is ElementDefinition {
+    return isRecord(value) && typeof value.path === 'string' && value.path.length > 0;
+}
 
-        // Navigate the path
-        const segments = relativePath.split('.');
-        let current = resource;
-
-        for (const segment of segments) {
-            if (current === undefined || current === null) {
-                return undefined;
-            }
-
-            // Handle choice types (e.g., value[x])
-            if (segment.endsWith('[x]')) {
-                const baseName = segment.slice(0, -3);
-                // Look for any matching property
-                for (const key of Object.keys(current)) {
-                    if (key.startsWith(baseName) && key !== baseName) {
-                        current = current[key];
-                        break;
-                    }
-                }
-            } else if (Array.isArray(current)) {
-                // If current is array, return first element's value
-                current = current[0]?.[segment];
-            } else {
-                current = current[segment];
-            }
-        }
-
-        return current;
-    }
-
-    /**
-     * Extract fixed value from element definition
-     */
-    private extractFixedValue(elementDef: ElementDefinition): any {
-        const fixedKeys = Object.keys(elementDef).filter(k => k.startsWith('fixed'));
-        if (fixedKeys.length > 0) {
-            return (elementDef as unknown as Record<string, unknown>)[fixedKeys[0]];
-        }
-        return undefined;
-    }
-
-    /**
-     * Extract pattern value from element definition
-     */
-    private extractPatternValue(elementDef: ElementDefinition): any {
-        const patternKeys = Object.keys(elementDef).filter(k => k.startsWith('pattern'));
-        if (patternKeys.length > 0) {
-            return (elementDef as unknown as Record<string, unknown>)[patternKeys[0]];
-        }
-        return undefined;
-    }
-
-    /**
-     * Extract minValue from element definition
-     */
-    private extractMinValue(elementDef: ElementDefinition): number | undefined {
-        const minKeys = Object.keys(elementDef).filter(k => k.startsWith('minValue'));
-        if (minKeys.length > 0) {
-            return (elementDef as unknown as Record<string, unknown>)[minKeys[0]] as number | undefined;
-        }
-        return undefined;
-    }
-
-    /**
-     * Extract maxValue from element definition
-     */
-    private extractMaxValue(elementDef: ElementDefinition): number | undefined {
-        const maxKeys = Object.keys(elementDef).filter(k => k.startsWith('maxValue'));
-        if (maxKeys.length > 0) {
-            return (elementDef as unknown as Record<string, unknown>)[maxKeys[0]] as number | undefined;
-        }
-        return undefined;
-    }
-
-    /**
-     * Check if two values are equal
-     */
-    private valuesEqual(actual: any, expected: any): boolean {
-        if (typeof actual !== typeof expected) return false;
-        if (typeof actual === 'object') {
-            return JSON.stringify(actual) === JSON.stringify(expected);
-        }
-        return actual === expected;
-    }
-
-    /**
-     * Check if actual value matches pattern
-     */
-    private matchesPattern(actual: any, pattern: any): boolean {
-        if (typeof pattern !== 'object') {
-            return actual === pattern;
-        }
-
-        // Pattern matching: actual must contain all properties from pattern
-        for (const key of Object.keys(pattern)) {
-            if (actual[key] === undefined) {
-                return false;
-            }
-            if (!this.matchesPattern(actual[key], pattern[key])) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Check if value satisfies binding (basic check)
-     */
-    private hasBinding(value: any, _binding: any): boolean {
-        // For CodeableConcept or Coding, check if value has coding
-        if (typeof value === 'object') {
-            if (value.coding && Array.isArray(value.coding) && value.coding.length > 0) {
-                return true; // Has some coding - deeper check done by terminology validator
-            }
-            if (value.system || value.code) {
-                return true; // Is a Coding
-            }
-        }
-        // For simple code values
-        if (typeof value === 'string' && value.length > 0) {
-            return true;
-        }
-        return false;
-    }
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // Singleton

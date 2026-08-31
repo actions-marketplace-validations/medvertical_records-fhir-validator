@@ -7,6 +7,7 @@
 
 import type { ValueSet, CodeSystem } from './valueset-types';
 import { logger } from '../logger';
+import { BoundedLruCache } from '../cache/bounded-lru-cache';
 
 // ============================================================================
 // Cache Types
@@ -22,11 +23,19 @@ export interface ServerExpansionEntry {
 // ============================================================================
 
 export class ValueSetCache {
-    private valueSetCache: Map<string, Set<string>> = new Map();
-    private codeSystemCache: Map<string, CodeSystem> = new Map();
-    private valueSetFileCache: Map<string, ValueSet | null> = new Map();
-    private codeSystemFileCache: Map<string, CodeSystem | null> = new Map();
-    private serverExpansionCache: Map<string, ServerExpansionEntry> = new Map();
+    private valueSetCache: BoundedLruCache<string, Set<string>>;
+    private codeSystemCache: BoundedLruCache<string, CodeSystem>;
+    private valueSetFileCache: BoundedLruCache<string, ValueSet | null>;
+    private codeSystemFileCache: BoundedLruCache<string, CodeSystem | null>;
+    private serverExpansionCache: BoundedLruCache<string, ServerExpansionEntry>;
+
+    constructor(maxEntriesPerDomain: number = 5_000) {
+        this.valueSetCache = new BoundedLruCache(maxEntriesPerDomain);
+        this.codeSystemCache = new BoundedLruCache(maxEntriesPerDomain);
+        this.valueSetFileCache = new BoundedLruCache(maxEntriesPerDomain);
+        this.codeSystemFileCache = new BoundedLruCache(maxEntriesPerDomain);
+        this.serverExpansionCache = new BoundedLruCache(maxEntriesPerDomain);
+    }
 
     // -------------------------------------------------------------------------
     // ValueSet Code Cache (expanded codes)
@@ -97,6 +106,7 @@ export class ValueSetCache {
         if (cached && (Date.now() - cached.timestamp) < ttlSeconds * 1000) {
             return cached.codes;
         }
+        if (cached) this.serverExpansionCache.delete(cacheKey);
         return null;
     }
 
@@ -134,6 +144,3 @@ export class ValueSetCache {
         };
     }
 }
-
-// Export singleton for shared cache
-export const valueSetCache = new ValueSetCache();

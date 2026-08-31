@@ -13,7 +13,11 @@
  * - Returns all matching contexts for array elements
  */
 
-import { logger as _logger } from '../logger';
+import { resolveFhirSegmentValue } from '../core/fhir-primitive-sidecar';
+import {
+    findChoiceSidecarProperty,
+    findConcreteChoiceProperty,
+} from '../core/fhir-choice-property';
 
 // ============================================================================
 // Types
@@ -21,7 +25,7 @@ import { logger as _logger } from '../logger';
 
 export interface ElementContext {
     /** The element value(s) to evaluate constraints on */
-    value: any;
+    value: unknown;
     /** Full path including indices */
     fullPath: string;
     /** Whether this is an array element */
@@ -40,7 +44,7 @@ export class ElementContextResolver {
      * Resolve all contexts for an element path
      * Returns multiple contexts for array elements
      */
-    resolveContexts(resource: any, elementPath: string, resourceType: string): ElementContext[] {
+    resolveContexts(resource: unknown, elementPath: string, resourceType: string): ElementContext[] {
         const contexts: ElementContext[] = [];
 
         // Remove resource type prefix
@@ -68,7 +72,7 @@ export class ElementContextResolver {
      * Recursively traverse path and collect all matching contexts
      */
     private traversePath(
-        current: any,
+        current: unknown,
         remainingPath: string,
         currentFullPath: string,
         contexts: ElementContext[]
@@ -84,23 +88,25 @@ export class ElementContextResolver {
 
         // Handle choice types (value[x])
         let actualSegment = segment;
-        let value: any;
+        let value: unknown;
 
         if (segment.endsWith('[x]')) {
+            if (!isObjectRecord(current)) return;
             const baseName = segment.slice(0, -3);
-            // Find matching property
-            for (const key of Object.keys(current)) {
-                if (key.startsWith(baseName) && key !== baseName) {
-                    actualSegment = key;
-                    value = current[key];
-                    break;
-                }
+            const concreteKey = findConcreteChoiceProperty(current, baseName);
+            const sidecarKey = findChoiceSidecarProperty(current, baseName);
+            if (concreteKey) {
+                actualSegment = concreteKey;
+                value = current[concreteKey];
+            } else if (sidecarKey) {
+                actualSegment = sidecarKey.slice(1);
+                value = resolveFhirSegmentValue(current, segment);
             }
             if (value === undefined) {
                 return; // Choice type not present
             }
         } else {
-            value = current[segment];
+            value = resolveFhirSegmentValue(current, segment);
             if (value === undefined) {
                 return; // Element not present
             }
@@ -149,7 +155,7 @@ export class ElementContextResolver {
     /**
      * Check if an element exists at the given path
      */
-    elementExists(resource: any, elementPath: string, resourceType: string): boolean {
+    elementExists(resource: unknown, elementPath: string, resourceType: string): boolean {
         const contexts = this.resolveContexts(resource, elementPath, resourceType);
         return contexts.length > 0;
     }
@@ -157,11 +163,12 @@ export class ElementContextResolver {
     /**
      * Get all values at a path (flattened)
      */
-    getValuesAtPath(resource: any, elementPath: string, resourceType: string): any[] {
+    getValuesAtPath(resource: unknown, elementPath: string, resourceType: string): unknown[] {
         const contexts = this.resolveContexts(resource, elementPath, resourceType);
         return contexts.map(c => c.value);
     }
 }
 
-// Singleton
-export const elementContextResolver = new ElementContextResolver();
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

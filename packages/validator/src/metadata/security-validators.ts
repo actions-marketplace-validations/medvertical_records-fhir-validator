@@ -13,6 +13,8 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { validateUriFormat } from './uri-validators';
 import { logger } from '../logger';
+import { isObjectRecord } from './metadata-boundary-utils';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
 // Common FHIR security label systems
 const KNOWN_SYSTEMS: Record<string, { name: string; commonCodes: string[] }> = {
@@ -34,6 +36,10 @@ const KNOWN_SYSTEMS: Record<string, { name: string; commonCodes: string[] }> = {
   },
 };
 
+export function isKnownSecurityLabelCode(system: string, code: string): boolean {
+  return KNOWN_SYSTEMS[system]?.commonCodes.includes(code) === true;
+}
+
 /**
  * Validates meta.security labels
  */
@@ -41,7 +47,7 @@ export class SecurityValidator {
   /**
    * Validate security labels
    */
-  validate(security: any, resourceType: string): ValidationIssue[] {
+  validate(security: unknown, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
@@ -55,10 +61,10 @@ export class SecurityValidator {
         return issues;
       }
 
-      security.forEach((label: any, index: number) => {
+      security.forEach((label: unknown, index: number) => {
         const path = `meta.security[${index}]`;
 
-        if (typeof label !== 'object' || Array.isArray(label)) {
+        if (!isObjectRecord(label)) {
           issues.push(createValidationIssue({
             code: 'metadata-security-invalid-object',
             path,
@@ -73,6 +79,7 @@ export class SecurityValidator {
             code: 'metadata-security-missing-system',
             path: `${path}.system`,
             resourceType,
+            severityOverride: 'warning',
             messageParams: { index },
           }));
         }
@@ -82,6 +89,7 @@ export class SecurityValidator {
             code: 'metadata-security-missing-code',
             path: `${path}.code`,
             resourceType,
+            severityOverride: 'warning',
             messageParams: { index },
           }));
         }
@@ -123,13 +131,16 @@ export class SecurityValidator {
         }
 
         // Validate against known systems
-        if (label.system && label.code) {
+        if (typeof label.system === 'string' && typeof label.code === 'string') {
           issues.push(...this.validateKnownSecuritySystem(label.system, label.code, index, resourceType));
         }
 
         // Check for duplicates
-        const duplicateIndex = security.findIndex((other: any, otherIndex: number) =>
-          otherIndex > index && other.system === label.system && other.code === label.code
+        const duplicateIndex = security.findIndex((other: unknown, otherIndex: number) =>
+          otherIndex > index &&
+          isObjectRecord(other) &&
+          other.system === label.system &&
+          other.code === label.code
         );
 
         if (duplicateIndex !== -1) {
@@ -142,19 +153,10 @@ export class SecurityValidator {
           }));
         }
 
-        // Warn if display missing
-        if (!label.display) {
-          issues.push(createValidationIssue({
-            code: 'metadata-security-missing-display',
-            path,
-            resourceType,
-            messageParams: { index },
-          }));
-        }
       });
 
     } catch (error) {
-      logger.error('[SecurityValidator] validation failed:', error);
+      logger.error('[SecurityValidator] validation failed', validationFailureMetadata(error));
     }
 
     return issues;

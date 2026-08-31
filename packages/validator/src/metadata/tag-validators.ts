@@ -11,8 +11,9 @@
 
 import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
-import { validateUriFormat } from './uri-validators';
 import { logger } from '../logger';
+import { isObjectRecord } from './metadata-boundary-utils';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
 
 /**
  * Validates meta.tag labels
@@ -21,7 +22,7 @@ export class TagValidator {
   /**
    * Validate tags
    */
-  validate(tags: any, resourceType: string): ValidationIssue[] {
+  validate(tags: unknown, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
@@ -35,10 +36,10 @@ export class TagValidator {
         return issues;
       }
 
-      tags.forEach((tag: any, index: number) => {
+      tags.forEach((tag: unknown, index: number) => {
         const path = `meta.tag[${index}]`;
 
-        if (typeof tag !== 'object' || Array.isArray(tag)) {
+        if (!isObjectRecord(tag)) {
           issues.push(createValidationIssue({
             code: 'metadata-tag-invalid-object',
             path,
@@ -58,15 +59,6 @@ export class TagValidator {
           }));
         }
 
-        if (!tag.code) {
-          issues.push(createValidationIssue({
-            code: 'metadata-tag-missing-code',
-            path: `${path}.code`,
-            resourceType,
-            messageParams: { index },
-          }));
-        }
-
         // Validate system
         if (tag.system) {
           if (typeof tag.system !== 'string') {
@@ -78,14 +70,17 @@ export class TagValidator {
               details: { actualValue: tag.system },
             }));
           } else {
-            const systemValidation = validateUriFormat(tag.system);
-            if (!systemValidation.isValid) {
+            // Coding.system is a FHIR `uri`, which permits relative URI
+            // references. Reject whitespace (invalid in a URI) but do not
+            // require an absolute URL here; Identifier.system has the stricter
+            // absolute-reference rule and is validated separately.
+            if (/\s/.test(tag.system)) {
               issues.push(createValidationIssue({
                 code: 'metadata-tag-invalid-system-uri',
                 path: `${path}.system`,
                 resourceType,
-                messageParams: { value: tag.system },
-                details: { reason: systemValidation.reason },
+                messageParams: { system: tag.system },
+                details: { reason: 'URI must not contain whitespace' },
               }));
             }
           }
@@ -114,8 +109,16 @@ export class TagValidator {
         }
 
         // Check consistency
-        if (tag.system && tag.code && tag.display) {
-          issues.push(...this.validateTagConsistency(tag, index, resourceType));
+        if (
+          typeof tag.system === 'string' &&
+          typeof tag.code === 'string' &&
+          typeof tag.display === 'string'
+        ) {
+          issues.push(...this.validateTagConsistency({
+            system: tag.system,
+            code: tag.code,
+            display: tag.display,
+          }, index, resourceType));
         }
 
         // Warn if code without system
@@ -132,8 +135,11 @@ export class TagValidator {
         // The Coding.display field is 0..1 cardinality.
 
         // Check for duplicates
-        const duplicateIndex = tags.findIndex((otherTag: any, otherIndex: number) =>
-          otherIndex > index && otherTag.system === tag.system && otherTag.code === tag.code
+        const duplicateIndex = tags.findIndex((otherTag: unknown, otherIndex: number) =>
+          otherIndex > index &&
+          isObjectRecord(otherTag) &&
+          otherTag.system === tag.system &&
+          otherTag.code === tag.code
         );
 
         if (duplicateIndex !== -1) {
@@ -148,7 +154,7 @@ export class TagValidator {
       });
 
     } catch (error) {
-      logger.error('[TagValidator] validation failed:', error);
+      logger.error('[TagValidator] validation failed', validationFailureMetadata(error));
     }
 
     return issues;
@@ -157,7 +163,11 @@ export class TagValidator {
   /**
    * Validate tag consistency
    */
-  private validateTagConsistency(tag: any, index: number, resourceType: string): ValidationIssue[] {
+  private validateTagConsistency(
+    tag: { system: string; code: string; display: string },
+    index: number,
+    resourceType: string,
+  ): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
     const path = `meta.tag[${index}]`;
 
@@ -174,7 +184,12 @@ export class TagValidator {
       }
 
       // Check if code and display are identical
-      if (tag.code && tag.display && tag.code === tag.display.toUpperCase() && tag.display === tag.code) {
+      if (
+        tag.code &&
+        typeof tag.display === 'string' &&
+        tag.code === tag.display.toUpperCase() &&
+        tag.display === tag.code
+      ) {
         issues.push(createValidationIssue({
           code: 'metadata-tag-code-as-display',
           path: `${path}.display`,
@@ -196,7 +211,7 @@ export class TagValidator {
       }
 
     } catch (error) {
-      logger.error('[TagValidator] consistency check failed:', error);
+      logger.error('[TagValidator] consistency check failed', validationFailureMetadata(error));
     }
 
     return issues;

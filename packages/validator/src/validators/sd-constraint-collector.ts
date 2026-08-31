@@ -9,8 +9,10 @@
  * regardless of whether the target element exists.
  */
 
-import type { StructureDefinition, Constraint } from '../core/structure-definition-types';
+import type { StructureDefinition, Constraint, ElementDefinition } from '../core/structure-definition-types';
 import { logger } from '../logger';
+import { ElementContextResolver } from './element-context-resolver';
+import { profileCanonicalMetadata } from '../utils/sensitive-logging-metadata';
 
 // ============================================================================
 // Types
@@ -57,6 +59,11 @@ export interface ConstraintCollectionResult {
 // ============================================================================
 
 export class SDConstraintCollector {
+    private collectionCache = new WeakMap<ElementDefinition[], ConstraintCollectionResult>();
+
+    constructor(
+        private readonly elementContextResolver: ElementContextResolver = new ElementContextResolver(),
+    ) {}
 
     /**
      * Collect ALL constraints from a StructureDefinition
@@ -69,9 +76,15 @@ export class SDConstraintCollector {
             return this.buildResult(constraints, byKey);
         }
 
+        const cached = this.collectionCache.get(structureDef.snapshot.element);
+        if (cached) return cached;
+
         const resourceType = structureDef.snapshot.element[0]?.path || '';
 
-        logger.debug(`[SDConstraintCollector] Collecting constraints from ${structureDef.url || resourceType}`);
+        logger.debug(
+            '[SDConstraintCollector] Collecting constraints from profile',
+            profileCanonicalMetadata(structureDef.url || resourceType),
+        );
 
         // Iterate through ALL elements
         for (const element of structureDef.snapshot.element) {
@@ -110,30 +123,26 @@ export class SDConstraintCollector {
 
         const result = this.buildResult(constraints, byKey);
 
-        logger.debug(`[SDConstraintCollector] Collected ${result.totalCount} constraints with ${result.uniqueKeys.length} unique keys`);
-        logger.debug(`[SDConstraintCollector] Keys: ${result.uniqueKeys.slice(0, 10).join(', ')}${result.uniqueKeys.length > 10 ? '...' : ''}`);
+        logger.debug('[SDConstraintCollector] Constraint collection complete', {
+            constraintCount: result.totalCount,
+            uniqueKeyCount: result.uniqueKeys.length,
+        });
 
+        this.collectionCache.set(structureDef.snapshot.element, result);
         return result;
-    }
-
-    /**
-     * Collect constraints for a specific resource type
-     */
-    collectForResource(structureDef: StructureDefinition, _resource: any): CollectedConstraint[] {
-        const result = this.collect(structureDef);
-
-        // For now, return all constraints - the validator will decide which to evaluate
-        // based on whether the element exists in the resource
-        return result.constraints;
     }
 
     /**
      * Get constraints that MUST be evaluated (root + present elements)
      */
-    getMandatoryConstraints(structureDef: StructureDefinition, resource: any): CollectedConstraint[] {
-        const allConstraints = this.collectForResource(structureDef, resource);
+    getMandatoryConstraints(
+        structureDef: StructureDefinition,
+        resource: unknown,
+    ): CollectedConstraint[] {
+        const allConstraints = this.collect(structureDef).constraints;
         const mandatory: CollectedConstraint[] = [];
-        const resourceType = resource.resourceType;
+        const resourceType =
+            structureDef.snapshot?.element[0]?.path || structureDef.type;
 
         for (const collected of allConstraints) {
             // Root constraints are always mandatory
@@ -142,52 +151,16 @@ export class SDConstraintCollector {
                 continue;
             }
 
-            // Check if element exists in resource
-            const relativePath = collected.elementPath.replace(`${resourceType}.`, '');
-            if (this.pathExistsInResource(resource, relativePath)) {
+            if (this.elementContextResolver.elementExists(
+                resource,
+                collected.elementPath,
+                resourceType,
+            )) {
                 mandatory.push(collected);
             }
         }
 
         return mandatory;
-    }
-
-    /**
-     * Check if a path exists in a resource
-     */
-    private pathExistsInResource(resource: any, path: string): boolean {
-        const segments = path.split('.');
-        let current = resource;
-
-        for (const segment of segments) {
-            if (current === undefined || current === null) {
-                return false;
-            }
-
-            // Handle choice types
-            if (segment.endsWith('[x]')) {
-                const baseName = segment.slice(0, -3);
-                const found = Object.keys(current).some(k => k.startsWith(baseName) && k !== baseName);
-                if (found) {
-                    // Find the actual key
-                    for (const key of Object.keys(current)) {
-                        if (key.startsWith(baseName) && key !== baseName) {
-                            current = current[key];
-                            break;
-                        }
-                    }
-                } else {
-                    return false;
-                }
-            } else if (Array.isArray(current)) {
-                // Array - check if any element has the property
-                return current.some(item => item && item[segment] !== undefined);
-            } else {
-                current = current[segment];
-            }
-        }
-
-        return current !== undefined;
     }
 
     /**
@@ -211,6 +184,3 @@ export class SDConstraintCollector {
         };
     }
 }
-
-// Singleton
-export const sdConstraintCollector = new SDConstraintCollector();

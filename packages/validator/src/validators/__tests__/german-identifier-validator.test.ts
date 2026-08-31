@@ -177,4 +177,12 @@ describe('GermanIdentifierValidator', () => {
             expect(validator.isGermanProfile('https://fhir.hl7.org.uk/StructureDefinition/UKCore-Patient')).toBe(false);
         });
     });
+
+    it('handles malformed identifier resources without throwing', () => {
+        expect(validator.validateIdentifiers(null, 'http://fhir.de/profile/Patient')).toEqual([]);
+        expect(validator.validateIdentifiers({
+            resourceType: 'Patient',
+            identifier: [null, 42, { system: 'http://fhir.de/sid/gkv/kvid-10', assigner: 1 }],
+        }, 'http://fhir.de/profile/Patient')).toEqual([]);
+    });
 });

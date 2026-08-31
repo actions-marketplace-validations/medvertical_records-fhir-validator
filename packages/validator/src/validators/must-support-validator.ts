@@ -6,29 +6,7 @@ import {
     isValueEmpty,
     getDirectValue
 } from '../core/executors/structural-executor-helpers';
-
-const CHOICE_BASES = [
-    'value', 'effective', 'onset', 'abatement', 'deceased', 'multipleBirth',
-    'defaultValue', 'medication', 'reported', 'occurrence', 'timing',
-    'product', 'serviced', 'location', 'allowed', 'used',
-    'rate', 'born', 'age',
-];
-
-function hasChoiceValue(element: any, base: string): boolean {
-    if (!element || typeof element !== 'object') return false;
-    if (!isValueEmpty(element[base])) return true;
-
-    return Object.keys(element).some(key =>
-        key.startsWith(base) &&
-        key.length > base.length &&
-        key[base.length] === key[base.length].toUpperCase() &&
-        !isValueEmpty(element[key])
-    );
-}
-
-function hasAnyChoiceValue(element: any): boolean {
-    return CHOICE_BASES.some(base => hasChoiceValue(element, base));
-}
+import { shouldSkipMustSupportForResource } from './must-support-applicability';
 
 /**
  * Validator for MustSupport elements
@@ -49,14 +27,24 @@ export class MustSupportValidator {
      */
     validateMustSupportElement(
         path: string,
-        profileUrl: string
+        profileUrl: string,
+        resource?: unknown,
+        elementDef: { sliceName?: string } = {}
     ): ValidationIssue[] {
+        if (resource !== undefined && this.shouldSkipMustSupportElement(resource, path, elementDef)) {
+            return [];
+        }
+        const resourceType = getResourceType(resource);
+
         return [createValidationIssue({
             code: 'profile-mustsupport-missing',
             path,
-            resourceType: 'Unknown',
+            resourceType,
             profile: profileUrl,
             messageParams: { element: path },
+            severityOverride: this.mustSupportSeverity === 'information'
+                ? 'info'
+                : this.mustSupportSeverity,
         })];
     }
 
@@ -64,8 +52,10 @@ export class MustSupportValidator {
      * Check if a mustSupport element should be skipped (false positive filters).
      */
     private shouldSkipMustSupportElement(
-        resource: any, path: string, elementDef: { sliceName?: string }
+        resource: unknown, path: string, elementDef: { sliceName?: string }
     ): boolean {
+        if (!isRecord(resource)) return false;
+
         // Skip generic extension paths without slice discriminator
         if (path.endsWith('.extension') && !elementDef.sliceName) return true;
 
@@ -75,44 +65,16 @@ export class MustSupportValidator {
         const secondToLast = pathParts[pathParts.length - 2];
         if (lastPart === 'extension' && secondToLast?.startsWith('_')) return true;
 
-        // For Observation.value[x], dataAbsentReason satisfies the requirement
-        if (path === 'Observation.value[x]' || path.match(/^Observation\.value\[x\]$/i)) {
-            if (resource.dataAbsentReason && !isValueEmpty(resource.dataAbsentReason)) return true;
-
-            // Blood pressure/panel-style Observations legitimately carry their
-            // measurements in component.value[x] rather than top-level value[x].
-            if (Array.isArray(resource.component) && resource.component.some(hasAnyChoiceValue)) return true;
-        }
-
-        // For Observation.component.value[x], check component dataAbsentReason
-        if (path.match(/^Observation\.component\.value\[x\]$/i)) {
-            const components = resource.component;
-            if (Array.isArray(components) && components.length > 0) {
-                if (components.every((c: any) => c.dataAbsentReason && !isValueEmpty(c.dataAbsentReason))) {
-                    return true;
-                }
-            }
-        }
-
-        // For component dataAbsentReason, a concrete component.value[x] is the
-        // positive evidence. Requiring dataAbsentReason in addition to a value
-        // is the inverse of the FHIR invariant.
-        if (path.match(/^Observation\.component(?::[^.]+)?\.dataAbsentReason$/i)) {
-            const components = resource.component;
-            if (Array.isArray(components) && components.length > 0) {
-                if (components.every(hasAnyChoiceValue)) return true;
-            }
-        }
-
-        return false;
+        if (!mustSupportParentExists(resource, path)) return true;
+        return shouldSkipMustSupportForResource(resource, path);
     }
 
     /**
      * Check if a mustSupport element exists using multiple resolution strategies.
      */
-    private checkElementExists(
-        resource: any, path: string,
-        getValueAtPath: (resource: any, path: string) => any
+    private checkElementExists<TResource>(
+        resource: TResource, path: string,
+        getValueAtPath: (resource: TResource, path: string) => unknown
     ): boolean {
         // Method 1: Array-aware validation targets
         const targets = getValidationTargets(resource, path);
@@ -134,14 +96,15 @@ export class MustSupportValidator {
      * This ensures comprehensive mustSupport checking even for elements that might be missed in the main loop
      * Uses array-aware validation like required fields validation
      */
-    async validateAllMustSupportElements(
-        resource: any,
+    async validateAllMustSupportElements<TResource>(
+        resource: TResource,
         structureDef: StructureDefinition,
         profileUrl: string,
-        getValueAtPath: (resource: any, path: string) => any,
+        getValueAtPath: (resource: TResource, path: string) => unknown,
         alreadyCheckedPaths: Set<string> = new Set()
     ): Promise<ValidationIssue[]> {
         const issues: ValidationIssue[] = [];
+        const resourceType = getResourceType(resource);
 
         if (!structureDef.snapshot?.element) {
             return issues;
@@ -153,10 +116,10 @@ export class MustSupportValidator {
             const path = elementDef.path;
 
             // Skip root element
-            if (path === resource.resourceType) continue;
+            if (path === resourceType) continue;
 
             // Skip SD definition children — these are element definitions, not data
-            if (resource.resourceType === 'StructureDefinition' &&
+            if (resourceType === 'StructureDefinition' &&
                 (path.startsWith('StructureDefinition.snapshot.element.') ||
                  path.startsWith('StructureDefinition.differential.element.'))) {
                 continue;
@@ -171,7 +134,7 @@ export class MustSupportValidator {
             const parentPath = path.split('.').slice(0, -1).join('.');
             if (
                 parentPath &&
-                parentPath !== resource.resourceType &&
+                parentPath !== resourceType &&
                 !this.checkElementExists(resource, parentPath, getValueAtPath)
             ) {
                 continue;
@@ -181,7 +144,7 @@ export class MustSupportValidator {
                 issues.push(createValidationIssue({
                     code: 'profile-mustsupport-missing',
                     path,
-                    resourceType: resource.resourceType,
+                    resourceType,
                     profile: profileUrl,
                     messageParams: { element: path },
                     severityOverride: this.mustSupportSeverity === 'information'
@@ -193,4 +156,24 @@ export class MustSupportValidator {
 
         return issues;
     }
+}
+
+function mustSupportParentExists(resource: unknown, path: string): boolean {
+    const parentPath = path.split('.').slice(0, -1).join('.');
+    if (!parentPath || parentPath === getResourceType(resource)) return true;
+
+    const targets = getValidationTargets(resource, parentPath);
+    if (targets.some(target => !isValueEmpty(target.value))) return true;
+
+    return !isValueEmpty(getDirectValue(resource, parentPath));
+}
+
+function getResourceType(resource: unknown): string {
+    return isRecord(resource) && typeof resource.resourceType === 'string'
+        ? resource.resourceType
+        : 'Unknown';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

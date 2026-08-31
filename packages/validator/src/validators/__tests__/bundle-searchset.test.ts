@@ -370,6 +370,56 @@ describe('BundleValidator searchset rules', () => {
     expect(issues.filter(i => i.code === 'bundle-searchset-entry-wrong-type')).toHaveLength(0);
   });
 
+  it('does not flag include-mode entries whose type differs from the searched type', async () => {
+    // _include/_revinclude results may be ANY resource type (us-core ships
+    // searchset examples like AllergyIntolerance + Provenance via _revinclude).
+    const bundle = {
+      resourceType: 'Bundle',
+      type: 'searchset',
+      total: 1,
+      link: [{
+        relation: 'self',
+        url: 'http://example.org/fhir/AllergyIntolerance?patient=Patient/example&_revinclude=Provenance:target',
+      }],
+      entry: [
+        {
+          fullUrl: 'http://example.org/fhir/AllergyIntolerance/a1',
+          resource: { resourceType: 'AllergyIntolerance', id: 'a1' },
+          search: { mode: 'match' },
+        },
+        {
+          fullUrl: 'http://example.org/fhir/Provenance/p1',
+          resource: { resourceType: 'Provenance', id: 'p1' },
+          search: { mode: 'include' },
+        },
+      ],
+    };
+
+    const issues = await validator.validateBundle(bundle);
+    expect(issues.filter(i => i.code === 'bundle-searchset-entry-wrong-type')).toHaveLength(0);
+  });
+
+  it('warns instead of erroring on a type mismatch when the entry has no search mode', async () => {
+    const bundle = {
+      resourceType: 'Bundle',
+      type: 'searchset',
+      total: 1,
+      link: [{ relation: 'self', url: 'base/Patient?name=test' }],
+      entry: [
+        {
+          fullUrl: 'http://nothing/1',
+          resource: { resourceType: 'Immunization', id: 'imm1', status: 'completed' },
+        },
+      ],
+    };
+
+    const issues = await validator.validateBundle(bundle);
+    const wrong = issues.filter(i => i.code === 'bundle-searchset-entry-wrong-type');
+    expect(wrong).toHaveLength(1);
+    expect(wrong[0].severity).toBe('warning');
+    expect(wrong[0].message).toContain('(is a search mode needed?)');
+  });
+
   it('does not flag the type mismatch when self link does not constrain a type', async () => {
     const bundle = {
       resourceType: 'Bundle',

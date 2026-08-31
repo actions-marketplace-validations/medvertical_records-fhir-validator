@@ -35,7 +35,10 @@ export {
   DEFAULT_VALIDATION_SETTINGS_R4,
   DEFAULT_VALIDATION_SETTINGS_R5,
   DEFAULT_ADVANCED_TERMINOLOGY,
+  createEhds2026ValidationSettings,
   createMii2026ValidationSettings,
+  HL7_EU_EHDS_2026_PACKAGE_SET,
+  HL7_EU_EHDS_2026_PACKAGE_VERSIONS,
   MII_2026_PACKAGE_SET,
   MII_2026_PACKAGE_VERSIONS,
   type FhirPackagePin,
@@ -48,6 +51,13 @@ import {
   DEFAULT_VALIDATION_SETTINGS_R4,
   DEFAULT_VALIDATION_SETTINGS_R5
 } from './settings-defaults';
+
+export {
+  CANONICAL_CUSTOM_RULE_ASPECT,
+  normalizeValidationAspect,
+  normalizeValidationAspects,
+  normalizeValidationSettings
+} from './aspect-aliases';
 
 // Re-export validators
 export {

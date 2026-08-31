@@ -1,0 +1,81 @@
+import { logger } from '../logger';
+import { terminologyTargetMetadata } from '../utils/sensitive-logging-metadata';
+import type { TerminologyApiClient } from './terminology-api-client';
+import { canDelegateCodeValidation } from './valueset-delegation-policy';
+import { recordTerminologyDelegation } from './valueset-diagnostics';
+import type { FhirVersion } from './valueset-expansion-cache-key';
+import type { ValueSetPackageLoader } from './valueset-package-loader';
+import {
+  hasTerminologyServer,
+  resolveTerminologyServerForSystem,
+} from './valueset-server-routing';
+import { validateCodeViaTerminologyServerWithFilters } from './valueset-terminology-server-validation';
+import type {
+  TerminologyDiagnostics,
+  TerminologyResolutionConfig,
+} from './valueset-types';
+
+interface ValueSetMembershipServerDelegationDeps {
+  apiClient: TerminologyApiClient;
+  packageLoader: ValueSetPackageLoader;
+  resolutionConfig: TerminologyResolutionConfig;
+  terminologyDiagnostics: TerminologyDiagnostics;
+}
+
+interface ValueSetMembershipServerDelegationRequest {
+  code: string;
+  system: string | undefined;
+  valueSetUrl: string;
+  localExpansionIsEmpty: boolean;
+  fhirVersion?: FhirVersion;
+}
+
+/**
+ * Tries the optional terminology-server fallback for a direct membership check.
+ * A false result means either delegation was not allowed or the server did not
+ * accept the code; callers retain ownership of local fail-open policy.
+ */
+export async function tryValidateValueSetMembershipViaServer(
+  deps: ValueSetMembershipServerDelegationDeps,
+  request: ValueSetMembershipServerDelegationRequest,
+): Promise<boolean> {
+  const { code, system, valueSetUrl, localExpansionIsEmpty, fhirVersion } = request;
+  const override = resolveTerminologyServerForSystem(
+    deps.resolutionConfig,
+    system,
+    undefined,
+    fhirVersion,
+  );
+  const canUseServer = hasTerminologyServer(deps.resolutionConfig, override, fhirVersion)
+    && canDelegateCodeValidation(deps.resolutionConfig)
+    && (
+      localExpansionIsEmpty
+      || deps.resolutionConfig.serverDelegation?.validateCodes === true
+    );
+  if (!canUseServer) return false;
+
+  logger.debug(
+    '[ValueSetValidator] Code not found in local expansion; attempting server validation',
+    terminologyTargetMetadata(system, code, valueSetUrl),
+  );
+  recordTerminologyDelegation(
+    deps.terminologyDiagnostics.delegatedBindings,
+    'server-validate-code',
+  );
+  const outcome = await validateCodeViaTerminologyServerWithFilters({
+    apiClient: deps.apiClient,
+    packageLoader: deps.packageLoader,
+    hasTerminologyServer: candidate => hasTerminologyServer(
+      deps.resolutionConfig,
+      candidate,
+      fhirVersion,
+    ),
+    code,
+    system,
+    valueSetUrl,
+    bindingStrength: undefined,
+    override,
+    fhirVersion,
+  });
+  return outcome === 'valid';
+}

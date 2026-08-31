@@ -1,393 +1,230 @@
 /**
- * Best Practice Validator
- * 
- * Validates best practice recommendations that HAPI reports as warnings.
- * These are not strict FHIR requirements but recommended practices.
- * 
- * German locale equivalents:
- * - "Alle Observations sollten ein effectiveDateTime oder eine effectivePeriode haben"
- * - "Alle Observations sollten einen Performer haben"
+ * Informational best-practice recommendations that mirror HAPI/Java advice.
  */
 
-import type { ValidationIssue } from '../types';
-import { logger as _logger } from '../logger';
+import type { ValidationIssue, ValidationSettings } from '../types';
+import { createValidationIssue } from '../issues';
+
+type FhirRecord = Record<string, unknown>;
+
+interface BestPracticeRule {
+    code: string;
+    message: string;
+    path: string;
+    shouldReport: (resource: FhirRecord) => boolean;
+    tags?: string[];
+}
 
 export interface BestPracticeValidationContext {
-    resource: any;
+    resource: unknown;
     resourceType: string;
     profileUrl?: string;
 }
 
-/**
- * Best Practice Validator
- * 
- * Provides warnings for common best practices in FHIR resources.
- * These match HAPI's informational messages.
- */
+export type BestPracticeSettings = Pick<
+    ValidationSettings,
+    'enableBestPracticeChecks' | 'bestPracticeSeverity'
+>;
+
+const RULES_BY_RESOURCE_TYPE: Readonly<Record<string, BestPracticeRule[]>> = {
+    Observation: [
+        {
+            code: 'best-practice-missing-effective',
+            message:
+                'All Observations should have an `effectiveDateTime` or an `effectivePeriod`',
+            path: 'Observation.effective[x]',
+            shouldReport: resource => !hasAnyValue(resource, [
+                'effectiveDateTime',
+                'effectivePeriod',
+                'effectiveInstant',
+                'effectiveTiming',
+            ]),
+        },
+        {
+            code: 'best-practice-missing-performer',
+            message: 'All Observations should have a `performer`',
+            path: 'Observation.performer',
+            shouldReport: resource => !hasValue(resource.performer),
+        },
+    ],
+    Patient: [
+        {
+            code: 'best-practice-patient-identifier',
+            message:
+                'Patient resources should have at least one identifier for reliable patient matching',
+            path: 'Patient.identifier',
+            shouldReport: resource => !hasValue(resource.identifier),
+        },
+        {
+            code: 'best-practice-patient-name',
+            message: 'Patient resources should have at least one name',
+            path: 'Patient.name',
+            shouldReport: resource => !hasValue(resource.name),
+        },
+        {
+            code: 'dom-6',
+            message: 'A resource should have narrative for robust management',
+            path: 'Patient.text',
+            tags: ['best-practice', 'narrative'],
+            shouldReport: resource => {
+                const text = toRecord(resource.text);
+                return !isNonEmptyString(text?.div);
+            },
+        },
+    ],
+    Condition: [
+        {
+            code: 'best-practice-condition-code-display',
+            message:
+                'Condition.code should include display text (code.text or coding.display) for human readability',
+            path: 'Condition.code',
+            shouldReport: resource => {
+                const code = toRecord(resource.code);
+                return code !== undefined && !hasCodeDisplay(code);
+            },
+        },
+        {
+            code: 'best-practice-condition-clinical-status',
+            message:
+                'Condition resources should have clinicalStatus (unless verificationStatus is entered-in-error)',
+            path: 'Condition.clinicalStatus',
+            shouldReport: resource =>
+                !hasValue(resource.clinicalStatus)
+                && !hasCodingCode(resource.verificationStatus, 'entered-in-error'),
+        },
+    ],
+    DiagnosticReport: [
+        {
+            code: 'best-practice-diagreport-effective',
+            message:
+                'DiagnosticReport should have effectiveDateTime or effectivePeriod for temporal context',
+            path: 'DiagnosticReport.effective[x]',
+            shouldReport: resource => !hasAnyValue(resource, [
+                'effectiveDateTime',
+                'effectivePeriod',
+            ]),
+        },
+        {
+            code: 'best-practice-diagreport-issued',
+            message:
+                'DiagnosticReport should have issued timestamp indicating when the report was released',
+            path: 'DiagnosticReport.issued',
+            shouldReport: resource => !hasValue(resource.issued),
+        },
+    ],
+    Encounter: [
+        {
+            code: 'best-practice-encounter-period',
+            message:
+                'Encounter should have period.start indicating when the encounter began',
+            path: 'Encounter.period.start',
+            shouldReport: resource => !hasValue(toRecord(resource.period)?.start),
+        },
+        {
+            code: 'best-practice-encounter-class',
+            message:
+                'Encounter should have class indicating the type of encounter (e.g., ambulatory, emergency)',
+            path: 'Encounter.class',
+            shouldReport: resource => !hasValue(resource.class),
+        },
+    ],
+};
+
 export class BestPracticeValidator {
-
-    /**
-     * Validate best practices for a resource
-     */
     validate(context: BestPracticeValidationContext): ValidationIssue[] {
-        const { resource, resourceType } = context;
-        const issues: ValidationIssue[] = [];
+        const resource = toRecord(context.resource);
+        if (!resource) return [];
 
-        // General best practices for all DomainResources
-        issues.push(...this.validateGeneralBestPractices(resource, resourceType));
-
-        // Resource-specific best practices
-        switch (resourceType) {
-            case 'Observation':
-                issues.push(...this.validateObservationBestPractices(resource));
-                break;
-            case 'Patient':
-                issues.push(...this.validatePatientBestPractices(resource));
-                break;
-            case 'Condition':
-                issues.push(...this.validateConditionBestPractices(resource));
-                break;
-            case 'DiagnosticReport':
-                issues.push(...this.validateDiagnosticReportBestPractices(resource));
-                break;
-            case 'Encounter':
-                issues.push(...this.validateEncounterBestPractices(resource));
-                break;
-        }
-
-        return issues;
-    }
-
-    /**
-     * General best practices for all DomainResources
-     */
-    private validateGeneralBestPractices(_resource: any, _resourceType: string): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-
-        // Note: dom-6, dom-2, dom-4, dom-5 are now handled by ConstraintValidator (Invariants)
-        // This prevents duplicate reporting of the same issues.
-
-        // We only keep unique best practice checks here if they aren't covered by standard invariants.
-        // Currently, contained resources text check was here but it is also largely covered by invariants or structural.
-
-        return issues;
-    }
-
-    /**
-     * Best practice checks for Observation resources
-     */
-    private validateObservationBestPractices(resource: any): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-
-        // Check for effectiveDateTime or effectivePeriod
-        const hasEffective =
-            resource.effectiveDateTime ||
-            resource.effectivePeriod ||
-            resource.effectiveInstant ||
-            resource.effectiveTiming;
-
-        if (!hasEffective) {
-            issues.push({
-                id: `best-practice-observation-effective-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-missing-effective',
-                message: 'All Observations should have an effectiveDateTime or an effectivePeriod',
-                path: 'Observation',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        // Check for performer
-        const hasPerformer = resource.performer &&
-            (Array.isArray(resource.performer) ? resource.performer.length > 0 : true);
-
-        if (!hasPerformer) {
-            issues.push({
-                id: `best-practice-observation-performer-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-missing-performer',
-                message: 'All Observations should have a performer',
-                path: 'Observation',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        // obs-6: dataAbsentReason SHALL only be present if value[x] is not present
-        // Handled by Invariant Validator (obs-6)
-
-        // We removed the manual check here to avoid duplicates.
-
-
-        // Check for interpretation when value is present
-        const hasValue = Object.keys(resource).some(k => k.startsWith('value'));
-        if (hasValue && !resource.interpretation) {
-            issues.push({
-                id: `best-practice-observation-interpretation-${Date.now()}`,
-                aspect: 'structural',
-                severity: 'info',
-                code: 'best-practice-observation-interpretation',
-                message: 'Consider adding interpretation to explain the significance of the observation value',
-                path: 'Observation.interpretation',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        // Check for method if applicable (laboratory/diagnostic observations)
-        const isLabObservation = resource.category?.some((cat: any) =>
-            cat.coding?.some((coding: any) =>
-                coding.code === 'laboratory' || coding.code === 'vital-signs'
-            )
+        const resourceType = getResourceType(resource, context.resourceType);
+        const rules = RULES_BY_RESOURCE_TYPE[resourceType] ?? [];
+        return rules.flatMap(rule =>
+            rule.shouldReport(resource)
+                ? [createBestPracticeIssue(
+                    rule,
+                    resourceType,
+                    context.profileUrl,
+                )]
+                : []
         );
-
-        if (isLabObservation && !resource.method) {
-            issues.push({
-                id: `best-practice-observation-method-${Date.now()}`,
-                aspect: 'structural',
-                severity: 'info',
-                code: 'best-practice-observation-method',
-                message: 'Laboratory and vital-signs observations should specify the method used',
-                path: 'Observation.method',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        return issues;
     }
+}
 
-    /**
-     * Best practice checks for Patient resources
-     */
-    private validatePatientBestPractices(resource: any): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
+/**
+ * Every execution path (multi-aspect structural aspect, package
+ * single-resource pipeline, server single-aspect fallback) must gate and
+ * escalate best-practice findings identically, so the settings mapping lives
+ * here once instead of at each call site.
+ */
+export function validateBestPractices(
+    validator: Pick<BestPracticeValidator, 'validate'>,
+    context: BestPracticeValidationContext,
+    settings?: BestPracticeSettings,
+): ValidationIssue[] {
+    if (settings?.enableBestPracticeChecks === false) return [];
+    const issues = validator.validate(context);
+    if (settings?.bestPracticeSeverity !== 'warning') return issues;
+    return issues.map(issue => ({ ...issue, severity: 'warning' as const }));
+}
 
-        // Check for identifier - critical for patient matching
-        const hasIdentifier = resource.identifier &&
-            (Array.isArray(resource.identifier) ? resource.identifier.length > 0 : true);
+function createBestPracticeIssue(
+    rule: BestPracticeRule,
+    resourceType: string,
+    profileUrl: string | undefined,
+): ValidationIssue {
+    const issue = createValidationIssue({
+        code: rule.code,
+        path: rule.path,
+        resourceType,
+        profile: profileUrl,
+        aspectOverride: 'structural',
+        severityOverride: 'information',
+        customMessage: rule.message,
+        details: { bestPractice: true },
+    });
+    return {
+        ...issue,
+        tags: rule.tags ?? ['best-practice'],
+    };
+}
 
-        if (!hasIdentifier) {
-            issues.push({
-                id: `best-practice-patient-identifier-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-patient-identifier',
-                message: 'Patient resources should have at least one identifier for reliable patient matching',
-                path: 'Patient.identifier',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
+function hasAnyValue(resource: FhirRecord, keys: string[]): boolean {
+    return keys.some(key => hasValue(resource[key]));
+}
 
-        // Check for name - required for human identification
-        const hasName = resource.name &&
-            (Array.isArray(resource.name) ? resource.name.length > 0 : true);
+function hasValue(value: unknown): boolean {
+    if (Array.isArray(value)) return value.length > 0;
+    return value !== undefined && value !== null && value !== '';
+}
 
-        if (!hasName) {
-            issues.push({
-                id: `best-practice-patient-name-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-patient-name',
-                message: 'Patient resources should have at least one name',
-                path: 'Patient.name',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
+function hasCodeDisplay(code: FhirRecord): boolean {
+    if (isNonEmptyString(code.text)) return true;
+    if (!Array.isArray(code.coding)) return false;
+    return code.coding.some(candidate => {
+        const coding = toRecord(candidate);
+        return isNonEmptyString(coding?.display);
+    });
+}
 
-        // Check for narrative (dom-6)
-        const hasNarrative = resource.text && resource.text.div;
-        if (!hasNarrative) {
-            issues.push({
-                id: `best-practice-narrative-${Date.now()}`,
-                aspect: 'structural',
-                severity: 'info', // HAPI treats dom-6 as informational by default
-                code: 'dom-6',
-                message: 'A resource should have narrative for robust management',
-                path: 'Patient.text',
-                tags: ['best-practice', 'narrative'],
-                timestamp: new Date()
-            });
-        }
+function hasCodingCode(value: unknown, expectedCode: string): boolean {
+    const concept = toRecord(value);
+    if (!Array.isArray(concept?.coding)) return false;
+    return concept.coding.some(candidate => {
+        const coding = toRecord(candidate);
+        return coding?.code === expectedCode;
+    });
+}
 
-        return issues;
-    }
+function getResourceType(resource: FhirRecord, fallback: string): string {
+    if (isNonEmptyString(resource.resourceType)) return resource.resourceType;
+    return fallback.length > 0 ? fallback : 'Resource';
+}
 
-    /**
-     * Best practice checks for Condition resources
-     */
-    private validateConditionBestPractices(resource: any): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
+function toRecord(value: unknown): FhirRecord | undefined {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as FhirRecord
+        : undefined;
+}
 
-        // Check for code display or text - ensures human readability
-        const hasCodeDisplay = resource.code && (
-            resource.code.text ||
-            (resource.code.coding && resource.code.coding.some((c: any) => c.display))
-        );
-
-        if (resource.code && !hasCodeDisplay) {
-            issues.push({
-                id: `best-practice-condition-code-display-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-condition-code-display',
-                message: 'Condition.code should include display text (code.text or coding.display) for human readability',
-                path: 'Condition.code',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        // Check clinicalStatus - should be present unless entered-in-error
-        const verificationStatus = resource.verificationStatus?.coding?.[0]?.code;
-        const hasClinicalStatus = resource.clinicalStatus;
-
-        if (!hasClinicalStatus && verificationStatus !== 'entered-in-error') {
-            issues.push({
-                id: `best-practice-condition-clinical-status-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-condition-clinical-status',
-                message: 'Condition resources should have clinicalStatus (unless verificationStatus is entered-in-error)',
-                path: 'Condition.clinicalStatus',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        return issues;
-    }
-
-    /**
-     * Best practice checks for DiagnosticReport resources
-     */
-    private validateDiagnosticReportBestPractices(resource: any): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-
-        // Check for effective[x] - temporal context
-        const hasEffective = resource.effectiveDateTime || resource.effectivePeriod;
-
-        if (!hasEffective) {
-            issues.push({
-                id: `best-practice-diagreport-effective-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-diagreport-effective',
-                message: 'DiagnosticReport should have effectiveDateTime or effectivePeriod for temporal context',
-                path: 'DiagnosticReport',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        // Check for issued - when report was released
-        if (!resource.issued) {
-            issues.push({
-                id: `best-practice-diagreport-issued-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-diagreport-issued',
-                message: 'DiagnosticReport should have issued timestamp indicating when the report was released',
-                path: 'DiagnosticReport.issued',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        return issues;
-    }
-
-    /**
-     * Best practice checks for Encounter resources
-     */
-    private validateEncounterBestPractices(resource: any): ValidationIssue[] {
-        const issues: ValidationIssue[] = [];
-
-        // Check for period.start - when encounter began
-        const hasPeriodStart = resource.period?.start;
-
-        if (!hasPeriodStart) {
-            issues.push({
-                id: `best-practice-encounter-period-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-encounter-period',
-                message: 'Encounter should have period.start indicating when the encounter began',
-                path: 'Encounter.period',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        // Check for class - type of encounter
-        if (!resource.class) {
-            issues.push({
-                id: `best-practice-encounter-class-${Date.now()}`,
-                aspect: 'structural',
-                // Best-practice advisories are informational — downstream
-                // tooling (parity-classifier, fix-suggestions) already
-                // classifies them as informational, and HAPI/Java does not
-                // surface them as warnings. Keeping them at `warning` used
-                // to pollute the fhir-test-cases OperationOutcome diff.
-                severity: 'information',
-                code: 'best-practice-encounter-class',
-                message: 'Encounter should have class indicating the type of encounter (e.g., ambulatory, emergency)',
-                path: 'Encounter.class',
-                tags: ['best-practice'],
-                timestamp: new Date()
-            });
-        }
-
-        return issues;
-    }
+function isNonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0;
 }

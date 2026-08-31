@@ -10,12 +10,24 @@
  *   - supplement CodeSystem handling
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { ValueSetPackageLoader } from '../valueset-package-loader';
+import { ValueSetPackageResourceAccess } from '../valueset-package-resource-access';
+import { ValueSetCache } from '../valueset-cache';
 import type { ValueSet, CodeSystem } from '../valueset-types';
+
+const originalPackageCachePath = process.env.FHIR_PACKAGE_CACHE_PATH;
+
+afterEach(() => {
+    if (originalPackageCachePath === undefined) {
+        delete process.env.FHIR_PACKAGE_CACHE_PATH;
+    } else {
+        process.env.FHIR_PACKAGE_CACHE_PATH = originalPackageCachePath;
+    }
+});
 
 function makeLoader(
     codeSystems: Record<string, CodeSystem>,
@@ -28,6 +40,13 @@ function makeLoader(
         valueSets[url] ?? null,
     );
     return loader;
+}
+
+function makePackageLoader(
+    root: string,
+    cache: ValueSetCache = new ValueSetCache(),
+): ValueSetPackageLoader {
+    return new ValueSetPackageLoader(cache, new ValueSetPackageResourceAccess([root]));
 }
 
 describe('ValueSetPackageLoader.extractCodesFromValueSet — deep expansion', () => {
@@ -346,6 +365,17 @@ describe('ValueSetPackageLoader.extractCodesFromCodeSystem — supplements', () 
 });
 
 describe('ValueSetPackageLoader canonical package scan', () => {
+    it('expands literal home placeholders in FHIR_PACKAGE_CACHE_PATH', () => {
+        process.env.FHIR_PACKAGE_CACHE_PATH = '$HOME/.fhir/packages';
+
+        const loader = new ValueSetPackageLoader();
+
+        // The user cache is a supplemental fallback and must rank last so
+        // resolution never depends on local download history.
+        const directories = loader.getPackageDirectories();
+        expect(directories[directories.length - 1]).toBe(path.join(os.homedir(), '.fhir', 'packages'));
+    });
+
     it('loads ValueSets and CodeSystems whose filenames do not match the canonical suffix', async () => {
         const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
         const packageDir = path.join(root, 'example.fhir#1.0.0', 'package');
@@ -375,13 +405,123 @@ describe('ValueSetPackageLoader canonical package scan', () => {
             JSON.stringify(valueSet),
         );
 
-        const loader = new ValueSetPackageLoader();
-        (loader as any).packageDirectories = [root];
+        const loader = makePackageLoader(root);
 
         const codes = await loader.loadValueSet('https://example.org/fhir/ValueSet/canonical-name');
 
         expect(codes).toContain('urn:oid:1.2.3|valid');
         expect(codes).toContain('valid');
+    });
+
+    it('caches loaded CodeSystems under both FHIR-version and canonical keys', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
+        const packageDir = path.join(root, 'kbv.ita.eau#1.1.0', 'package');
+        await fs.mkdir(packageDir, { recursive: true });
+
+        const canonical = 'https://fhir.kbv.de/CodeSystem/KBV_CS_FOR_Section_Type';
+        const codeSystem: CodeSystem = {
+            resourceType: 'CodeSystem',
+            url: canonical,
+            status: 'active',
+            content: 'complete',
+            concept: [{ code: 'Patient' }],
+        };
+
+        await fs.writeFile(
+            path.join(packageDir, 'KBV_CS_FOR_Section_Type.json'),
+            JSON.stringify(codeSystem),
+        );
+
+        const cache = new ValueSetCache();
+        const loader = makePackageLoader(root, cache);
+
+        await expect(loader.loadCodeSystem(canonical, '4')).resolves.toMatchObject({
+            url: canonical,
+        });
+        expect(cache.getCodeSystem(`${canonical}|fhir4`)).toMatchObject({ url: canonical });
+        expect(cache.getCodeSystem(canonical)).toMatchObject({ url: canonical });
+        expect(cache.getCodeSystemFile(canonical)).toMatchObject({ url: canonical });
+    });
+
+    it('loads the current MII Onkologie CodeSystem through its predecessor canonical', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
+        const packageDir = path.join(root, 'de.medizininformatikinitiative.kerndatensatz.onkologie#2026.0.3', 'package');
+        await fs.mkdir(packageDir, { recursive: true });
+
+        const predecessor =
+            'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-therapie-stellungzurop';
+        const current =
+            'https://www.medizininformatik-initiative.de/fhir/ext/modul-onko/CodeSystem/mii-cs-onko-therapie-stellungzurop';
+        await fs.writeFile(
+            path.join(packageDir, 'CodeSystem-mii-cs-onko-therapie-stellungzurop.json'),
+            JSON.stringify({
+                resourceType: 'CodeSystem',
+                url: current,
+                status: 'active',
+                content: 'complete',
+                concept: [{ code: 'N', display: 'neoadjuvant' }],
+            } satisfies CodeSystem),
+        );
+
+        const cache = new ValueSetCache();
+        const loader = makePackageLoader(root, cache);
+
+        await expect(loader.loadCodeSystem(predecessor, '4')).resolves.toMatchObject({
+            url: current,
+            concept: [{ code: 'N', display: 'neoadjuvant' }],
+        });
+        expect(cache.getCodeSystem(predecessor)).toMatchObject({ url: current });
+        expect(cache.getCodeSystem(current)).toMatchObject({ url: current });
+    });
+
+    it('does not let a negative CodeSystem cache entry hide a later package match', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
+        const packageDir = path.join(root, 'kbv.ita.eau#1.1.0', 'package');
+        await fs.mkdir(packageDir, { recursive: true });
+
+        const canonical = 'https://fhir.kbv.de/CodeSystem/KBV_CS_EAU_AU_Type';
+        const codeSystem: CodeSystem = {
+            resourceType: 'CodeSystem',
+            url: canonical,
+            status: 'active',
+            content: 'complete',
+            concept: [{ code: 'ERST' }],
+        };
+
+        await fs.writeFile(
+            path.join(packageDir, 'KBV_CS_EAU_AU_Type.json'),
+            JSON.stringify(codeSystem),
+        );
+
+        const cache = new ValueSetCache();
+        cache.setCodeSystemFile(`${canonical}|fhir4`, null);
+
+        const loader = makePackageLoader(root, cache);
+
+        await expect(loader.loadCodeSystem(canonical, '4')).resolves.toMatchObject({
+            url: canonical,
+            concept: [{ code: 'ERST' }],
+        });
+        expect(cache.getCodeSystemFile(`${canonical}|fhir4`)).toMatchObject({ url: canonical });
+    });
+
+    it('single-flights concurrent misses and reuses its negative lookup', async () => {
+        const cache = new ValueSetCache();
+        const packageResources = new ValueSetPackageResourceAccess([]);
+        const loader = new ValueSetPackageLoader(cache, packageResources);
+        const findDirect = vi.spyOn(packageResources, 'findInPackages').mockResolvedValue(null);
+        const findCanonical = vi.spyOn(packageResources, 'findByCanonicalScan').mockResolvedValue(null);
+        const canonical = 'https://example.org/fhir/CodeSystem/missing';
+
+        await Promise.all([
+            loader.loadCodeSystem(canonical, '4'),
+            loader.loadCodeSystem(canonical, '4'),
+            loader.loadCodeSystem(canonical, '4'),
+        ]);
+        await loader.loadCodeSystem(canonical, '4');
+
+        expect(findDirect).toHaveBeenCalledTimes(1);
+        expect(findCanonical).toHaveBeenCalledTimes(1);
     });
 
     it('prefers the newest package version when multiple packages share a canonical URL', async () => {
@@ -422,13 +562,54 @@ describe('ValueSetPackageLoader canonical package scan', () => {
             } satisfies ValueSet),
         );
 
-        const loader = new ValueSetPackageLoader();
-        (loader as any).packageDirectories = [root];
+        const loader = makePackageLoader(root);
 
         const codes = await loader.loadValueSet(canonical);
 
         expect(codes).toContain('https://example.org/fhir/CodeSystem/current|new');
         expect(codes).toContain('new');
         expect(codes).not.toContain('urn:oid:1.2.3|old');
+    });
+
+    it('uses canonical scan for nested ValueSet includes whose filenames do not match the canonical suffix', async () => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'valueset-package-loader-'));
+        const packageDir = path.join(root, 'example.fhir#1.0.0', 'package');
+        await fs.mkdir(packageDir, { recursive: true });
+
+        const nestedCanonical = 'https://example.org/fhir/ValueSet/nested-canonical-name';
+        const parentCanonical = 'https://example.org/fhir/ValueSet/parent';
+
+        await fs.writeFile(
+            path.join(packageDir, 'ValueSet-parent.json'),
+            JSON.stringify({
+                resourceType: 'ValueSet',
+                url: parentCanonical,
+                status: 'active',
+                compose: {
+                    include: [{ valueSet: [nestedCanonical] }],
+                },
+            } satisfies ValueSet),
+        );
+        await fs.writeFile(
+            path.join(packageDir, 'ValueSet-FriendlyNestedName.json'),
+            JSON.stringify({
+                resourceType: 'ValueSet',
+                url: nestedCanonical,
+                status: 'active',
+                compose: {
+                    include: [{
+                        system: 'http://loinc.org',
+                        concept: [{ code: '77606-2' }],
+                    }],
+                },
+            } satisfies ValueSet),
+        );
+
+        const loader = makePackageLoader(root);
+
+        const codes = await loader.loadValueSet(parentCanonical);
+
+        expect(codes).toContain('http://loinc.org|77606-2');
+        expect(codes).toContain('77606-2');
     });
 });

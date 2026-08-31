@@ -57,15 +57,16 @@ export class CanonicalResourceInvariantValidator {
      * knowledge-artifact resource. Returns an empty array for resource
      * types that don't carry the invariant.
      */
-    validate(resource: any): ValidationIssue[] {
-        if (!resource || typeof resource !== 'object') return [];
+    validate(resource: unknown): ValidationIssue[] {
+        const resourceRecord = asRecord(resource);
+        if (!resourceRecord || typeof resourceRecord.resourceType !== 'string') return [];
         const issues: ValidationIssue[] = [];
-        const rt = resource.resourceType;
+        const rt = resourceRecord.resourceType;
 
         // Universal name-as-identifier invariant
         const key = NAME_INVARIANT_KEYS[rt];
-        if (key && resource.name !== undefined && resource.name !== null) {
-            const name = String(resource.name);
+        if (key && typeof resourceRecord.name === 'string') {
+            const name = resourceRecord.name;
             if (!IDENTIFIER_REGEX.test(name)) {
                 issues.push(createValidationIssue({
                     code: `canonical-resource-invariant-${key}`,
@@ -81,7 +82,7 @@ export class CanonicalResourceInvariantValidator {
 
         // Resource-specific business rules
         if (rt === 'SearchParameter') {
-            issues.push(...this.validateSearchParameter(resource));
+            issues.push(...this.validateSearchParameter(resourceRecord));
         }
 
         return issues;
@@ -94,7 +95,7 @@ export class CanonicalResourceInvariantValidator {
      *   - `type = 'composite'` requires `component.count() >= 2`
      *     (Java baseline `sp-composite`).
      */
-    private validateSearchParameter(resource: any): ValidationIssue[] {
+    private validateSearchParameter(resource: Record<string, unknown>): ValidationIssue[] {
         const issues: ValidationIssue[] = [];
 
         if (resource.type === 'composite') {
@@ -116,4 +117,8 @@ export class CanonicalResourceInvariantValidator {
     }
 }
 
-export const canonicalResourceInvariantValidator = new CanonicalResourceInvariantValidator();
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
+}

@@ -134,4 +134,97 @@ describe('ConstraintValidator slice constraints', () => {
       'Organization.identifier[2]',
     ]);
   });
+
+  it('does not apply child constraints from a non-matching parent identifier slice', async () => {
+    const validator = new ConstraintValidator();
+    const resource = {
+      resourceType: 'Patient',
+      identifier: [
+        {
+          type: {
+            coding: [{
+              system: 'http://fhir.de/CodeSystem/identifier-type-de-basis',
+              code: 'GKV',
+            }],
+          },
+          system: 'http://fhir.de/sid/gkv/kvid-10',
+          value: 'X234567890',
+        },
+      ],
+    };
+
+    const elements: ElementDefinition[] = [
+      {
+        id: 'Patient.identifier:versichertennummer_kvk',
+        path: 'Patient.identifier',
+        sliceName: 'versichertennummer_kvk',
+      },
+      {
+        id: 'Patient.identifier:versichertennummer_kvk.system',
+        path: 'Patient.identifier.system',
+        fixedUri: 'http://fhir.de/sid/gkv/kvk-versichertennummer',
+      },
+      {
+        id: 'Patient.identifier:versichertennummer_kvk.value',
+        path: 'Patient.identifier.value',
+        constraint: [{
+          key: 'kvk-1',
+          severity: 'error',
+          human: 'KVK must be numeric',
+          expression: "matches('^[0-9]{6,12}$')",
+        }],
+      },
+    ];
+
+    const issues = await validator.validate(resource, elements, 'test-profile');
+
+    expect(issues.map(issue => issue.ruleId)).not.toContain('kvk-1');
+  });
+
+  it('requires matching ancestor slices before applying nested slice constraints', async () => {
+    const validator = new ConstraintValidator();
+    const resource = {
+      resourceType: 'Patient',
+      address: [{
+        type: 'both',
+        extension: [{
+          url: 'http://example.org/fhir/StructureDefinition/stadtteil',
+          valueString: 'Charlottenburg',
+        }],
+      }],
+    };
+
+    const elements: ElementDefinition[] = [
+      {
+        id: 'Patient.address:Postfach',
+        path: 'Patient.address',
+        sliceName: 'Postfach',
+      },
+      {
+        id: 'Patient.address:Postfach.type',
+        path: 'Patient.address.type',
+        patternCode: 'postal',
+      },
+      {
+        id: 'Patient.address:Postfach.extension:Stadtteil',
+        path: 'Patient.address.extension',
+        sliceName: 'Stadtteil',
+        constraint: [{
+          key: 'postfach-stadtteil-closed',
+          severity: 'error',
+          human: 'District extension is not allowed on post box addresses',
+          expression: 'url.empty()',
+        }],
+      },
+      {
+        id: 'Patient.address:Postfach.extension:Stadtteil.url',
+        path: 'Patient.address.extension.url',
+        fixedUri: 'http://example.org/fhir/StructureDefinition/stadtteil',
+      },
+    ];
+
+    const issues = await validator.validate(resource, elements, 'test-profile');
+
+    expect(issues.map(issue => issue.ruleId)).not.toContain('postfach-stadtteil-closed');
+  });
 });

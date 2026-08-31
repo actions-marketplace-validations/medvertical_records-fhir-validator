@@ -1,10 +1,50 @@
 # @records-fhir/validator
 
-Pure TypeScript FHIR validation engine for R4, R5, and R6 resources.
+Pure TypeScript FHIR validation engine for R4, R4B, R5, and R6 resources.
 
 The package validates FHIR resources against StructureDefinitions, FHIRPath constraints, terminology bindings, references, and optional custom rules without requiring a database or JVM. Records can wire database-backed profile and rule sources through dependency injection, while standalone consumers can run from local FHIR packages or optional bundled profiles.
 
 This package is the open-source validator surface for `medvertical/records-fhir-validator`. The Records product itself is commercial closed source; it is not part of this package.
+
+[![npm](https://img.shields.io/npm/v/@records-fhir/validator)](https://www.npmjs.com/package/@records-fhir/validator)
+[![FHIR](https://img.shields.io/badge/FHIR-R4%20%7C%20R4B%20%7C%20R5%20%7C%20R6-blue)](#fhir-version-routing-r4b)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+
+## Two-Minute Quickstart
+
+Run the CLI against a JSON, XML, or NDJSON input:
+
+```sh
+npx -p @records-fhir/validator records-fhir-validator ./patient.json
+```
+
+Validate a folder and fail CI on warnings:
+
+```sh
+npx -p @records-fhir/validator records-fhir-validator ./fixtures --fail-on=warning
+```
+
+Embed the TypeScript API:
+
+```ts
+import { recordsValidator } from '@records-fhir/validator';
+
+const issues = await recordsValidator.validateRequest({
+  resource: { resourceType: 'Patient', id: 'example' },
+  profileUrl: 'http://hl7.org/fhir/StructureDefinition/Patient',
+  fhirVersion: 'R4',
+});
+```
+
+Gate pull requests with the GitHub Action:
+
+```yaml
+- uses: medvertical/records-fhir-validator@v0
+  with:
+    paths: resources/**/*.json
+    fhir-version: R4
+    fail-on: error
+```
 
 ## Repository Boundary
 
@@ -49,7 +89,7 @@ depending on your trade-off between freshness and stability:
 | Goal | Pin in `uses:` | Notes |
 |---|---|---|
 | Always-latest within current major | `medvertical/records-fhir-validator@v0` | Force-moved on every stable release; never advances onto a prerelease |
-| Specific minor/patch (recommended for production CI) | `medvertical/records-fhir-validator@v0.1.7` | Immutable once published |
+| Specific minor/patch (recommended for production CI) | `medvertical/records-fhir-validator@v0.5.0` | Immutable once published |
 | Bit-exact reproducibility | `medvertical/records-fhir-validator@<commit-sha>` | For audit / forensic builds |
 
 The `validator-v<semver>` tag you may see on the public repo's release
@@ -72,6 +112,133 @@ Three copy-pasteable starting points ship in
 
 ## Usage
 
+### CLI
+
+The npm package installs a small CLI for local checks and CI scripts:
+
+```sh
+records-fhir-validator <file-or-folder...> [options]
+```
+
+Common options:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `--profile-url <url>` | base profile for each `resourceType` | Validate every resource against one canonical profile. |
+| `--fhir-version R4\|R4B\|R5\|R6` | `R4` | Select the public FHIR version. |
+| `--fail-on error\|warning\|none` | `error` | Control the process exit threshold. |
+| `--format text\|json` | `text` | Print human-readable lines or structured JSON. |
+| `--output <file>` | stdout | Write validation output to a file. Parent directories are created. |
+| `--summary-only` | off | Omit per-issue output and print only aggregate counts. |
+| `--include <glob>` | `**/*.json`, `**/*.xml`, `**/*.ndjson` | Include matching FHIR input files when walking folders. Repeatable or comma-separated. |
+| `--exclude <glob>` | none | Exclude matching FHIR input files when walking folders. Repeatable or comma-separated. |
+
+Example JSON output:
+
+```sh
+npx -p @records-fhir/validator records-fhir-validator ./patient.json --format=json
+```
+
+Write a CI report while validating only selected files:
+
+```sh
+npx -p @records-fhir/validator records-fhir-validator ./fixtures \
+  --include 'fixtures/**/*.json' \
+  --exclude 'fixtures/drafts/**' \
+  --format=json \
+  --summary-only \
+  --output validation-report.json
+```
+
+Exit codes are stable for CI:
+
+| Code | Meaning |
+|---:|---|
+| `0` | Validation completed and did not meet the `--fail-on` threshold. |
+| `1` | Validation completed and met the `--fail-on` threshold. |
+| `2` | Invalid CLI input, unreadable paths, no matched FHIR input files, or output write failure. |
+
+### XML and NDJSON input adapters
+
+The same bounded adapters are available to embedders:
+
+```ts
+import { parseFhirNdjson, parseFhirXml } from '@records-fhir/validator';
+
+const xml = parseFhirXml(xmlSource, {
+  maxBytes: 20 * 1024 * 1024,
+  maxDepth: 200,
+  maxNodes: 1_000_000,
+});
+const ndjson = parseFhirNdjson(ndjsonSource, {
+  maxBytes: 20 * 1024 * 1024,
+  maxLineBytes: 2 * 1024 * 1024,
+  maxRecords: 100_000,
+});
+```
+
+Both return normalized `resources` and a `sourceMap`. XML accepts only the
+FHIR/XHTML namespaces and rejects DTD/entity declarations; NDJSON requires one
+FHIR resource object per non-empty line.
+
+```json
+{
+  "summary": { "files": 1, "errors": 0, "warnings": 1, "issues": 1 },
+  "results": [
+    {
+      "file": "/workspace/patient.json",
+      "resourceType": "Patient",
+      "profileUrl": "http://hl7.org/fhir/StructureDefinition/Patient",
+      "issues": [
+        {
+          "severity": "warning",
+          "code": "terminology-binding-preferred",
+          "path": "Patient.gender",
+          "message": "Code is outside the preferred value set."
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Local Quality Guarantees
+
+Every release is backed by local checks that do not require GitHub Actions:
+
+```sh
+npm run quality:validator-perf-baseline
+npx vitest run packages/validator/src/core/__tests__/golden-quality-corpus.test.ts
+npm run architecture:validator-mirror
+npm run oss:smoke-validator
+```
+
+What these checks cover:
+
+- CLI behavior: help text, report writing, summary-only mode, include/exclude
+  filters, output errors, and stable exit code `2` for usage/input failures.
+- Golden defect anchors: representative R4 fixtures are matched by severity,
+  issue-code family, path pattern, and stable issue fingerprints rather than
+  brittle message text.
+- Local performance baseline: 25 generated R4 fixtures, local-only terminology,
+  no HTTP terminology calls, separated cold-start/warmup/measured windows,
+  peak RSS tracking, and budget checks for mean/p95/worst timings.
+- Public package boundary: mirror imports and packed npm-package smoke tests.
+
+### Known Limits
+
+- The CLI accepts JSON, FHIR XML, and one-resource-per-line NDJSON. XML and
+  NDJSON use bounded input adapters, but their Java-baseline parity metrics are
+  reported separately from the headline JSON-resource score. Turtle, CDA,
+  HL7 v2, FML, CDS Hooks, SHC, and DSIG still need dedicated loaders or
+  validators.
+- Local-only terminology avoids network calls. It can verify bundled/local
+  expansions, but server-only terminology semantics require explicit terminology
+  server configuration from embedder code.
+- Golden corpus assertions are contract anchors, not exact OperationOutcome
+  snapshots. This is intentional: message wording can improve without breaking
+  the defect-detection guarantee.
+
 ### Quick start (singleton)
 
 For most use cases, use the lazy singleton — no class instantiation,
@@ -91,12 +258,61 @@ setProfileSource(createFilesystemProfileSource({
   packageDirs: ['./fhir-packages'],
 }));
 
-const issues = await recordsValidator.validate(
-  { resourceType: 'Patient', id: 'example', name: [{ family: 'Doe' }] },
-  'http://hl7.org/fhir/StructureDefinition/Patient',
-  'R4', // 'R4' | 'R4B' | 'R5' | 'R6'
-);
+const issues = await recordsValidator.validateRequest({
+  resource: {
+    resourceType: 'Patient',
+    id: 'example',
+    name: [{ family: 'Doe' }],
+  },
+  profileUrl: 'http://hl7.org/fhir/StructureDefinition/Patient',
+  fhirVersion: 'R4', // 'R4' | 'R4B' | 'R5' | 'R6'
+});
 ```
+
+For ordered batch output, use `validateAll`. It preserves input order and wraps
+each resource with `isValid`, `index`, `resourceType`, `id`, and `issues` while
+using the optimized batch path when all inputs share profile/settings:
+
+```ts
+const results = await recordsValidator.validateAll([
+  { resource: { resourceType: 'Patient', id: 'p1' } },
+  {
+    resource: { resourceType: 'Observation', id: 'o1', status: 'final' },
+    profileUrl: 'http://hl7.org/fhir/StructureDefinition/Observation',
+  },
+], {
+  fhirVersion: 'R4',
+  maxConcurrency: 8,
+  continueOnError: true,
+});
+```
+
+### FHIR-implied Observation profiles
+
+When an Observation has no explicit profile argument or `meta.profile`, the
+validator recognizes the core vital-sign profiles implied by their defining
+LOINC or SNOMED CT codes. This matches the reference validator behavior for
+respiratory rate, heart rate, oxygen saturation, body temperature, height,
+head circumference, weight, BMI, blood pressure, and vital-sign panels.
+
+Use the same deterministic policy in host code through the public helper:
+
+```ts
+import { inferCodeBasedProfiles } from '@records-fhir/validator';
+
+const profiles = inferCodeBasedProfiles({
+  resourceType: 'Observation',
+  code: {
+    coding: [{ system: 'http://loinc.org', code: '85354-9' }],
+  },
+});
+// → ['http://hl7.org/fhir/StructureDefinition/bp']
+```
+
+Contained resources are validated recursively through the same structural,
+profile, terminology, reference, and custom-rule aspects. Their findings are
+reported on parent-relative paths such as
+`Observation.contained[0].name[0].family`.
 
 ### Class form (full control)
 
@@ -114,17 +330,38 @@ const issues = await validator.validate({ resourceType: 'Patient' });
 
 ### FHIR version routing (R4B)
 
-`PublicFhirVersion` accepts `'R4' | 'R4B' | 'R5' | 'R6'`. R4B is
-routed through the R4 internal path because R4B is a maintenance
-release of R4 with the same StructureDefinitions and FHIRPath
-context. Use `toInternalFhirVersion` to apply the same mapping in
-embedder code:
+`PublicFhirVersion` accepts `'R4' | 'R4B' | 'R5' | 'R6'`. R4B retains
+the explicit `hl7.fhir.r4b.core#4.3.0` package identity while validation and
+FHIRPath evaluation currently use the R4 maintenance adapter. Use
+`resolveFhirReleaseContext` when package provenance matters and
+`toInternalFhirVersion` only when an engine literal is required:
 
 ```ts
-import { toInternalFhirVersion, type PublicFhirVersion } from '@records-fhir/validator';
+import {
+  resolveFhirReleaseContext,
+  toInternalFhirVersion,
+  type PublicFhirVersion,
+} from '@records-fhir/validator';
 
 const v: PublicFhirVersion = 'R4B';
+resolveFhirReleaseContext(v);
+// → { publicVersion: 'R4B', engineVersion: 'R4',
+//     corePackage: 'hl7.fhir.r4b.core#4.3.0',
+//     fhirPathModel: 'r4', compatibilityMode: 'r4b-maintenance-adapter' }
 toInternalFhirVersion(v); // → 'R4'
+```
+
+### Stable issue fingerprints
+
+Use `issueFingerprint` when storing regression snapshots or grouping validation
+findings across releases. It is stable across wording, `details`, timestamps,
+and generated issue IDs; it changes when the issue identity changes
+(`severity`, `code`, `path`, `resourceType`, `profile`, or `ruleId`).
+
+```ts
+import { issueFingerprint } from '@records-fhir/validator';
+
+const fingerprint = issueFingerprint(issues[0]);
 ```
 
 ### Apply a fix-suggestion patch
@@ -162,6 +399,10 @@ checkFhirpathSandbox('a'.repeat(5000));
 // → { ok: false, reason: 'Expression length 5000 exceeds limit 4096', metrics: { ... } }
 ```
 
+The same API is available through the explicit
+`@records-fhir/validator/validators/fhirpath-sandbox` subpath for consumers
+that prefer capability-specific imports.
+
 ### Routing engine logs
 
 By default the engine logs to `console.{debug,info,warn,error}`. Wire
@@ -186,10 +427,16 @@ Most consumers should import from the package root:
 import { getRecordsValidatorClass, ValueSetValidator } from '@records-fhir/validator';
 ```
 
-Advanced integrations can use the explicitly exported subpaths in `package.json`, for example:
+Repository quality and conformance tooling can use the explicit conformance subpath:
 
 ```ts
-import { toOperationOutcome } from '@records-fhir/validator/core/operation-outcome-converter';
+import { toOperationOutcome } from '@records-fhir/validator/conformance';
+```
+
+FHIRPath sandbox consumers can use the explicit stable subpath:
+
+```ts
+import { checkFhirpathSandbox } from '@records-fhir/validator/validators/fhirpath-sandbox';
 ```
 
 Deep imports that are not listed in `exports` are internal and can change without notice.
@@ -213,12 +460,27 @@ The package does not import Records server modules, database code, Express handl
 
 Without these integrations, the validator uses no-op defaults and runs as a standalone offline validator.
 
+## Practical Scope
+
+Use this package when you need a TypeScript-native validator that runs in Node,
+CI, GitHub Actions, or product backends without starting the Java validator.
+It is strongest for FHIR JSON resource validation, StructureDefinition
+constraints, slicing, references, terminology checks, and structured issue
+metadata that downstream applications can store or display.
+
+The package is not a claim of universal FHIR ecosystem coverage. The XML and
+NDJSON adapters do not change the JSON parity headline. CDA, HL7 v2, CDS Hooks,
+SHC, DSIG, JSON5 harnesses, legacy STU3/DSTU versions, logical models, and
+site-level MII certification remain outside the current headline support scope
+unless called out by a dedicated conformance lane.
+
 ## Conformance
 
 Current HL7 `FHIR/fhir-test-cases` status: 100.0% of executable comparison
-tests passing. The latest report was generated on 2026-05-09 from upstream
-commit `e543043a076c493656fc8008df250659b15d02cb` and is stored in the source
-repository as `conformance-results/report-2026-05-09.json`.
+tests passing. The latest local report was generated on 2026-07-23 from pinned
+upstream commit `8923095fc5e3750025f7dd71988c9e89083b1487`. The local artifact
+used for this update was
+`conformance-results/report-2026-07-23.json`.
 
 The upstream manifest contains more than 900 entries. Records does not claim
 that all manifest entries are executable in the current TypeScript validator
@@ -227,40 +489,41 @@ can be compared against the Java validator's expected `OperationOutcome`.
 
 | Stage | Count | Meaning |
 |---|---:|---|
-| Upstream manifest entries | 969 | All entries in `FHIR/fhir-test-cases/validator/manifest.json` at commit `e543043a`. |
-| Pre-filtered out | 438 | Not executable by this harness: the current comparison runner measures JSON FHIR resource validation against Java `OperationOutcome` baselines, not XML, non-resource formats, disabled upstream cases, unsupported modules, logical models, or cases without a Java baseline. |
-| Candidate comparison set | 531 | R4/R5 or unversioned JSON-oriented entries with a declared Java baseline. |
-| Runtime skipped | 35 | Candidate entries kept outside the headline JSON score because their Java baseline output is not available locally. |
-| Executed and compared | 496 | Records result was normalized to `OperationOutcome` and diffed against Java. |
-| Passed | 496 | All executable comparisons passed. |
+| Upstream manifest entries | 969 | All entries in `FHIR/fhir-test-cases/validator/manifest.json` at commit `8923095`. |
+| Pre-filtered out | 433 | Outside this lane before execution, including one entry where the upstream manifest does not declare a `java` baseline. |
+| Candidate comparison set | 536 | R4/R5/R6 or unversioned JSON-oriented entries where the upstream manifest declares a `java` baseline. |
+| Runtime skipped | 0 | Every candidate's declared Java `OperationOutcome` artifact resolves locally. |
+| Executed and compared | 536 | Records result was normalized to `OperationOutcome` and diffed against Java. |
+| Passed | 536 | Comparisons matching the normalized Java result. |
+| Failed | 0 | No executable comparison differs from the normalized Java result. |
+
+Reproduce the headline lane locally with:
+
+```sh
+npm run conformance -- --tx-server none --output-file conformance-results/report-local.json
+```
 
 Pre-filter exclusions:
 
 | Reason | Count |
 |---|---:|
-| XML resources (Records validator is JSON-only) | 296 |
-| Non-R4/R5 FHIR versions (`3.0`, `3.0.1`, `1.4`) | 47 |
-| Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 74 |
+| XML resources (adapter active; separate parity lane pending) | 299 |
+| Non-R4/R5/R6 FHIR versions (`3.0`, `3.0.1`, `1.4`) | 47 |
+| Unsupported modules: SHC, CDA, CDS Hooks, JSON5, XVer, DSIG, HL7 v2 | 68 |
 | Disabled by upstream manifest (`use-test: false`) | 17 |
-| No Java baseline declared in the manifest | 3 |
+| No `java` baseline declared in the upstream manifest | 1 |
 | Logical model test | 1 |
 
-Runtime skips inside the 531 candidate set for the headline lane:
+The only undeclared-baseline entry is `(default)/zzz`, an upstream
+platform-specific teardown workaround rather than a validator comparison case.
+The upstream manifest now declares
+and resolves Java outcomes for the full 536-case candidate set, so the former
+baseline-resolution workarounds are no longer used. All executable comparisons
+now match the normalized Java result.
 
-| Reason | Count |
-|---|---:|
-| Java baseline/parity backlog | 35 |
-
-The Java baseline/parity backlog is measured separately with the explicit
-`--include-baseline-backlog` discovery flag. The 2026-05-03 discovery run
-resolves known upstream Java baseline path drift, includes explicit FML/NDJSON
-parser-baseline fixtures, synthesizes the missing empty Java outcome for
-`cw-slice-compatible`, admits JSON5 and DSIG JSON harness cases, and includes
-two hidden Java-outcome fixtures. It runs the launch-discovery set:
-547/547 passing, 0 skips, 0 failures. The report's `passRate` is 100.0%;
-`similarityScore` may read 99.7% because it averages semantic diff similarity
-for six approximate-but-passing Java parity cases. The backward-compatible
-`overallScore` field remains an alias for `similarityScore`.
+The historical 2026-05-03 `--include-baseline-backlog` discovery artifact is
+retained for provenance, but it was measured against an older upstream manifest
+and is not the current headline result.
 
 Excluded tests are tracked separately so the headline score does not imply XML,
 HL7 v2, CDA, CDS Hooks, DSIG, JSON5, SHC, or logical-model support.
@@ -275,17 +538,17 @@ product scope with actual JSON resource validation correctness.
 
 | Excluded class | Why it is not part of this score | What would be needed to include it |
 |---|---|---|
-| XML resources | The package currently validates parsed JSON resources. XML requires parsing, XML-specific diagnostics, and stable XML-to-resource location mapping. | Add an XML parser/normalizer and an XML-aware diagnostic mapper, then run XML fixtures as a separate conformance lane. |
+| XML resources | The secure XML parser/normalizer now feeds the same object validator, but the 299 XML fixtures are not part of the JSON score. | Run XML fixtures with the emitted source locations against Java baselines and publish a separate XML lane. |
 | CDA, HL7 v2, CDS Hooks, SHC, DSIG, JSON5, XVer | These are adjacent standards or special harnesses, not plain FHIR JSON resource validation. Some are transformation/signature/protocol tests rather than resource validation tests. | Build dedicated modules and dedicated conformance harnesses for each format/protocol. |
 | Older FHIR versions (`3.0`, `3.0.1`, `1.4`) | The validator package targets R4, R5, and R6. Legacy STU3/DSTU-era behavior differs enough that it should not be silently mixed into the R4 score. | Add explicit legacy-version support and report it as a separate compatibility score. |
 | Upstream-disabled tests | The upstream manifest marks them with `use-test: false`, so the reference suite itself does not treat them as active comparison cases. | Re-enable only if upstream enables them or if this project defines its own expected baseline. |
 | Logical model tests | Logical models are not ordinary FHIR resource-instance validation cases. | Add logical-model validation support and a separate result category. |
 | Missing Java baselines | The comparison metric is Java parity. Without an expected Java `OperationOutcome`, there is no objective diff target. | Generate and commit Java baselines, or define a Records-owned expected baseline with a different metric name. |
-| `.fml` / `.ndjson` payloads | They pass the manifest filter but are not single JSON resource documents. | Add FML/NDJSON-specific loaders and compare them in dedicated lanes. |
+| `.fml` / `.ndjson` payloads | NDJSON has a bounded multi-resource loader; FML is a mapping-language input rather than a resource document. Neither belongs in the single-resource JSON score. | Publish a separate NDJSON lane; add an FML runner only if executable mapping becomes product scope. |
 
 For that reason, the headline number should be read as:
 
-> Records matches the Java validator on 496/496 currently executable FHIR JSON
+> Records matches the Java validator on all 536 currently in-scope FHIR JSON
 > resource validation comparisons.
 
 It should not be read as:
@@ -300,12 +563,15 @@ constraints measured by `quality:spec-coverage`.
 
 MII conformance is measured in a separate lane from the HL7
 `FHIR/fhir-test-cases` score. The current scoped MII-2026 reference run was
-generated on 2026-05-09 against the official MII FHIR Validator container at
-`http://localhost:8080`. It matches the reference validator on 241/241 measured
-resources from the refreshed MII 2026 corpus under the `mii-2026-reference`
-profile scope and `mii-local-blaze` terminology mode, with 12 classified
-corpus/profile-drift skips. The source-repository report is
-`conformance-results/mii-triangulation-2026-05-09.json`.
+generated on 2026-07-23 against the official MII FHIR Validator container
+`mii-fhir-validator:0.0.1-alpha.7`. It matches the
+reference validator on 231/231 measured resources from the refreshed MII 2026
+corpus under the `mii-2026-reference` profile scope and `mii-local-blaze`
+terminology mode, with 22 classified skips: 12 corpus/profile-drift skips and
+10 reference-terminology-incomplete skips. The run prewarmed 128/128
+reference-scope profiles before executing the cases. The
+source-repository report is
+`conformance-results/mii-triangulation-2026-07-23.json`.
 
 This is a scoped parity claim for the measured package-example corpus. It is
 not an MII certification claim and does not imply full site-level MII
@@ -315,6 +581,74 @@ The full scope-expansion plan is tracked in
 `docs/product/conformance-scope-roadmap.md` in the Records source repository.
 The public `medvertical/records-fhir-validator` export includes the same
 roadmap under `docs/conformance-scope-roadmap.md`.
+
+### FHIR Schema Dual-Path Scope
+
+FHIR Schema is being evaluated as a cleaner intermediate representation for
+the same StructureDefinition semantics, not as a replacement for conformance
+evidence. The current engine remains StructureDefinition-first. The FHIR Schema
+graph path runs in parallel and is compared against both Records' current
+StructureDefinition path and Java/reference `OperationOutcome` evidence where a
+reference report exists.
+
+The converter and graph executor are exposed through the experimental
+`@records-fhir/validator/fhir-schema` subpath for evidence tooling and
+dual-path experiments. This does not make the graph path the default runtime
+validator.
+
+The current all-scope MII dual-path lane covers 555 real fixtures. Of those, 512
+have Java/reference coverage through the attached Java CLI supplement
+(`conformance-results/fhir-schema-reference-cli-supplement-all-2026-07-01.json`).
+The final report is
+`conformance-results/fhir-schema-dual-path-all-2026-07-23.json`.
+
+The lane reports 418 clean cases, 71 exact Graph/Records comparable matches, 11
+graph-only cases, 0 Records-only cases, 0 divergent cases, 55 missing-profile
+cases, and 0 execution errors. The graph and Records paths match 104 and 92
+normalized Java/reference issue keys respectively. Twelve normalized issue-key
+gaps across the 11 graph-only cases are explicitly deferred because the
+reference-slice discriminator requires an external target that is unavailable
+to the standalone fixture; Records reports those slices as unverifiable instead
+of declaring the resources invalid. No other Java-confirmed runtime gap remains.
+
+Reference coverage is reported separately from graph-vs-Records correctness. The
+remaining 43 reference-coverage gaps are fixtures without an explicit
+`meta.profile`. The CLI
+supplement is Java `OperationOutcome` evidence for expanding the dual-path lane;
+it does not replace the official MII HTTP reference validator container for
+headline MII parity claims.
+
+The report classifies the remaining cases instead of hiding them in one score:
+60 three-way-match cases, 25 local-engine-vs-reference-unconfirmed cases, 26
+graph-only-unconfirmed cases, 43 no-profile cases, and 12
+intentionally unmapped profile cases. The intentionally excluded classes are part
+of the evidence model: unsupported or unmapped corpus profiles, fixtures without
+an explicit profile, Java informational hints, and reference-runtime behavior
+caused by unavailable terminology versions.
+
+The open decision buckets are explicit. Shared local-vs-reference signals are
+mostly `code.coding` slice cardinality, `category`/`category.coding` strictness,
+and `value.code` pattern checks. Graph-only unconfirmed signals are
+`category.coding` slice cardinality, oncology extension fixed-value strictness,
+one masked-identifier child cardinality case, and single required/forbidden
+`code.coding` slice-cardinality cases. These remain visible until
+Java/reference coverage or an explicit product decision promotes them into
+runtime behavior.
+
+This lane is therefore an implementation-reduction and convergence signal. It
+does not broaden the public headline parity claim beyond the explicitly measured
+FHIR JSON comparison lanes.
+
+The release gate for this lane is:
+
+```bash
+npm run quality:fhir-schema-gate -- \
+  --report conformance-results/fhir-schema-dual-path-all-2026-07-23.json
+```
+
+It fails only on hard convergence regressions: execution errors, Records-only
+cases, divergent cases, Java-confirmed Records runtime gaps, Java-confirmed graph
+path gaps, and comparable Java/reference issues missed by both local paths.
 
 ## License
 

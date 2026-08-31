@@ -128,4 +128,57 @@ describe('ElementRulesValidator', () => {
 
     expect(issues).toHaveLength(0);
   });
+
+  it('ignores a typed pattern that is incompatible with the declared element type', () => {
+    const elementDef = {
+      path: 'Location.mode',
+      type: [{ code: 'code' }],
+      patternCodeableConcept: {
+        coding: [{ system: 'http://hl7.org/fhir/location-mode', code: 'instance' }],
+      },
+    } as ElementDefinition;
+
+    const issues = validator.validate('instance', elementDef, 'Location.mode');
+
+    expect(issues).toHaveLength(0);
+  });
+
+  it('handles cyclic fixed values without failing while formatting diagnostics', () => {
+    const expected: Record<string, unknown> = {};
+    expected.self = expected;
+    const actual: Record<string, unknown> = {};
+    actual.self = { different: true };
+    const elementDef = {
+      path: 'Observation.value[x]',
+      fixedQuantity: expected,
+    } as ElementDefinition;
+
+    expect(() => validator.validate(
+      actual,
+      elementDef,
+      'Observation.valueQuantity',
+    )).not.toThrow();
+    expect(validator.validate(
+      actual,
+      elementDef,
+      'Observation.valueQuantity',
+    )).toHaveLength(1);
+  });
+
+  it('matches equivalent cyclic object patterns without recursing forever', () => {
+    const pattern: Record<string, unknown> = {};
+    pattern.self = pattern;
+    const actual: Record<string, unknown> = {};
+    actual.self = actual;
+    const elementDef = {
+      path: 'Observation.value[x]',
+      patternQuantity: pattern,
+    } as ElementDefinition;
+
+    expect(validator.validate(
+      actual,
+      elementDef,
+      'Observation.valueQuantity',
+    )).toEqual([]);
+  });
 });

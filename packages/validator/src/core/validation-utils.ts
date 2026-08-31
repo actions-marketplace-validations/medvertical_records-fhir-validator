@@ -6,22 +6,26 @@
  */
 
 import type { ValidationIssue } from '../types';
+import { normalizeChoiceTypePath } from './choice-type-path';
+import { getPrimitiveSidecar, resolveFhirSegmentValue } from './fhir-primitive-sidecar';
 
 /**
  * Helper: Get value at FHIRPath-like path
  * Simplified path resolution (e.g., "Patient.name" -> resource.name)
  */
-export function getValueAtPath(resource: any, path: string): any {
+export function getValueAtPath(resource: unknown, path: string): unknown {
   const parts = path.split('.');
 
-  if (parts[0] === resource.resourceType) {
+  if (isObjectRecord(resource) && parts[0] === resource.resourceType) {
     parts.shift();
   }
 
-  let currentValues: any[] = [resource];
+  let currentValues: unknown[] = [resource];
 
-  for (const part of parts) {
-    const nextValues: any[] = [];
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const part = parts[partIndex];
+    const hasRemainingPath = partIndex < parts.length - 1;
+    const nextValues: unknown[] = [];
 
     for (const current of currentValues) {
       if (current === undefined || current === null) {
@@ -33,22 +37,13 @@ export function getValueAtPath(resource: any, path: string): any {
           if (item === undefined || item === null) {
             continue;
           }
-          const value = item[part];
+          const value = resolveSegmentForPath(item, part, hasRemainingPath);
           if (value !== undefined) {
             nextValues.push(value);
           }
         }
       } else {
-        let value = current[part];
-
-        // Handle FHIR choice types (e.g. value[x] -> valueQuantity, valueString)
-        if (value === undefined && part.endsWith('[x]')) {
-          const prefix = part.slice(0, -3);
-          const actualKey = Object.keys(current).find(k => k.startsWith(prefix));
-          if (actualKey) {
-            value = current[actualKey];
-          }
-        }
+        const value = resolveSegmentForPath(current, part, hasRemainingPath);
 
         if (value !== undefined) {
           nextValues.push(value);
@@ -72,129 +67,48 @@ export function getValueAtPath(resource: any, path: string): any {
   return currentValues.length === 1 ? currentValues[0] : currentValues;
 }
 
-/**
- * Create a validation error issue
- */
-export function createValidationErrorIssue(
-  aspect: ValidationIssue['aspect'],
-  code: string,
-  message: string,
-  details?: Record<string, any>,
-  path?: string
-): ValidationIssue {
-  return {
-    id: `records-${code}-${Date.now()}`,
-    aspect,
-    severity: 'error',
-    code,
-    message,
-    path: path || '',
-    timestamp: new Date(),
-    ...(details && { details })
-  };
-}
-
-/**
- * Create a validation information issue (for system messages, not user errors)
- * Used for things like profile-not-found, which are system-level messages
- * rather than validation errors in the user's data
- */
-export function createValidationInfoIssue(
-  aspect: ValidationIssue['aspect'],
-  code: string,
-  message: string,
-  details?: Record<string, any>,
-  path?: string
-): ValidationIssue {
-  return {
-    id: `records-${code}-${Date.now()}`,
-    aspect,
-    severity: 'info',
-    code,
-    message,
-    path: path || '',
-    timestamp: new Date(),
-    ...(details && { details })
-  };
-}
-
-/**
- * Dedupe issues by (code, path, severity, rule). Prevents reporting the same
- * constraint violation (e.g. dom-6) multiple times when several validators
- * independently re-check the same rule, while preserving distinct slice
- * cardinality failures that legitimately share one base path.
- */
-export function dedupeIssues(issues: ValidationIssue[]): ValidationIssue[] {
-  const specificBundleInvariantKeys = new Set<string>();
-  for (const issue of issues) {
-    if (issue.code === 'bdl-9-violation') specificBundleInvariantKeys.add('bdl-9');
-    if (issue.code === 'bdl-10-violation') specificBundleInvariantKeys.add('bdl-10');
+function resolveSegmentForPath(container: unknown, segment: string, hasRemainingPath: boolean): unknown {
+  if (
+    hasRemainingPath &&
+    isObjectRecord(container) &&
+    isPrimitiveValueOrPrimitiveArray(container[segment])
+  ) {
+    const sidecar = getPrimitiveSidecar(container, segment);
+    if (sidecar !== undefined) return sidecar;
   }
 
-  const seen = new Set<string>();
-  const out: ValidationIssue[] = [];
-  for (const issue of issues) {
-    if (isRedundantBundleInvariantIssue(issue, specificBundleInvariantKeys)) {
-      continue;
-    }
-
-    const details = issue.details;
-    const detailRuleKey = details && typeof details === 'object' && !Array.isArray(details)
-      ? [
-        (details as Record<string, unknown>).constraintKey ?? (details as Record<string, unknown>).sliceName,
-        (details as Record<string, unknown>).sourceProfile,
-      ].filter(value => typeof value === 'string' && value.length > 0).join(':')
-      : undefined;
-    const ruleKey = [issue.ruleId, detailRuleKey]
-      .filter(value => typeof value === 'string' && value.length > 0)
-      .join(':');
-    const key = `${issue.code}:${normalizeIssuePathForDedupe(issue)}:${issue.severity}:${ruleKey}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(issue);
-    }
-  }
-  return out;
+  return resolveFhirSegmentValue(container, segment);
 }
 
-function isRedundantBundleInvariantIssue(issue: ValidationIssue, specificKeys: Set<string>): boolean {
-  if (issue.code !== 'profile-constraint-violation' || specificKeys.size === 0) return false;
-
-  const details = issue.details;
-  const detailConstraint = details && typeof details === 'object' && !Array.isArray(details)
-    ? (details as Record<string, unknown>).constraintKey
-    : undefined;
-  const message = issue.message ?? '';
-
-  const constraintKey = typeof detailConstraint === 'string'
-    ? detailConstraint
-    : message.includes("Constraint 'bdl-9'")
-      ? 'bdl-9'
-      : message.includes("Constraint 'bdl-10'")
-        ? 'bdl-10'
-        : undefined;
-
-  return Boolean(constraintKey && specificKeys.has(constraintKey));
+function isPrimitiveValue(value: unknown): boolean {
+  return value === null ||
+    ['string', 'number', 'boolean'].includes(typeof value);
 }
 
-function normalizeIssuePathForDedupe(issue: ValidationIssue): string {
-  const path = issue.path || '';
-  const details = issue.details;
-  const detailsResourceType = details && typeof details === 'object' && !Array.isArray(details)
-    ? (details as Record<string, unknown>).resourceType
-    : undefined;
-  const resourceType = typeof issue.resourceType === 'string'
-    ? issue.resourceType
-    : typeof detailsResourceType === 'string'
-      ? detailsResourceType
-      : undefined;
-
-  if (!resourceType) return path;
-
-  const prefix = `${resourceType}.`.toLowerCase();
-  const lowerPath = path.toLowerCase();
-  return lowerPath.startsWith(prefix) ? path.slice(prefix.length) : path;
+function isPrimitiveValueOrPrimitiveArray(value: unknown): boolean {
+  return Array.isArray(value)
+    ? value.every(isPrimitiveValue)
+    : isPrimitiveValue(value);
 }
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export {
+  createValidationErrorIssue,
+  createValidationInfoIssue,
+  createValidationWarningIssue,
+} from './core-validation-issue';
+
+export {
+  dedupeExactIssues,
+  dedupeIssues,
+  dedupeIssuesWithTrace,
+  dedupeResourceTreeIssues,
+  type DedupeIssuesResult,
+  type DedupeSuppressionTrace,
+} from './validation-issue-dedupe';
 
 /**
  * Suppress terminology binding warnings on paths where a structural
@@ -214,33 +128,197 @@ export function suppressRedundantBindingWarnings(
   issues: ValidationIssue[],
 ): ValidationIssue[] {
   const typeMismatchPaths = new Set<string>();
+  const missingRequiredElementPaths = new Set<string>();
+  const invalidCodeBindingParentPaths = new Set<string>();
   for (const issue of issues) {
     if (issue.code === 'structural-type-mismatch' && issue.path) {
       typeMismatchPaths.add(normalizeChoiceTypePath(issue.path));
     }
+    if (isRequiredElementPresenceIssue(issue) && issue.path) {
+      missingRequiredElementPaths.add(normalizeChoiceTypePath(issue.path));
+    }
+    if (issue.code === 'terminology-code-invalid' && issue.path) {
+      const bindingParentPath = parentBindingPathForInvalidCode(issue.path);
+      if (bindingParentPath) invalidCodeBindingParentPaths.add(bindingParentPath);
+    }
   }
-  if (typeMismatchPaths.size === 0) return issues;
+  if (
+    typeMismatchPaths.size === 0 &&
+    missingRequiredElementPaths.size === 0 &&
+    invalidCodeBindingParentPaths.size === 0
+  ) return issues;
 
   return issues.filter(issue => {
     if (
-      issue.code !== 'terminology-binding-extensible-code' &&
-      issue.code !== 'terminology-binding-preferred-code' &&
-      issue.code !== 'terminology-binding-example-code'
-    ) return true;
+      (issue.code === 'binding-required-missing' || issue.code === 'terminology-binding-missing') &&
+      issue.path
+    ) {
+      return !missingRequiredElementPaths.has(normalizeChoiceTypePath(issue.path));
+    }
+    if (!isNonRequiredBindingIssue(issue)) return true;
     if (!issue.path) return true;
+    const normalizedPath = normalizeChoiceTypePath(issue.path);
+    if (invalidCodeBindingParentPaths.has(normalizedPath)) return false;
     return !typeMismatchPaths.has(normalizeChoiceTypePath(issue.path));
   });
 }
 
-/**
- * Collapse concrete choice-type property names to the `[x]` form so
- * type-mismatch on `Observation.value[x]` and a binding issue on
- * `Observation.valueString` can still correlate. (Records emits the
- * `[x]` form for structural mismatches and the concrete form elsewhere.)
- */
-function normalizeChoiceTypePath(path: string): string {
-  return path
-    .replace(/\[\d+\]/g, '')
-    .replace(/\.(value|effective|onset|abatement|occurrence|timing|medication|component|product)[A-Z]\w*(?=\.|$)/g, '.$1[x]')
-    .toLowerCase();
+function isRequiredElementPresenceIssue(issue: ValidationIssue): boolean {
+  return issue.code === 'structural-cardinality-min' ||
+    issue.code === 'questionnaire-missing-status' ||
+    issue.code === 'qr-missing-status';
+}
+
+function isNonRequiredBindingIssue(issue: ValidationIssue): boolean {
+  return issue.code === 'terminology-binding-extensible' ||
+    issue.code === 'terminology-binding-extensible-code' ||
+    issue.code === 'terminology-binding-preferred' ||
+    issue.code === 'terminology-binding-preferred-code' ||
+    issue.code === 'terminology-binding-example' ||
+    issue.code === 'terminology-binding-example-code';
+}
+
+function parentBindingPathForInvalidCode(path: string): string | null {
+  const codeableConceptParent = path.replace(/\.coding\[\d+\]\.code$/i, '');
+  if (codeableConceptParent !== path) {
+    return normalizeChoiceTypePath(codeableConceptParent);
+  }
+
+  const codeableConceptParentBySystem = path.replace(/\.coding\[\d+\]\.system$/i, '');
+  if (codeableConceptParentBySystem !== path) {
+    return normalizeChoiceTypePath(codeableConceptParentBySystem);
+  }
+
+  const codingParent = path.replace(/\.code$/i, '');
+  if (codingParent !== path) {
+    return normalizeChoiceTypePath(codingParent);
+  }
+
+  const codingParentBySystem = path.replace(/\.system$/i, '');
+  if (codingParentBySystem !== path) {
+    return normalizeChoiceTypePath(codingParentBySystem);
+  }
+
+  return null;
+}
+
+const REMOTE_BUDGET_AGGREGATION_THRESHOLD = 5;
+const REMOTE_BUDGET_SAMPLE_LIMIT = 5;
+
+export function aggregateRemoteCodeSystemBudgetIssues(
+  issues: ValidationIssue[],
+): ValidationIssue[] {
+  const groups = new Map<string, ValidationIssue[]>();
+  const groupedIssues = new Set<ValidationIssue>();
+
+  for (const issue of issues) {
+    if (!isRemoteBudgetCodeSystemIssue(issue)) continue;
+    const system = remoteBudgetIssueSystem(issue);
+    const reason = remoteBudgetIssueReason(issue);
+    if (!system || !reason) continue;
+    const key = `${system}\u0000${reason}`;
+    const group = groups.get(key) ?? [];
+    group.push(issue);
+    groups.set(key, group);
+    groupedIssues.add(issue);
+  }
+
+  if (!Array.from(groups.values()).some(group => group.length > REMOTE_BUDGET_AGGREGATION_THRESHOLD)) {
+    return issues;
+  }
+
+  const emittedGroups = new Set<string>();
+  const out: ValidationIssue[] = [];
+  for (const issue of issues) {
+    if (!groupedIssues.has(issue)) {
+      out.push(issue);
+      continue;
+    }
+
+    const system = remoteBudgetIssueSystem(issue);
+    const reason = remoteBudgetIssueReason(issue);
+    const key = system && reason ? `${system}\u0000${reason}` : '';
+    const group = key ? groups.get(key) : undefined;
+    if (!group || group.length <= REMOTE_BUDGET_AGGREGATION_THRESHOLD) {
+      out.push(issue);
+      continue;
+    }
+    if (emittedGroups.has(key)) continue;
+
+    emittedGroups.add(key);
+    out.push(buildRemoteBudgetAggregateIssue(issue, group, system!, reason!));
+  }
+
+  return out;
+}
+
+function isRemoteBudgetCodeSystemIssue(issue: ValidationIssue): boolean {
+  return issue.aspect === 'terminology' &&
+    issue.code === 'terminology-codesystem-unverified' &&
+    issue.severity !== 'error' &&
+    remoteBudgetIssueReason(issue) === 'remote-budget-exhausted';
+}
+
+function remoteBudgetIssueSystem(issue: ValidationIssue): string | null {
+  const details = issue.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const system = (details as Record<string, unknown>).system;
+  return typeof system === 'string' && system.length > 0 ? system : null;
+}
+
+function remoteBudgetIssueReason(issue: ValidationIssue): string | null {
+  const details = issue.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const reason = (details as Record<string, unknown>).reason;
+  return typeof reason === 'string' && reason.length > 0 ? reason : null;
+}
+
+function remoteBudgetIssueCode(issue: ValidationIssue): string | null {
+  const details = issue.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const code = (details as Record<string, unknown>).code;
+  return typeof code === 'string' && code.length > 0 ? code : null;
+}
+
+function buildRemoteBudgetAggregateIssue(
+  representative: ValidationIssue,
+  group: ValidationIssue[],
+  system: string,
+  reason: string,
+): ValidationIssue {
+  const representativeDetails =
+    representative.details && typeof representative.details === 'object' && !Array.isArray(representative.details)
+      ? withoutRemoteBudgetSingleCodeDetails(representative.details)
+      : {};
+  const sampleCodes = uniqueStrings(group.map(remoteBudgetIssueCode)).slice(0, REMOTE_BUDGET_SAMPLE_LIMIT);
+  const samplePaths = uniqueStrings(group.map(issue => issue.path ?? '')).slice(0, REMOTE_BUDGET_SAMPLE_LIMIT);
+  const codeSample = sampleCodes.length > 0 ? ` (examples: ${sampleCodes.join(', ')})` : '';
+
+  return {
+    ...representative,
+    id: `${representative.id}-aggregate`,
+    message:
+      `Remote CodeSystem validation budget was exhausted; ${group.length} codes from ${system} ` +
+      `were not verified against the terminology server${codeSample}`,
+    path: samplePaths[0] ?? representative.path,
+    details: {
+      ...representativeDetails,
+      system,
+      reason,
+      count: group.length,
+      sampleCodes,
+      samplePaths,
+      fixHint:
+        'Increase maxRemoteCodeSystemValidations for deeper remote terminology evidence, or provide a local CodeSystem package/cache.',
+    },
+  };
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
+}
+
+function withoutRemoteBudgetSingleCodeDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const { code: _code, display: _display, ...aggregateDetails } = details;
+  return aggregateDetails;
 }

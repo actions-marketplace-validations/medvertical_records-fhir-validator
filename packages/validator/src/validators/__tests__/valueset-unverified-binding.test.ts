@@ -1,0 +1,233 @@
+import { describe, expect, it, vi } from 'vitest';
+import { ValueSetValidator } from '../valueset-validator';
+
+/**
+ * Gap P-3: a binding that cannot be expanded locally and is not confirmed by a
+ * terminology server is "unverified", not "valid". Default behavior fails open
+ * silently (precision-neutral); with `reportUnverifiedBindings` the skip is
+ * surfaced as an informational issue.
+ */
+describe('ValueSetValidator unverified bindings (P-3)', () => {
+  const valueSetUrl = 'http://example.org/fhir/ValueSet/unexpandable';
+  const coding = {
+    coding: [{ system: 'http://example.org/fhir/CodeSystem/cs', code: 'whatever' }],
+  };
+
+  it('stays silent by default when a binding cannot be verified', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'local-only',
+      serverUrl: undefined,
+      serverDelegation: {
+        expandValueSets: false,
+        validateCodes: false,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+
+    const issues = await validator.validateBinding(
+      coding,
+      { strength: 'extensible', valueSet: valueSetUrl },
+      'Observation.code',
+    );
+
+    expect(issues).toHaveLength(0);
+    expect(validator.getCacheStats().terminologyDiagnostics.unverifiedBindings).toEqual({
+      total: 1,
+      byReason: {
+        'empty-expansion': 1,
+        'unsupported-filter': 0,
+        'unenumerable-system-include': 0,
+        'unresolvable-snomed-extension-filter': 0,
+        'versioned-binding-unverified': 0,
+        'validation-error': 0,
+      },
+    });
+  });
+
+  it('emits an informational issue when reportUnverifiedBindings is enabled', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'local-only',
+      serverUrl: undefined,
+      reportUnverifiedBindings: true,
+      serverDelegation: {
+        expandValueSets: false,
+        validateCodes: false,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+
+    const issues = await validator.validateBinding(
+      coding,
+      { strength: 'extensible', valueSet: valueSetUrl },
+      'Observation.code',
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('terminology-binding-unverified');
+    expect(issues[0].severity).toBe('information');
+  });
+
+  it('raises unverifiable required bindings to warning under strict policy', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'local-only',
+      serverUrl: undefined,
+      strictUnverifiedRequiredBindings: true,
+      serverDelegation: {
+        expandValueSets: false,
+        validateCodes: false,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+
+    const issues = await validator.validateBinding(
+      coding,
+      { strength: 'required', valueSet: valueSetUrl },
+      'Observation.code',
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('terminology-binding-unverified');
+    expect(issues[0].severity).toBe('warning');
+  });
+
+  it('keeps extensible bindings informational even under strict policy', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'local-only',
+      serverUrl: undefined,
+      strictUnverifiedRequiredBindings: true,
+      serverDelegation: {
+        expandValueSets: false,
+        validateCodes: false,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+
+    const issues = await validator.validateBinding(
+      coding,
+      { strength: 'extensible', valueSet: valueSetUrl },
+      'Observation.code',
+    );
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].code).toBe('terminology-binding-unverified');
+    expect(issues[0].severity).toBe('information');
+  });
+
+  it('does not downgrade a real local-expansion violation to unverified', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'local-only',
+      serverUrl: undefined,
+      reportUnverifiedBindings: true,
+      serverDelegation: {
+        expandValueSets: false,
+        validateCodes: false,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+
+    // A non-empty local expansion is authoritative: an absent code is a real
+    // violation, not "unverified".
+    const issues = await validator.validateBinding(
+      'invalid-code',
+      {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/administrative-gender|4.0.1',
+      },
+      'Patient.gender',
+    );
+
+    expect(issues.some(issue => issue.code === 'terminology-binding-unverified')).toBe(false);
+    expect(issues.some(issue => issue.code.startsWith('terminology-binding-required'))).toBe(true);
+  });
+
+  it('never turns a resolver failure into a required-binding error', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'local-only',
+      serverUrl: undefined,
+      strictUnverifiedRequiredBindings: true,
+      serverDelegation: {
+        expandValueSets: false,
+        validateCodes: false,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+    const internal = validator as unknown as {
+      resolveCodeBinding: () => Promise<never>;
+    };
+    const original = internal.resolveCodeBinding;
+    internal.resolveCodeBinding = async () => {
+      throw new Error('package index unavailable');
+    };
+
+    try {
+      const issues = await validator.validateBinding(
+        coding,
+        { strength: 'required', valueSet: valueSetUrl },
+        'Observation.code',
+      );
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('terminology-binding-unverified');
+      expect(issues[0].severity).toBe('warning');
+      expect(validator.getCacheStats().terminologyDiagnostics.unverifiedBindings.byReason['validation-error'])
+        .toBe(1);
+    } finally {
+      internal.resolveCodeBinding = original;
+    }
+  });
+
+  it('turns a terminology-server cannot-resolve response into an incomplete warning', async () => {
+    const validator = new ValueSetValidator();
+    validator.setResolutionConfig({
+      strategy: 'server-first',
+      serverUrl: 'https://tx.example/fhir',
+      reportUnverifiedBindings: true,
+      strictUnverifiedRequiredBindings: true,
+      serverDelegation: {
+        expandValueSets: true,
+        validateCodes: true,
+        cacheResults: false,
+        cacheTTLSeconds: 0,
+      },
+    });
+    const apiClient = (validator as unknown as {
+      apiClient: {
+        expandValueSet: (url: string) => Promise<Set<string> | null>;
+        validateCode: () => Promise<boolean>;
+        isValueSetNotResolvable: () => boolean;
+      };
+    }).apiClient;
+    vi.spyOn(apiClient, 'expandValueSet').mockResolvedValue(null);
+    vi.spyOn(apiClient, 'validateCode').mockResolvedValue(true);
+    vi.spyOn(apiClient, 'isValueSetNotResolvable').mockReturnValue(true);
+
+    const issues = await validator.validateBinding(
+      coding,
+      { strength: 'required', valueSet: valueSetUrl },
+      'Observation.code',
+    );
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: 'terminology-binding-unverified',
+        severity: 'warning',
+        details: expect.objectContaining({
+          valueSet: valueSetUrl,
+          validationStatus: 'incomplete',
+        }),
+      }),
+    ]);
+  });
+});

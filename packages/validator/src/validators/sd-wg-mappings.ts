@@ -75,6 +75,11 @@ export const R4_ELEMENT_DEFINITION_ELEMENTS = new Set([
   'isModifier', 'isModifierReason', 'isSummary', 'binding', 'mapping',
 ]);
 
+export const R4_ELEMENT_DEFINITION_NESTED_CONTEXT_ELEMENTS = new Set([
+  'type.code',
+  'type.profile',
+]);
+
 /** Standards-status codes → allowed publication status values. */
 export const STATUS_CONSISTENCY: Record<string, string[]> = {
   normative: ['active'],

@@ -18,10 +18,18 @@ npm install @records-fhir/validator @records-fhir/validation-types
 node standalone-validate.mjs path/to/patient.json
 ```
 
+After installing the npm package, the same check is available through the CLI:
+
+```sh
+npx -p @records-fhir/validator records-fhir-validator path/to/patient.json
+npx -p @records-fhir/validator records-fhir-validator ./fixtures --fail-on=warning --format=json
+npx -p @records-fhir/validator records-fhir-validator ./fixtures --summary-only --output validation-report.json
+```
+
 The GitHub workflow uses the composite Action and needs no extra setup:
 
 ```yaml
-- uses: medvertical/records-fhir-validator@v1
+- uses: medvertical/records-fhir-validator@v0
   with:
     paths: 'examples/**/*.json'
 ```
@@ -33,11 +41,12 @@ for its `resourceType`. To validate against a specific profile, pass the
 canonical URL:
 
 ```js
-const issues = await recordsValidator.validate(
+const issues = await recordsValidator.validateRequest({
   resource,
-  'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/PatientIn',
-  'R4',
-);
+  profileUrl:
+    'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/PatientIn',
+  fhirVersion: 'R4',
+});
 ```
 
 Profiles must be resolvable — either through the bundled-profiles package,

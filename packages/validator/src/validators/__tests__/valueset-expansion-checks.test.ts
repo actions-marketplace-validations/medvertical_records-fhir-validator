@@ -4,11 +4,12 @@ import { TerminologyResourceValidator } from '../terminology-resource-validator'
 describe('TerminologyResourceValidator — ValueSet.expansion best-practice', () => {
   const validator = new TerminologyResourceValidator();
 
-  function vsWithExpansion(expansion: any) {
+  function vsWithExpansion(expansion: any, compose?: any) {
     return {
       resourceType: 'ValueSet',
       url: 'http://example.org/vs',
       status: 'active',
+      ...(compose ? { compose } : {}),
       expansion,
     };
   }
@@ -89,5 +90,24 @@ describe('TerminologyResourceValidator — ValueSet.expansion best-practice', ()
       status: 'active',
     });
     expect(issues.some(i => i.code?.startsWith('tx-valueset-expansion-'))).toBe(false);
+  });
+
+  it('flags the parent-filter anchor when it appears as an extra expansion code', () => {
+    const issues = validator.validate(vsWithExpansion({
+      identifier: 'urn:uuid:abc',
+      parameter: [{ name: 'used-codesystem', valueUri: 'http://loinc.org|2.82' }],
+      contains: [{ system: 'http://loinc.org', code: '80764-4' }],
+    }, {
+      include: [{
+        system: 'http://loinc.org',
+        filter: [{ property: 'parent', op: '=', value: '80764-4' }],
+      }],
+    }));
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      code: 'tx-valueset-expansion-extra-code',
+      severity: 'warning',
+      path: 'ValueSet.expansion',
+    }));
   });
 });

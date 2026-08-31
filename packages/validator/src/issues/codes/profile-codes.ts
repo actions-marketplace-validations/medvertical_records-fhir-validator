@@ -12,6 +12,46 @@ export const ProfileCodes = {
         severity: 'error',
         description: 'Profile constraint violated',
     },
+    'profile-fixed-value-mismatch': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Element does not match a fixed value declared by the profile',
+    },
+    'profile-pattern-mismatch': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Element does not match a pattern declared by the profile',
+    },
+    'profile-primitive-value-required': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Primitive element requires a value and cannot be extension-only',
+    },
+    'profile-primitive-value-alternative-required': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Extension-only primitive does not use an allowed value alternative',
+    },
+    'profile-slice-fixed-value-missing': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'A required fixed-value element is missing from a matched slice',
+    },
+    'profile-slice-fixed-value-mismatch': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'A matched slice does not satisfy a fixed value',
+    },
+    'profile-slice-pattern-mismatch': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'A matched slice does not satisfy a pattern',
+    },
+    'profile-slice-ambiguous-match': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Element matches more than one slice',
+    },
     'profile-slice-min-cardinality': {
         aspect: 'profile',
         severity: 'error',
@@ -54,13 +94,18 @@ export const ProfileCodes = {
     },
     'profile-extension-not-found': {
         aspect: 'profile',
-        severity: 'error',
+        severity: 'warning',
         description: 'Extension StructureDefinition could not be resolved',
     },
     'profile-extension-not-in-profile': {
         aspect: 'profile',
         severity: 'warning',
         description: 'Extension not defined in profile',
+    },
+    'profile-extension-context-wrong': {
+        aspect: 'profile',
+        severity: 'error',
+        description: 'Extension used outside the contexts its StructureDefinition declares',
     },
     'profile-extension-modifier-mismatch': {
         aspect: 'profile',
@@ -115,7 +160,7 @@ export const ProfileCodes = {
     'profile-mustsupport-missing': {
         aspect: 'profile',
         severity: 'warning',
-        description: 'MustSupport element is missing data',
+        description: 'MustSupport element is not populated',
     },
     'profile-validation-error': {
         aspect: 'profile',

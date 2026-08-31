@@ -30,6 +30,10 @@ import {
   describeExtraSlice,
   describeRulesMismatch,
 } from './complies-with-slicing';
+import {
+  formatCodeList,
+  resolveLocalValueSetCodes,
+} from './complies-with-valueset';
 
 const COMPLIES_WITH_EXT_URL =
   'http://hl7.org/fhir/StructureDefinition/structuredefinition-compliesWithProfile';
@@ -51,14 +55,16 @@ interface DiffElement {
   [k: string]: unknown;
 }
 
+type ObjectRecord = Record<string, unknown>;
+
 export class CompliesWithValidator {
   constructor(private sdLoader: StructureDefinitionLoader) {}
 
   async validate(
-    sd: any,
+    sd: unknown,
     fhirVersion: 'R4' | 'R5' | 'R6' = 'R4',
   ): Promise<ValidationIssue[]> {
-    if (sd?.resourceType !== 'StructureDefinition') return [];
+    if (!isObjectRecord(sd) || sd.resourceType !== 'StructureDefinition') return [];
     const claimed = extractClaimedProfileUrls(sd);
     if (claimed.length === 0) return [];
 
@@ -83,19 +89,27 @@ export class CompliesWithValidator {
   }
 }
 
-function extractClaimedProfileUrls(sd: any): string[] {
-  const urls: string[] = [];
-  for (const ext of sd?.extension || []) {
-    if (ext?.url === COMPLIES_WITH_EXT_URL && typeof ext.valueCanonical === 'string') {
-      urls.push(ext.valueCanonical.split('|')[0]);
+function extractClaimedProfileUrls(sd: ObjectRecord): string[] {
+  const urls = new Set<string>();
+  const extensions = Array.isArray(sd.extension) ? sd.extension : [];
+  for (const ext of extensions) {
+    if (isObjectRecord(ext) &&
+        ext.url === COMPLIES_WITH_EXT_URL &&
+        typeof ext.valueCanonical === 'string') {
+      const canonical = ext.valueCanonical.split('|')[0];
+      if (canonical) urls.add(canonical);
     }
   }
-  return urls;
+  return [...urls];
 }
 
-function checkCompliance(derived: any, base: any, claimedUrl: string): ValidationIssue[] {
-  const baseElements: any[] = base?.snapshot?.element || base?.differential?.element || [];
-  const derivedElements: any[] = derived?.snapshot?.element || derived?.differential?.element || [];
+function checkCompliance(
+  derived: ObjectRecord,
+  base: StructureDefinition,
+  claimedUrl: string,
+): ValidationIssue[] {
+  const baseElements = getStructureDefinitionElements(base);
+  const derivedElements = getStructureDefinitionElements(derived);
 
   const baseById = indexById(baseElements);
   const derivedById = indexById(derivedElements);
@@ -133,10 +147,12 @@ function checkCompliance(derived: any, base: any, claimedUrl: string): Validatio
   return [buildIssue(claimedUrl, reasons.join(' and '))];
 }
 
-function indexById(elements: any[]): Map<string, DiffElement> {
+function indexById(elements: DiffElement[]): Map<string, DiffElement> {
   const map = new Map<string, DiffElement>();
   for (const el of elements) {
-    const key = el?.id || el?.path;
+    const key = typeof el.id === 'string'
+      ? el.id
+      : typeof el.path === 'string' ? el.path : undefined;
     if (!key) continue;
     if (!map.has(key)) map.set(key, el);
   }
@@ -228,8 +244,8 @@ function bindingValueSetReasons(
   path: string,
   base: DiffElement,
   derived: DiffElement | undefined,
-  baseSd: any,
-  derivedSd: any,
+  baseSd: StructureDefinition,
+  derivedSd: ObjectRecord,
 ): string[] {
   const baseStrength = base.binding?.strength;
   const baseValueSet = base.binding?.valueSet;
@@ -254,56 +270,6 @@ function bindingValueSetReasons(
   return [`The binding.valueSet value of '${derivedValueSet}' on the path ${path} does not comply with the value '${baseValueSet}' from the claimed profile`];
 }
 
-function resolveLocalValueSetCodes(valueSetRef: string, sd: any): Set<string> | null {
-  const ref = valueSetRef.split('|')[0];
-  const contained = Array.isArray(sd?.contained) ? sd.contained : [];
-  const valueSet = contained.find((item: any) =>
-    item?.resourceType === 'ValueSet' && (
-      (ref.startsWith('#') && item.id === ref.slice(1)) ||
-      item.url === ref
-    )
-  );
-  if (!valueSet) return null;
-  return extractSimpleValueSetCodes(valueSet);
-}
-
-function extractSimpleValueSetCodes(valueSet: any): Set<string> | null {
-  const codes = new Set<string>();
-  const add = (system: string | undefined, code: string | undefined): void => {
-    if (!code) return;
-    codes.add(system ? `${system}|${code}` : code);
-  };
-
-  const visitContains = (items: any[]): void => {
-    for (const item of items) {
-      add(item?.system, item?.code);
-      if (Array.isArray(item?.contains)) visitContains(item.contains);
-    }
-  };
-
-  if (Array.isArray(valueSet?.expansion?.contains)) {
-    visitContains(valueSet.expansion.contains);
-  }
-
-  for (const include of valueSet?.compose?.include ?? []) {
-    if (Array.isArray(include?.filter) && include.filter.length > 0) return null;
-    if (Array.isArray(include?.valueSet) && include.valueSet.length > 0) return null;
-    if (!Array.isArray(include?.concept)) return null;
-    for (const concept of include.concept) {
-      add(include.system, concept?.code);
-    }
-  }
-
-  return codes.size > 0 ? codes : null;
-}
-
-function formatCodeList(codes: string[]): string {
-  return codes
-    .map(code => code.includes('|') ? code.split('|').slice(1).join('|') : code)
-    .sort()
-    .join(', ');
-}
-
 function patternFixedReasons(
   path: string,
   base: DiffElement,
@@ -313,40 +279,43 @@ function patternFixedReasons(
   // Only CodeableConcept pattern/fixed comparisons are needed for the
   // current conformance fixtures; other types fall through silently.
   const basePattern =
-    (base as any).patternCodeableConcept || (base as any).fixedCodeableConcept;
+    base.patternCodeableConcept ?? base.fixedCodeableConcept;
   const derivedPattern =
-    (derived as any).patternCodeableConcept || (derived as any).fixedCodeableConcept;
+    derived.patternCodeableConcept ?? derived.fixedCodeableConcept;
   if (!basePattern || !derivedPattern) return [];
   if (codeableConceptComplies(derivedPattern, basePattern)) return [];
   return [`The pattern value of '${formatCodeableConcept(derivedPattern)}' on the path ${path} does not comply with the value '${formatCodeableConcept(basePattern)}' from the claimed profile`];
 }
 
-function codeableConceptComplies(derived: any, base: any): boolean {
-  const baseCodings = Array.isArray(base?.coding) ? base.coding : [];
-  const derivedCodings = Array.isArray(derived?.coding) ? derived.coding : [];
+function codeableConceptComplies(derived: unknown, base: unknown): boolean {
+  const baseCodings = isObjectRecord(base) && Array.isArray(base.coding) ? base.coding : [];
+  const derivedCodings =
+    isObjectRecord(derived) && Array.isArray(derived.coding) ? derived.coding : [];
   for (const baseCoding of baseCodings) {
-    const ok = derivedCodings.some((d: any) => codingMatches(d, baseCoding));
+    const ok = derivedCodings.some(derivedCoding => codingMatches(derivedCoding, baseCoding));
     if (!ok) return false;
   }
   return true;
 }
 
-function codingMatches(derived: any, base: any): boolean {
-  if (base?.system && derived?.system !== base.system) return false;
-  if (base?.code && derived?.code !== base.code) return false;
-  if (base?.version && derived?.version !== base.version) return false;
+function codingMatches(derived: unknown, base: unknown): boolean {
+  if (!isObjectRecord(derived) || !isObjectRecord(base)) return false;
+  if (typeof base.system === 'string' && derived.system !== base.system) return false;
+  if (typeof base.code === 'string' && derived.code !== base.code) return false;
+  if (typeof base.version === 'string' && derived.version !== base.version) return false;
   return true;
 }
 
-function formatCodeableConcept(cc: any): string {
-  const codings = Array.isArray(cc?.coding) ? cc.coding : [];
+function formatCodeableConcept(cc: unknown): string {
+  const codings = isObjectRecord(cc) && Array.isArray(cc.coding) ? cc.coding : [];
   return `[${codings.map(formatCoding).join(', ')}]`;
 }
 
-function formatCoding(c: any): string {
-  const system = c?.system || '';
-  const version = c?.version ? `|${c.version}` : '';
-  const code = c?.code || '';
+function formatCoding(c: unknown): string {
+  if (!isObjectRecord(c)) return '#';
+  const system = typeof c.system === 'string' ? c.system : '';
+  const version = typeof c.version === 'string' ? `|${c.version}` : '';
+  const code = typeof c.code === 'string' ? c.code : '';
   return `${system}${version}#${code}`;
 }
 
@@ -359,4 +328,18 @@ function buildIssue(claimedUrl: string, reason: string): ValidationIssue {
       `This profile does not comply with claimed profile '${claimedUrl}' because: ${reason}`,
     severityOverride: 'error',
   });
+}
+
+function getStructureDefinitionElements(sd: unknown): DiffElement[] {
+  if (!isObjectRecord(sd)) return [];
+  const snapshot = isObjectRecord(sd.snapshot) ? sd.snapshot : null;
+  const differential = isObjectRecord(sd.differential) ? sd.differential : null;
+  const elements = Array.isArray(snapshot?.element)
+    ? snapshot.element
+    : Array.isArray(differential?.element) ? differential.element : [];
+  return elements.filter(isObjectRecord);
+}
+
+function isObjectRecord(value: unknown): value is ObjectRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

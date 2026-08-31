@@ -6,12 +6,17 @@
 
 import type { ValidationIssue } from '../types';
 import { RESOURCE_METADATA_REQUIREMENTS } from './metadata-types';
+import { isObjectRecord } from './metadata-boundary-utils';
+import { createMetadataIssue } from './metadata-issue';
 
 /**
  * Validate required metadata based on resource type
  */
-export function validateRequiredMetadata(resource: any, resourceType: string): ValidationIssue[] {
+export function validateRequiredMetadata(resource: unknown, resourceType: string): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  const meta = isObjectRecord(resource) && isObjectRecord(resource.meta)
+    ? resource.meta
+    : null;
 
   // Get requirements for this resource type
   const requirements = RESOURCE_METADATA_REQUIREMENTS[resourceType];
@@ -30,50 +35,42 @@ export function validateRequiredMetadata(resource: any, resourceType: string): V
     
     switch (field) {
       case 'versionId':
-        isPresent = !!(resource.meta && 'versionId' in resource.meta && resource.meta.versionId);
+        isPresent = !!(meta && 'versionId' in meta && meta.versionId);
         break;
       case 'lastUpdated':
-        isPresent = !!(resource.meta && resource.meta.lastUpdated);
+        isPresent = !!meta?.lastUpdated;
         break;
       case 'profile':
-        isPresent = !!(resource.meta && resource.meta.profile && Array.isArray(resource.meta.profile) && resource.meta.profile.length > 0);
+        isPresent = !!(meta?.profile && Array.isArray(meta.profile) && meta.profile.length > 0);
         break;
       case 'security':
-        isPresent = !!(resource.meta && resource.meta.security && Array.isArray(resource.meta.security) && resource.meta.security.length > 0);
+        isPresent = !!(meta?.security && Array.isArray(meta.security) && meta.security.length > 0);
         break;
       case 'tag':
-        isPresent = !!(resource.meta && resource.meta.tag && Array.isArray(resource.meta.tag) && resource.meta.tag.length > 0);
+        isPresent = !!(meta?.tag && Array.isArray(meta.tag) && meta.tag.length > 0);
         break;
       case 'source':
-        isPresent = !!(resource.meta && resource.meta.source);
+        isPresent = !!meta?.source;
         break;
     }
 
     if (!isPresent) {
-      issues.push({
-        id: `metadata-required-field-missing-${resourceType}-${field}-${Date.now()}`,
-        aspect: 'metadata',
-        severity: severity,
+      issues.push(createMetadataIssue({
         code: `required-metadata-missing-${field}`,
+        severity,
         message: `${resourceType} resource is missing recommended metadata field: meta.${field}`,
         path: `meta.${field}`,
         humanReadable: reason,
-        details: {
-          fieldPath: `meta.${field}`,
-          resourceType: resourceType,
-          requiredField: field,
-          severity: severity,
-          reason: reason,
-          validationType: 'required-metadata-check'
-        },
+        resourceType,
         validationMethod: 'required-metadata-check',
-        timestamp: new Date().toISOString(),
-        resourceType: resourceType,
-        schemaVersion: 'R4'
-      });
+        details: {
+          requiredField: field,
+          severity,
+          reason,
+        },
+      }));
     }
   }
 
   return issues;
 }
-

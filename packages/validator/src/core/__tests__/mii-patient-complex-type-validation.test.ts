@@ -11,6 +11,10 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { recordsValidator } from '../../index';
+
+const validateR4 = (resource: unknown, profileUrl?: string) =>
+  recordsValidator.validateRequest({ resource, profileUrl, fhirVersion: 'R4' });
+
 // MII Patient profile URL
 const MII_PATIENT_PROFILE = 'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/Patient';
 
@@ -48,51 +52,56 @@ const VALID_PATIENT_WITH_NAME = {
 describe('MII Patient Complex Type Validation', () => {
   beforeAll(async () => {
     // Warm up the validator by triggering initialization
-    await recordsValidator.validate({ resourceType: 'Patient' }, undefined, 'R4').catch(() => {});
+    await validateR4({ resourceType: 'Patient' }).catch(() => {});
   }, 60000);
 
   describe('Required sub-elements validation', () => {
-    // Requires sub-element cardinality checking within complex types (not yet implemented)
-    it.skip('should report missing family and given in HumanName when validating against MII Patient profile', async () => {
-      const issues = await recordsValidator.validate(
+    it('should report missing family and given in HumanName when validating against MII Patient profile', async () => {
+      const issues = await validateR4(
         TEST_PATIENT_MISSING_NAME_SUBELEMENTS,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       // Should have required-element-missing error for name[0].family (required in MII)
       // name.given is mustSupport but not required (min=0) in MII profile
       const familyMissing = issues.find(
         issue =>
-          (issue.code === 'required-element-missing' || issue.code === 'structural-required-element-missing') &&
+          (
+            issue.code === 'required-element-missing' ||
+            issue.code === 'structural-required-element-missing' ||
+            issue.code === 'structural-cardinality-min'
+          ) &&
           (issue.path === 'Patient.name[0].family' || issue.path.includes('name[0].family') || issue.path.includes('name.family'))
       );
 
-      // given is mustSupport but not required, so it shows as mustsupport-missing
-      const givenMustSupport = issues.find(
-        issue => 
-          issue.code === 'profile-mustsupport-missing' &&
-          (issue.path === 'Patient.name.given' || issue.path.includes('name.given'))
+      // Package releases differ here: older MII snapshots marked given as
+      // MustSupport only, while current snapshots require it (min=1).
+      const givenIssue = issues.find(
+        issue =>
+          (
+            issue.code === 'profile-mustsupport-missing' ||
+            issue.code === 'structural-cardinality-min'
+          ) &&
+          issue.path.includes('name') && issue.path.includes('given')
       );
 
       expect(familyMissing).toBeDefined();
-      expect(givenMustSupport).toBeDefined();
+      expect(givenIssue).toBeDefined();
 
       if (familyMissing) {
         expect(familyMissing.severity).toBe('error');
         expect(familyMissing.message).toContain('family');
       }
 
-      if (givenMustSupport) {
-        expect(['info', 'warning']).toContain(givenMustSupport.severity);
+      if (givenIssue) {
+        expect(['info', 'warning', 'error']).toContain(givenIssue.severity);
       }
     }, 120000);
 
     it('should not report required-element-missing errors when all required sub-elements are present', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         VALID_PATIENT_WITH_NAME,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       // Should not have required-element-missing errors for name sub-elements
@@ -120,37 +129,38 @@ describe('MII Patient Complex Type Validation', () => {
         }]
       };
 
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         patientWithIncompleteName,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
-      // Should report missing 'given' element as mustSupport warning (not required in MII)
-      const givenMustSupport = issues.find(
+      // Depending on the installed MII package, given is either required or
+      // MustSupport. Both are a successful nested-complex-type finding.
+      const givenIssue = issues.find(
         issue =>
-          issue.code === 'profile-mustsupport-missing' &&
+          (issue.code === 'profile-mustsupport-missing' || issue.code === 'structural-cardinality-min') &&
           issue.path.includes('name') && issue.path.includes('given')
       );
 
-      expect(givenMustSupport).toBeDefined();
+      expect(givenIssue).toBeDefined();
     }, 120000);
   });
 
   describe('Comparison with expected HAPI behavior', () => {
-    // Requires sub-element cardinality checking within complex types (not yet implemented)
-    it.skip('should report at least the same required-element-missing errors as HAPI', async () => {
-      const issues = await recordsValidator.validate(
+    it('should report at least the same required-element-missing errors as HAPI', async () => {
+      const issues = await validateR4(
         TEST_PATIENT_MISSING_NAME_SUBELEMENTS,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       // According to VALIDATION_ENGINE_COMPARISON.md, HAPI reports:
       // - Patient.name[0].family (Required element missing)
       // - Patient.name[0].given (Required element missing)
       const requiredElementErrors = issues.filter(
-        issue => issue.code === 'required-element-missing' || issue.code === 'structural-required-element-missing'
+        issue =>
+          issue.code === 'required-element-missing' ||
+          issue.code === 'structural-required-element-missing' ||
+          issue.code === 'structural-cardinality-min'
       );
 
       // Should have at least 1 required-element-missing error (family)
@@ -164,13 +174,12 @@ describe('MII Patient Complex Type Validation', () => {
 
       expect(hasFamilyError).toBe(true);
 
-      // given is mustSupport but not required (min=0) in MII
-      // Check that mustSupport warnings are reported instead
-      const mustSupportWarnings = issues.filter(
-        issue => issue.code === 'profile-mustsupport-missing' && issue.path.includes('name') && issue.path.includes('given')
+      const hasGivenFinding = issues.some(issue =>
+        (issue.code === 'profile-mustsupport-missing' || issue.code === 'structural-cardinality-min') &&
+        issue.path.includes('name') &&
+        issue.path.includes('given')
       );
-      expect(mustSupportWarnings.length).toBeGreaterThan(0);
+      expect(hasGivenFinding).toBe(true);
     }, 120000);
   });
 });
-

@@ -18,6 +18,7 @@
 import { loadFromLocalCache } from '../core/sd-loader-filesystem';
 import type { StructureDefinition } from '../core/structure-definition-types';
 import type { ProfileSource } from './index';
+import { PackageProfileIndexCache } from '../core/sd-loader-package-profile-index';
 
 export interface FilesystemProfileSourceOptions {
     /**
@@ -34,13 +35,22 @@ export function createFilesystemProfileSource(
     options: FilesystemProfileSourceOptions,
 ): ProfileSource {
     const { packageDirs } = options;
+    const packageProfileIndexCache = new PackageProfileIndexCache();
 
     return {
+        packageDirectories: [...packageDirs],
+
         async findByUrl(
             url: string,
             fhirVersion?: 'R4' | 'R5' | 'R6',
         ): Promise<StructureDefinition | null> {
-            return loadFromLocalCache(url, packageDirs, fhirVersion ?? 'R4');
+            return loadFromLocalCache(
+                url,
+                packageDirs,
+                fhirVersion ?? 'R4',
+                {},
+                packageProfileIndexCache,
+            );
         },
     };
 }

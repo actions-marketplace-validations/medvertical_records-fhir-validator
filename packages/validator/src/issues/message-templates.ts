@@ -1,25 +1,7 @@
-/**
- * Validation Message Templates
- *
- * Template strings for all validation message codes.
- * Templates support variable interpolation using {variable} placeholders.
- *
- * Format convention: "{Entity} {problem}: {details}"
- * Examples:
- *   - "Code '{code}' is not in value set '{valueSet}' (binding strength: required)"
- *   - "versionId is longer than recommended: {length} characters"
- */
-
 import { ValidationCode } from './message-catalog';
-
-// ============================================================================
-// Message Templates
-// ============================================================================
+import { interpolateMessageTemplate } from './message-template-interpolation';
 
 export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
-    // -------------------------------------------------------------------------
-    // Terminology
-    // -------------------------------------------------------------------------
     'terminology-binding-required':
         "Code '{code}' from system '{system}' is not in value set '{valueSet}' (binding strength: required)",
     'terminology-binding-extensible':
@@ -28,7 +10,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
         "Code '{code}' from system '{system}' is not in value set '{valueSet}' (binding strength: preferred)",
     'terminology-binding-example':
         "Code '{code}' from system '{system}' is not in value set '{valueSet}' (binding strength: example)",
-    // Primitive code types (no system property)
     'terminology-binding-required-code':
         "Code '{code}' is not in value set '{valueSet}' (binding strength: required)",
     'terminology-binding-extensible-code':
@@ -41,10 +22,11 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
         "Required binding is missing a value at {path}",
     'terminology-valueset-error':
         "ValueSet validation failed: {error}",
+    'terminology-binding-unverified':
+        "Code '{code}' could not be verified against value set '{valueSet}' (binding strength: {strength}); no local expansion and no terminology server confirmation available",
+    'terminology-valueset-unavailable':
+        "Value set '{valueSet}' could not be resolved; validation of the {strength} binding is incomplete",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Version ID
-    // -------------------------------------------------------------------------
     'metadata-version-id-invalid-type':
         "versionId must be a string",
     'metadata-version-id-empty':
@@ -60,15 +42,12 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-version-id-etag-format':
         "versionId appears to be in ETag format: {value}",
     'metadata-version-id-same-as-id':
-        "versionId should not be the same as resource.id",
+        "versionId matches resource.id; this is an informational metadata heuristic",
     'metadata-version-id-very-high':
         "versionId is unusually high: {value}",
     'metadata-version-id-validation-error':
         "versionId validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Last Updated
-    // -------------------------------------------------------------------------
     'metadata-last-updated-invalid-type':
         "lastUpdated must be a string",
     'metadata-last-updated-missing-timezone':
@@ -94,9 +73,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-identical-timestamps':
         "Multiple timestamps have identical values",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Tags
-    // -------------------------------------------------------------------------
     'metadata-tag-invalid-array':
         "meta.tag must be an array",
     'metadata-tag-invalid-object':
@@ -104,7 +80,7 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-tag-missing-system-code':
         "Tag at index {index} should have system and/or code",
     'metadata-tag-missing-code':
-        "Tag at index {index} must have a code",
+        "Tag at index {index} should have a code",
     'metadata-tag-invalid-system-type':
         "Tag system must be a string at index {index}",
     'metadata-tag-invalid-system-uri':
@@ -124,9 +100,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-tag-long-display':
         "Tag display is very long at index {index}: {length} characters",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Security
-    // -------------------------------------------------------------------------
     'metadata-security-invalid-array':
         "meta.security must be an array",
     'metadata-security-invalid-object':
@@ -150,9 +123,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-security-unknown-system':
         "Unknown security system: {system}",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Source
-    // -------------------------------------------------------------------------
     'metadata-source-invalid-type':
         "source must be a string",
     'metadata-source-empty':
@@ -170,9 +140,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-source-validation-error':
         "source validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Metadata - Profile
-    // -------------------------------------------------------------------------
     'metadata-profile-invalid-array':
         "meta.profile must be an array",
     'metadata-profile-invalid-type':
@@ -188,17 +155,11 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'metadata-profile-wrong-resource-type':
         "Profile is for wrong resource type (expected {expected}, got {actual})",
 
-    // -------------------------------------------------------------------------
-    // Metadata - General
-    // -------------------------------------------------------------------------
     'metadata-missing-meta':
         "Resource is missing meta element",
     'metadata-invalid-meta-type':
         "meta must be an object",
 
-    // -------------------------------------------------------------------------
-    // Reference
-    // -------------------------------------------------------------------------
     'reference-empty':
         "Reference is empty",
     'reference-invalid-contained':
@@ -222,9 +183,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'reference-validation-error':
         "Reference validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Reference - Bundle
-    // -------------------------------------------------------------------------
     'reference-bundle-unresolved':
         "Unresolved bundle reference: {reference}",
     'reference-bundle-duplicate-fullurl':
@@ -244,9 +202,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'reference-bundle-request-missing-url':
         "Bundle request at index {index} is missing url",
 
-    // -------------------------------------------------------------------------
-    // Structural
-    // -------------------------------------------------------------------------
     'structural-required-element-missing':
         "Required element {element} is missing",
     'structural-resource-type-mismatch':
@@ -259,6 +214,8 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
         "Cardinality violated for {element}: expected {expected}, found {actual}",
     'structural-type-mismatch':
         "Type mismatch for {element}: expected {expected}, found {actual}",
+    'structural-primitive-type-mismatch':
+        "Primitive type mismatch for {element}: expected {expected}, found {actual}",
     'structural-validation-error':
         "Structural validation failed: {error}",
     'structural-hapi-error':
@@ -268,11 +225,14 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'structural-cardinality-max':
         "Element {element} has too many values: expected at most {max}, found {actual}",
 
-    // -------------------------------------------------------------------------
-    // Profile
-    // -------------------------------------------------------------------------
     'profile-constraint-violation':
         "Constraint '{key}' violated: {message}",
+    'profile-fixed-value-mismatch':
+        "Element {path} must match the fixed profile value {expected}; found {actual}",
+    'profile-primitive-value-required':
+        "Element {path} requires a primitive value; an extension-only representation is not allowed",
+    'profile-primitive-value-alternative-required':
+        "Element {path} has no primitive value and must use one of these replacement extensions: {alternatives}",
     'profile-slice-min-cardinality':
         "Slice '{slice}' minimum cardinality not met: expected at least {min}, found {actual}",
     'profile-slice-max-cardinality':
@@ -290,7 +250,7 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'profile-extension-url-not-absolute':
         "Extension.url must be an absolute URL (got '{url}')",
     'profile-extension-not-found':
-        "The extension {url} could not be found so is not allowed here",
+        "The extension {url} could not be resolved; verify its StructureDefinition or package availability",
     'profile-extension-not-in-profile':
         "Extension '{url}' is not defined in the profile",
     'profile-extension-modifier-mismatch':
@@ -314,7 +274,7 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'profile-slicing-violation':
         "Slicing constraint violated at {path}",
     'profile-mustsupport-missing':
-        "MustSupport element is missing data: {element}",
+        "MustSupport element is not populated; verify support or availability when applicable: {element}",
     'profile-validation-error':
         "Profile validation failed: {error}",
     'profile-not-found':
@@ -326,9 +286,6 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'profile-load-error':
         "Profile could not be loaded: {profile}",
 
-    // -------------------------------------------------------------------------
-    // Business Rules
-    // -------------------------------------------------------------------------
     'business-rule-violation':
         "Business rule violated: {message}",
     'business-value-out-of-range':
@@ -362,74 +319,26 @@ export const MessageTemplates: Partial<Record<ValidationCode, string>> = {
     'business-validation-error':
         "Business rule validation failed: {error}",
 
-    // -------------------------------------------------------------------------
-    // Generic
-    // -------------------------------------------------------------------------
     'validation-error':
         "Validation error: {message}",
 };
 
-// ============================================================================
-// Template Formatting
-// ============================================================================
-
-/**
- * Format a message template with parameters.
- * Replaces {variable} placeholders with values from params.
- *
- * @param code - The validation code
- * @param params - Object containing variable values
- * @returns Formatted message string
- */
 export function formatMessage(
-    code: string,
-    params: Record<string, unknown> = {}
+  code: string,
+  params: Record<string, unknown> = {},
 ): string {
-    const template = MessageTemplates[code as ValidationCode];
-
-    if (!template) {
-        // Fall back to a generic format using params
-        if (params.message) {
-            return String(params.message);
-        }
-        return `Validation issue: ${code}`;
-    }
-
-    let result = template;
-    for (const [key, value] of Object.entries(params)) {
-        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value ?? ''));
-    }
-
-    return result;
+  const template = MessageTemplates[code as ValidationCode];
+  if (!template) return params.message ? String(params.message) : `Validation issue: ${code}`;
+  return interpolateMessageTemplate(template, params);
 }
 
-/**
- * Human-readable template for UI display.
- * Can be customized separately from diagnostic messages.
- */
-export const HumanReadableTemplates: Partial<Record<ValidationCode, string>> = {
-    // Add human-readable templates as needed - uses MessageTemplates as fallback
-};
+export const HumanReadableTemplates: Partial<Record<ValidationCode, string>> = {};
 
-/**
- * Get human-readable message for a code.
- */
 export function getHumanReadableMessage(
-    code: string,
-    params: Record<string, unknown> = {}
+  code: string,
+  params: Record<string, unknown> = {},
 ): string {
-    const template =
-        HumanReadableTemplates[code as ValidationCode] ||
-        MessageTemplates[code as ValidationCode];
-
-    if (!template) {
-        return formatMessage(code, params);
-    }
-
-    let result = template;
-    for (const [key, value] of Object.entries(params)) {
-        result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value ?? ''));
-    }
-
-    return result;
+  const template = HumanReadableTemplates[code as ValidationCode]
+    ?? MessageTemplates[code as ValidationCode];
+  return template ? interpolateMessageTemplate(template, params) : formatMessage(code, params);
 }

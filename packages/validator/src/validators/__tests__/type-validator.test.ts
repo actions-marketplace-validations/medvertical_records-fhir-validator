@@ -6,6 +6,7 @@
 
 import { TypeValidator } from '../type-validator';
 import type { ElementType } from '../../core/structure-definition-types';
+import { resolveFhirSegmentValue } from '../../core/fhir-primitive-sidecar';
 
 describe('TypeValidator', () => {
   let validator: TypeValidator;
@@ -37,7 +38,128 @@ describe('TypeValidator', () => {
       const types: ElementType[] = [{ code: 'integer' }];
       const issues = await validator.validate('not-a-number', types, 'Patient.age');
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
+      expect(issues[0].resourceType).toBe('Patient');
+    });
+
+    it('accepts primitive sidecar-only values resolved from underscore siblings', async () => {
+      const patient = {
+        _birthDate: {
+          extension: [{
+            url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+            valueCode: 'masked',
+          }],
+        },
+      };
+      const sidecar = resolveFhirSegmentValue(patient, 'birthDate');
+
+      const issues = await validator.validate(sidecar, [{ code: 'date' }], 'Patient.birthDate');
+
+      expect(issues).toHaveLength(0);
+    });
+
+    it('accepts frozen primitive sidecar-only values resolved from underscore siblings', async () => {
+      const patient = {
+        _birthDate: Object.freeze({
+          extension: [{
+            url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+            valueCode: 'masked',
+          }],
+        }),
+      };
+      const sidecar = resolveFhirSegmentValue(patient, 'birthDate');
+
+      const issues = await validator.validate(sidecar, [{ code: 'date' }], 'Patient.birthDate');
+
+      expect(issues).toHaveLength(0);
+    });
+
+    it('still rejects unmarked objects in primitive slots', async () => {
+      const issues = await validator.validate(
+        { extension: [{ url: 'http://example.org/not-a-sidecar' }] },
+        [{ code: 'date' }],
+        'Patient.birthDate',
+      );
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
+    });
+
+    it('reports malformed instant strings as format errors, not type mismatches', async () => {
+      const types: ElementType[] = [{ code: 'instant' }];
+      const issues = await validator.validate('2026-06-05T09:00:00', types, 'Appointment.start');
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('structural-invalid-format');
+      expect(issues[0].resourceType).toBe('Appointment');
+      expect(issues[0].message).toContain('timezone');
+      expect(issues[0].details).toEqual(expect.objectContaining({
+        value: '2026-06-05T09:00:00',
+        expectedType: 'instant',
+        suggestedValue: '2026-06-05T09:00:00Z',
+        fixHint: expect.stringContaining('2026-06-05T09:00:00Z'),
+      }));
+      expect(issues.some(issue => issue.code === 'structural-type-mismatch')).toBe(false);
+    });
+
+    it('reports malformed date strings as format errors, not type mismatches', async () => {
+      const types: ElementType[] = [{ code: 'date' }];
+      const issues = await validator.validate('2026-02-31', types, 'Patient.birthDate');
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('structural-invalid-format');
+      expect(issues.some(issue => issue.code === 'structural-type-mismatch')).toBe(false);
+    });
+
+    it('reports malformed time strings as format errors, not type mismatches', async () => {
+      const types: ElementType[] = [{ code: 'time' }];
+      const issues = await validator.validate('25:61:00', types, 'Observation.effectiveTime');
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('structural-invalid-format');
+      expect(issues.some(issue => issue.code === 'structural-type-mismatch')).toBe(false);
+    });
+
+    it('reports malformed base64 strings as format errors, not type mismatches', async () => {
+      const types: ElementType[] = [{ code: 'base64Binary' }];
+      const issues = await validator.validate('not base64!', types, 'Binary.data');
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('structural-invalid-base64-format');
+      expect(issues[0].resourceType).toBe('Binary');
+      expect(issues.some(issue => issue.code === 'structural-type-mismatch')).toBe(false);
+    });
+
+    it('uses the path resource type for invalid URI format issues', async () => {
+      const types: ElementType[] = [{ code: 'uri' }];
+      const issues = await validator.validate(
+        'test purl ingredient',
+        types,
+        'Ingredient.identifier.system',
+      );
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toEqual(expect.objectContaining({
+        code: 'structural-invalid-uri',
+        resourceType: 'Ingredient',
+      }));
+    });
+
+    it('truncates long invalid primitive values in issue details and hints', async () => {
+      const types: ElementType[] = [{ code: 'base64Binary' }];
+      const invalidValue = `${'A'.repeat(5000)}!`;
+      const issues = await validator.validate(invalidValue, types, 'Media.content.data');
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('structural-invalid-base64-format');
+
+      const details = issues[0].details as Record<string, unknown>;
+      expect(details.value).toBeUndefined();
+      expect(details.valuePreview).toBe(`${'A'.repeat(120)}...`);
+      expect(details.valueLength).toBe(invalidValue.length);
+      expect(details.valueTruncated).toBe(true);
+      expect(details.fixHint).toBe('Replace this value with a valid FHIR base64Binary value. The current value is 5001 characters and was truncated in this report.');
+      expect(String(details.fixHint)).not.toContain(invalidValue);
     });
   });
 
@@ -99,7 +221,7 @@ describe('TypeValidator', () => {
       const issues = await validator.validate('not-a-number', types, 'Patient.age');
       
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
     });
   });
 
@@ -164,7 +286,7 @@ describe('TypeValidator', () => {
       
       // Should error on the string element
       expect(issues.length).toBeGreaterThan(0);
-      expect(issues.some(i => i.code === 'structural-type-mismatch')).toBe(true);
+      expect(issues.some(i => i.code === 'structural-primitive-type-mismatch')).toBe(true);
     });
   });
 
@@ -186,6 +308,78 @@ describe('TypeValidator', () => {
       expect(booleanIssues).toHaveLength(0);
     });
 
+    it('accepts dateTime strings in choice slots and reports format separately', async () => {
+      const types: ElementType[] = [
+        { code: 'dateTime' },
+        { code: 'Period' },
+        { code: 'Timing' },
+        { code: 'instant' },
+      ];
+
+      const issues = await validator.validate(
+        '2024-01-01T12:00:00',
+        types,
+        'Observation.effective[x]'
+      );
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].code).toBe('structural-invalid-format');
+      expect(issues[0].message).toBe('If a date has a time, it must have a timezone');
+      expect(issues[0].details).toEqual(expect.objectContaining({
+        value: '2024-01-01T12:00:00',
+        suggestedValue: '2024-01-01T12:00:00Z',
+        fixHint: expect.stringContaining('timezone'),
+      }));
+    });
+
+    it('narrows concrete choice paths before primitive string format validation', async () => {
+      const types: ElementType[] = [
+        { code: 'dateTime' },
+        { code: 'Age' },
+        { code: 'Period' },
+        { code: 'Range' },
+        { code: 'string' },
+      ];
+
+      const issues = await validator.validate(
+        'around April 9, 2013',
+        types,
+        'Condition.abatementString',
+      );
+
+      expect(issues).toHaveLength(0);
+    });
+
+    it('prefers dateTime over the overlapping time suffix for concrete choice paths', async () => {
+      const types: ElementType[] = [
+        { code: 'time' },
+        { code: 'dateTime' },
+      ];
+
+      const issues = await validator.validate(
+        '2020-01-01',
+        types,
+        'Observation.valueDateTime',
+      );
+
+      expect(issues).toHaveLength(0);
+    });
+
+    it('suggests adding seconds for dateTime values with hour and minute precision plus timezone', async () => {
+      const types: ElementType[] = [{ code: 'dateTime' }];
+      const issues = await validator.validate('2021-01-01T09:41Z', types, 'Observation.effective[x]');
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toEqual(expect.objectContaining({
+        code: 'structural-invalid-format',
+        details: expect.objectContaining({
+          value: '2021-01-01T09:41Z',
+          suggestedValue: '2021-01-01T09:41:00Z',
+          fixHint: expect.stringContaining('2021-01-01T09:41:00Z'),
+        }),
+      }));
+    });
+
     it('should reject if none of the types match', async () => {
       const types: ElementType[] = [
         { code: 'integer' },
@@ -194,7 +388,7 @@ describe('TypeValidator', () => {
       
       const issues = await validator.validate('string-value', types, 'Element.value');
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
     });
 
     it('accepts extension-only complex values in choice slots', async () => {
@@ -250,7 +444,7 @@ describe('TypeValidator', () => {
       const types: ElementType[] = [{ code: 'integer' }];
       const issues = await validator.validate({ not: 'an-integer' }, types, 'Patient.multipleBirthInteger');
       expect(issues).toHaveLength(1);
-      expect(issues[0].code).toBe('structural-type-mismatch');
+      expect(issues[0].code).toBe('structural-primitive-type-mismatch');
     });
   });
 });

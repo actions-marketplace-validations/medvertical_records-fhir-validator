@@ -13,31 +13,38 @@
  * Additionally, per-aspect severity settings can cap the maximum severity for that aspect.
  */
 
-import type { ValidationIssue, ValidationSeverity } from '@records-fhir/validation-types/validation-types';
-import type { ValidationSettings, ValidationAspectConfig } from '@records-fhir/validation-types';
+import type {
+  ValidationAspect,
+  ValidationIssue,
+  ValidationSettings,
+  ValidationSeverity,
+} from '@records-fhir/validation-types';
+import { VALIDATION_ASPECTS } from '@records-fhir/validation-types';
 import { logger } from '../logger';
 
 export type ValidationStrictness = 'compatibility' | 'standard' | 'strict';
 
 /**
  * Resolve the strictness level and per-aspect severity-cap lookup from
- * a settings object. Centralises the cast-and-default dance so both the
- * single-aspect engine (`validation-engine-per-aspect`) and the
+ * a settings object. Both the
+ * single-aspect engine (`validation-engine-single-aspect`) and the
  * multi-aspect records-validator callback converge on the same logic.
  */
 export function resolveStrictnessConfig(settings: ValidationSettings | undefined | null): {
   strictness: ValidationStrictness;
   aspectSeverityFor: (aspect: string) => ValidationSeverity | undefined;
 } {
-  const strictness =
-    ((settings as (ValidationSettings & { validationStrictness?: ValidationStrictness }) | null | undefined)
-      ?.validationStrictness) || 'standard';
-  const aspects = settings?.aspects as unknown as Record<string, ValidationAspectConfig | undefined> | undefined;
+  const strictness = settings?.validationStrictness || 'standard';
   const aspectSeverityFor = (aspect: string): ValidationSeverity | undefined => {
-    const sev = aspects?.[aspect]?.severity;
+    if (!settings || !isValidationAspect(aspect)) return undefined;
+    const sev = settings.aspects[aspect]?.severity;
     return sev && sev !== 'inherit' ? sev : undefined;
   };
   return { strictness, aspectSeverityFor };
+}
+
+function isValidationAspect(value: string): value is ValidationAspect {
+  return VALIDATION_ASPECTS.some(aspect => aspect === value);
 }
 
 // Severity order for comparison (lower number = more severe)
@@ -87,7 +94,7 @@ export function applyStrictnessSeverity(
 
       // Log significant downgrades
       if (issue.severity === 'error' && newSeverity === 'warning') {
-        logger.debug(`[StrictnessSeverity] Downgraded error→warning: ${issue.code || issue.message?.substring(0, 50)}`);
+        logger.debug(`[StrictnessSeverity] Downgraded error→warning: ${issue.code || 'uncoded-issue'}`);
       }
     }
     // strict and standard: no change
@@ -97,7 +104,7 @@ export function applyStrictnessSeverity(
       const beforeCap = newSeverity;
       newSeverity = capSeverity(newSeverity, aspectMaxSeverity);
       if (beforeCap !== newSeverity) {
-        logger.debug(`[StrictnessSeverity] Capped ${beforeCap}→${newSeverity} (max: ${aspectMaxSeverity}): ${issue.code || issue.message?.substring(0, 50)}`);
+        logger.debug(`[StrictnessSeverity] Capped ${beforeCap}→${newSeverity} (max: ${aspectMaxSeverity}): ${issue.code || 'uncoded-issue'}`);
       }
     }
 

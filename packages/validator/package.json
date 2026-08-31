@@ -1,9 +1,12 @@
 {
   "name": "@records-fhir/validator",
-  "version": "0.1.7",
-  "description": "Pure-TypeScript FHIR R4/R5/R6 validation engine. Validates resources against StructureDefinitions, terminology, references, and custom rules with no database required.",
+  "version": "0.6.2",
+  "description": "Pure-TypeScript FHIR R4/R4B/R5/R6 validation engine. Validates resources against StructureDefinitions, terminology, references, and custom rules with no database required.",
   "type": "module",
   "license": "Apache-2.0",
+  "bin": {
+    "records-fhir-validator": "dist/cli.js"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org"
@@ -18,10 +21,14 @@
     "fhir",
     "validation",
     "fhirpath",
+    "fhir-validator",
+    "github-actions",
     "structuredefinition",
     "healthcare",
     "interoperability",
-    "hl7"
+    "hl7",
+    "mii",
+    "ehds"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -30,6 +37,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./advisor": {
+      "types": "./dist/advisor/index.d.ts",
+      "import": "./dist/advisor/index.js"
+    },
     "./business-rules": {
       "types": "./dist/business-rules/index.d.ts",
       "import": "./dist/business-rules/index.js"
@@ -37,6 +48,18 @@
     "./business-rules/rule-registry": {
       "types": "./dist/business-rules/rule-registry.d.ts",
       "import": "./dist/business-rules/rule-registry.js"
+    },
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "import": "./dist/host/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance/index.d.ts",
+      "import": "./dist/conformance/index.js"
+    },
+    "./fhir-schema": {
+      "types": "./dist/fhir-schema/index.d.ts",
+      "import": "./dist/fhir-schema/index.js"
     },
     "./core/batch-utils": {
       "types": "./dist/core/batch-utils.d.ts",
@@ -70,6 +93,26 @@
       "types": "./dist/package/package-downloader.d.ts",
       "import": "./dist/package/package-downloader.js"
     },
+    "./package-resolver": {
+      "types": "./dist/package-resolver/index.d.ts",
+      "import": "./dist/package-resolver/index.js"
+    },
+    "./reference": {
+      "types": "./dist/reference/index.d.ts",
+      "import": "./dist/reference/index.js"
+    },
+    "./metadata": {
+      "types": "./dist/metadata/index.d.ts",
+      "import": "./dist/metadata/index.js"
+    },
+    "./strictness": {
+      "types": "./dist/strictness/index.d.ts",
+      "import": "./dist/strictness/index.js"
+    },
+    "./terminology": {
+      "types": "./dist/terminology/index.d.ts",
+      "import": "./dist/terminology/index.js"
+    },
     "./validators/constraint-validator": {
       "types": "./dist/validators/constraint-validator.d.ts",
       "import": "./dist/validators/constraint-validator.js"
@@ -78,23 +121,29 @@
       "types": "./dist/validators/invariant-registry.d.ts",
       "import": "./dist/validators/invariant-registry.js"
     },
+    "./validators/fhirpath-sandbox": {
+      "types": "./dist/validators/fhirpath-sandbox.d.ts",
+      "import": "./dist/validators/fhirpath-sandbox.js"
+    },
     "./validators/valueset-cache": {
       "types": "./dist/validators/valueset-cache.d.ts",
       "import": "./dist/validators/valueset-cache.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && tsx ../../scripts/fix-esm-specifiers.ts dist",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node ../../scripts/run-typescript-native.mjs -p tsconfig.build.json && tsx ../../scripts/fix-esm-specifiers.ts dist",
+    "typecheck": "node ../../scripts/run-typescript-native.mjs -p tsconfig.json --noEmit",
     "prepack": "npm run build",
     "pack:dry": "npm pack --dry-run"
   },
   "dependencies": {
-    "@records-fhir/validation-types": "^0.1.2",
-    "axios": "^1.10.0",
-    "date-fns": "^3.6.0",
-    "fhirpath": "^4.8.2",
-    "tar": "^7.5.2"
+    "@lhncbc/ucum-lhc": "^5.0.0",
+    "@records-fhir/validation-types": "^0.1.9",
+    "axios": "^1.16.1",
+    "date-fns": "^4.4.0",
+    "fhirpath": "^4.11.0",
+    "saxes": "^6.0.0",
+    "tar": "^7.5.16"
   },
   "peerDependencies": {
     "@records-fhir/bundled-profiles": "^0.1.0"

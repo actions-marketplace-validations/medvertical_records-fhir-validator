@@ -5,7 +5,7 @@
  * Regression test for the bug where the multi-aspect batch validator
  * early-returned with a single `profile-not-found` info issue when the
  * declared profile URL couldn't be resolved. All other aspects (structural,
- * invariant, reference, metadata, customRule, terminology) were skipped,
+ * invariant, reference, metadata, custom_rule, terminology) were skipped,
  * which meant a typo in `meta.profile` silently suppressed real validation
  * errors.
  *
@@ -35,6 +35,7 @@ vi.mock('../profile-loader-utils', () => ({
     timestamp: new Date(),
     details: { profile: profileUrl },
   }),
+  createProfileResourceTypeMismatchIssue: vi.fn(),
 }));
 
 vi.mock('../validators/deep-profile-validator', () => ({
@@ -98,6 +99,7 @@ describe('multi-aspect-validate-callback — profile fallback', () => {
     expect(structural).toBeDefined();
     expect(structural!.issues).toHaveLength(1);
     expect(structural!.issues[0].code).toBe('structural-cardinality-min');
+    expect(structural!.issues[0].profile).toBe('http://example.org/DoesNotExist');
 
     // Profile aspect carries the fallback warning.
     const profile = result.aspects.find(a => a.aspect === 'profile');
@@ -133,5 +135,80 @@ describe('multi-aspect-validate-callback — profile fallback', () => {
     // Structural still ran.
     const structural = result.aspects.find(a => a.aspect === 'structural');
     expect(structural!.issues[0].code).toBe('structural-cardinality-min');
+  });
+
+  it('never reports a successful validation when only the base fallback was applied', async () => {
+    const deps = makeDeps();
+    deps.structuralExecutor = { validate: async () => [] } as any;
+    const callback = buildMultiAspectValidateCallback(
+      deps,
+      ['structural', 'profile'],
+      { validationStrictness: 'standard', aspects: {} },
+    );
+
+    const result = await callback(
+      { resourceType: 'Observation' },
+      'http://example.org/DoesNotExist',
+      'R4',
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.aspects.find(aspect => aspect.aspect === 'profile')?.isValid).toBe(false);
+  });
+
+  it('applies central issue dedupe to multi-aspect results', async () => {
+    const requiredElementCopy: ValidationIssue = {
+      severity: 'error',
+      code: 'structural-required-element-missing',
+      message: 'Required element Observation.status is missing',
+      path: 'Observation.status',
+      details: { fieldPath: 'Observation.status' },
+    };
+    const deps = makeDeps();
+    deps.structuralExecutor = {
+      validate: async () => [
+        {
+          ...cardinalityError,
+          details: { fieldPath: 'Observation.status' },
+        },
+        requiredElementCopy,
+      ],
+    } as any;
+
+    const callback = buildMultiAspectValidateCallback(
+      deps,
+      ['structural'],
+      { validationStrictness: 'standard', aspects: {} },
+    );
+
+    const result = await callback(
+      { resourceType: 'Observation' },
+      'http://example.org/DoesNotExist',
+      'R4',
+    );
+
+    const structural = result.aspects.find(a => a.aspect === 'structural');
+    expect(structural).toBeDefined();
+    expect(structural!.issues.map(issue => issue.code)).toEqual([
+      'structural-cardinality-min',
+    ]);
+  });
+
+  it('stamps multi-aspect issues with the requested FHIR version', async () => {
+    const callback = buildMultiAspectValidateCallback(
+      makeDeps(),
+      ['structural'],
+      { validationStrictness: 'standard', aspects: {} },
+    );
+
+    const result = await callback(
+      { resourceType: 'Observation' },
+      'http://example.org/DoesNotExist',
+      'R5',
+    );
+
+    const issues = result.aspects.flatMap(aspect => aspect.issues);
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.every(issue => issue.schemaVersion === 'R5')).toBe(true);
   });
 });

@@ -19,6 +19,10 @@ export interface UriValidationResult {
  * Validate URI format and determine type
  */
 export function validateUriFormat(uri: string): UriValidationResult {
+  if (/\s/.test(uri)) {
+    return { isValid: false, type: 'unknown', reason: 'URI must not contain whitespace' };
+  }
+
   // Check for URL (http, https, ftp)
   // Check for URL (http, https, ftp)
   if (uri.startsWith('http:') || uri.startsWith('https:') || uri.startsWith('ftp:')) {
@@ -69,7 +73,7 @@ export function validateUriFormat(uri: string): UriValidationResult {
   }
 
   // Check for relative reference (ResourceType/id or relative path)
-  if (/^[A-Z][a-zA-Z]+\/[A-Za-z0-9\-\.]+/.test(uri) || uri.startsWith('/') || uri.startsWith('#')) {
+  if (/^[A-Z][a-zA-Z]+\/[A-Za-z0-9.-]+/.test(uri) || uri.startsWith('/') || uri.startsWith('#')) {
     return { isValid: true, type: 'relative' };
   }
 
@@ -92,7 +96,7 @@ export function validateUriFormat(uri: string): UriValidationResult {
  * Matches patterns like: Patient/123, Organization/xyz, etc.
  */
 export function looksLikeReference(uri: string): boolean {
-  const referencePattern = /^[A-Z][a-zA-Z]+\/[A-Za-z0-9\-\.]+/;
+  const referencePattern = /^[A-Z][a-zA-Z]+\/[A-Za-z0-9.-]+/;
   return referencePattern.test(uri);
 }
 
@@ -100,6 +104,10 @@ export function looksLikeReference(uri: string): boolean {
  * Helper method to validate URLs
  */
 export function isValidUrl(url: string): boolean {
+  if (/\s/.test(url)) {
+    return false;
+  }
+
   try {
     new URL(url);
     return true;
@@ -107,4 +115,3 @@ export function isValidUrl(url: string): boolean {
     return false;
   }
 }
-

@@ -12,7 +12,11 @@
  */
 
 import { describe, it, expect, vi, _beforeEach } from 'vitest';
-import { executeBatchValidation, type BatchValidationOptions, type BatchValidatorContext } from '../batch-validator';
+import {
+  executeBatchValidation,
+  type BatchValidationOptions,
+  type BatchValidatorContext,
+} from '../batch-validator';
 import type { ValidationIssue } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +31,7 @@ function makeContext(validateFn?: (resource: unknown, profileUrl: string) => Pro
       loadProfile: vi.fn().mockResolvedValue(null),
       loadProfilesBatch: vi.fn().mockResolvedValue(new Map()),
       isProfileAvailable: vi.fn().mockReturnValue(false),
+      setProfileResolutionContext: vi.fn(),
     } as unknown as BatchValidatorContext['sdLoader'],
     profileCache: {
       get: vi.fn().mockReturnValue(null),
@@ -166,9 +171,26 @@ describe('executeBatchValidation', () => {
       await expect(executeBatchValidation([good, bad], BASE_OPTIONS, ctx))
         .rejects.toThrow('validation-crash');
     });
+
+    it('aborts before validating additional resources when shouldStop is set', async () => {
+      let stopped = false;
+      const callTracker = vi.fn().mockImplementation(async () => {
+        stopped = true;
+        return [];
+      });
+      const ctx = makeContext(callTracker);
+
+      await expect(executeBatchValidation(
+        [patient('p1'), patient('p2', 'Jones')],
+        { ...BASE_OPTIONS, maxConcurrency: 1, shouldStop: () => stopped },
+        ctx,
+      )).rejects.toMatchObject({ name: 'BatchValidationAbortedError' });
+
+      expect(callTracker).toHaveBeenCalledTimes(1);
+    });
   });
 
-  describe('Step 4 — Concurrency chunking', () => {
+  describe('Step 4 — Bounded worker pool', () => {
     it('processes all resources even when count exceeds maxConcurrency', async () => {
       const resources = Array.from({ length: 25 }, (_, i) => patient(`p${i}`, `Family${i}`));
       const ctx = makeContext(async () => []);
@@ -176,6 +198,64 @@ describe('executeBatchValidation', () => {
       const results = await executeBatchValidation(resources, { ...BASE_OPTIONS, maxConcurrency: 3 }, ctx);
 
       expect(results.size).toBe(25);
+    });
+
+    it('never exceeds maxConcurrency', async () => {
+      let active = 0;
+      let peak = 0;
+      const resources = Array.from({ length: 12 }, (_, i) => patient(`p${i}`, `Family${i}`));
+      const ctx = makeContext(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await Promise.resolve();
+        active -= 1;
+        return [];
+      });
+
+      await executeBatchValidation(resources, { ...BASE_OPTIONS, maxConcurrency: 3 }, ctx);
+
+      expect(peak).toBe(3);
+    });
+
+    it('routes every resource through the shared run scheduler', async () => {
+      const resources = Array.from({ length: 4 }, (_, i) => patient(`p${i}`, `Family${i}`));
+      const ctx = makeContext(async () => []);
+      const scheduleValidation = vi.fn(async <T>(task: () => Promise<T>) => task());
+
+      await executeBatchValidation(
+        resources,
+        { ...BASE_OPTIONS, scheduleValidation },
+        ctx,
+      );
+
+      expect(scheduleValidation).toHaveBeenCalledTimes(resources.length);
+    });
+
+    it('does not serialize independent profile groups', async () => {
+      let releaseSecondProfile!: () => void;
+      const secondProfileStarted = new Promise<void>(resolve => {
+        releaseSecondProfile = resolve;
+      });
+      const first = patient('first');
+      const second = patient('second', 'Jones');
+      second.meta = { profile: ['http://example.org/StructureDefinition/second'] };
+      const ctx = makeContext(async (resource) => {
+        if ((resource as { id?: string }).id === 'first') {
+          await secondProfileStarted;
+        } else {
+          releaseSecondProfile();
+        }
+        return [];
+      });
+
+      const result = await Promise.race([
+        executeBatchValidation([first, second], { ...BASE_OPTIONS, maxConcurrency: 2 }, ctx),
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('profile groups were serialized')), 250);
+        }),
+      ]);
+
+      expect(result.size).toBe(2);
     });
   });
 

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +42,72 @@ function run(command, args, options = {}) {
       const rendered = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
       reject(new Error(`${command} ${args.join(' ')} exited with ${code}\n${rendered}`));
     });
+  });
+}
+
+function structureDefinition(type, elements) {
+  return {
+    resourceType: 'StructureDefinition',
+    url: `http://hl7.org/fhir/StructureDefinition/${type}`,
+    version: '4.0.1',
+    fhirVersion: '4.0.1',
+    name: type,
+    status: 'active',
+    kind: 'resource',
+    abstract: false,
+    type,
+    snapshot: {
+      element: [
+        { id: type, path: type, min: 0, max: '*' },
+        ...elements,
+      ],
+    },
+  };
+}
+
+async function writePackageResource(packageDir, filename, resource) {
+  await writeFile(join(packageDir, filename), `${JSON.stringify(resource, null, 2)}\n`, 'utf8');
+}
+
+async function writeMinimalR4CorePackage(cacheRoot) {
+  const packageDir = join(cacheRoot, 'hl7.fhir.r4.core#4.0.1', 'package');
+  await mkdir(packageDir, { recursive: true });
+  await writePackageResource(packageDir, 'package.json', {
+    name: 'hl7.fhir.r4.core',
+    version: '4.0.1',
+    fhirVersions: ['4.0.1'],
+  });
+  await writePackageResource(packageDir, 'StructureDefinition-Patient.json', structureDefinition('Patient', [
+    {
+      id: 'Patient.gender',
+      path: 'Patient.gender',
+      min: 0,
+      max: '1',
+      type: [{ code: 'code' }],
+      binding: {
+        strength: 'required',
+        valueSet: 'http://hl7.org/fhir/ValueSet/administrative-gender',
+      },
+    },
+    {
+      id: 'Patient.birthDate',
+      path: 'Patient.birthDate',
+      min: 0,
+      max: '1',
+      type: [{ code: 'date' }],
+    },
+  ]));
+  await writePackageResource(packageDir, 'ValueSet-administrative-gender.json', {
+    resourceType: 'ValueSet',
+    url: 'http://hl7.org/fhir/ValueSet/administrative-gender',
+    version: '4.0.1',
+    status: 'active',
+    expansion: {
+      contains: ['male', 'female', 'other', 'unknown'].map((code) => ({
+        system: 'http://hl7.org/fhir/administrative-gender',
+        code,
+      })),
+    },
   });
 }
 
@@ -98,7 +164,7 @@ import {
   setEngineLogger,
   setProfileSource,
 } from '@records-fhir/validator';
-import { toOperationOutcome } from '@records-fhir/validator/core/operation-outcome-converter';
+import { toOperationOutcome } from '@records-fhir/validator/conformance';
 
 const noopLogger = {
   debug() {},
@@ -119,6 +185,22 @@ const validator = new RecordsValidator({
 
 if (typeof validator.validate !== 'function') {
   throw new Error('RecordsValidator.validate is not available');
+}
+
+const metadataIssues = await validator.validateMetadata({
+  resourceType: 'Patient',
+  id: 'metadata-runtime-smoke',
+  meta: {
+    profile: ['http://hl7.org/fhir/StructureDefinition/Patient'],
+    tag: [{ code: 'smoke' }],
+  },
+});
+if (metadataIssues.some((issue) => (
+  issue.code === 'validation-error' ||
+  issue.code === 'metadata-validation-error' ||
+  issue.message?.includes('Directory import')
+))) {
+  throw new Error('Metadata runtime smoke returned an engine failure: ' + JSON.stringify(metadataIssues));
 }
 
 const valueSetValidator = new ValueSetValidator();
@@ -143,6 +225,55 @@ if (outcome.resourceType !== 'OperationOutcome' || outcome.issue.length === 0) {
   );
 
   await run('node', ['smoke.mjs'], { cwd: packageDir });
+
+  await mkdir(join(packageDir, 'fixtures'), { recursive: true });
+  await writeFile(
+    join(packageDir, 'fixtures', 'patient.json'),
+    JSON.stringify({ resourceType: 'Patient', id: 'cli-smoke' }, null, 2),
+  );
+  await writeFile(
+    join(packageDir, 'fixtures', 'skip-me.json'),
+    JSON.stringify({ resourceType: 'Observation', id: 'skip-me' }, null, 2),
+  );
+  await writeFile(join(packageDir, 'fixtures', 'notes.txt'), 'not fhir json\n');
+
+  const cliHome = join(packageDir, 'home');
+  const cliPackageCache = join(packageDir, 'fhir-package-cache');
+  await mkdir(cliHome, { recursive: true });
+  await writeMinimalR4CorePackage(cliPackageCache);
+
+  await run(
+    './node_modules/.bin/records-fhir-validator',
+    [
+      'fixtures',
+      '--include',
+      'fixtures/**/*.json',
+      '--exclude',
+      'fixtures/skip-*.json',
+      '--format=json',
+      '--summary-only',
+      '--output',
+      'validation-report.json',
+      '--fail-on=none',
+    ],
+    {
+      cwd: packageDir,
+      env: {
+        HOME: cliHome,
+        FHIR_PACKAGE_CACHE_PATH: cliPackageCache,
+        RECORDS_BUNDLED_PROFILES_PATH: cliPackageCache,
+      },
+    },
+  );
+
+  const report = JSON.parse(await readFile(join(packageDir, 'validation-report.json'), 'utf8'));
+  if (report.summary?.files !== 1 || report.summary?.errors !== 0) {
+    throw new Error(`Unexpected CLI smoke summary: ${JSON.stringify(report.summary)}`);
+  }
+  if ('results' in report) {
+    throw new Error('Expected --summary-only JSON output to omit results');
+  }
+
   console.log('OSS validator package smoke test passed');
 } finally {
   if (process.env.KEEP_SMOKE_TMP !== '1') {

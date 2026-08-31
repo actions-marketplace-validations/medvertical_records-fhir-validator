@@ -13,6 +13,11 @@ import type { ValidationIssue } from '../types';
 import { createValidationIssue } from '../issues';
 import { isValidUrl } from './uri-validators';
 import { logger } from '../logger';
+import { isObjectRecord } from './metadata-boundary-utils';
+import {
+  createSafeValidationFailureMessage,
+  validationFailureMetadata,
+} from '../utils/validation-execution-failure';
 
 /**
  * Validates meta.profile URLs and accessibility
@@ -21,7 +26,7 @@ export class ProfileValidator {
   /**
    * Validate profile URLs
    */
-  validateUrls(profiles: any, resourceType: string): ValidationIssue[] {
+  validateUrls(profiles: unknown, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
@@ -35,7 +40,7 @@ export class ProfileValidator {
         return issues;
       }
 
-      profiles.forEach((profile: any, index: number) => {
+      profiles.forEach((profile: unknown, index: number) => {
         const path = `meta.profile[${index}]`;
 
         if (typeof profile !== 'string') {
@@ -73,7 +78,7 @@ export class ProfileValidator {
         }
 
         // Check for duplicates
-        const duplicateIndex = profiles.findIndex((other: any, otherIndex: number) =>
+        const duplicateIndex = profiles.findIndex((other: unknown, otherIndex: number) =>
           otherIndex > index && other === profile
         );
 
@@ -89,7 +94,10 @@ export class ProfileValidator {
       });
 
     } catch (error) {
-      logger.error('[ProfileValidator] URL validation failed:', error);
+      logger.error(
+        '[ProfileValidator] URL validation failed',
+        validationFailureMetadata(error),
+      );
     }
 
     return issues;
@@ -99,7 +107,7 @@ export class ProfileValidator {
    * Validate profile accessibility (async)
    */
   async validateAccessibility(
-    profiles: any,
+    profiles: unknown,
     resourceType: string,
     _fhirVersion: string = 'R4'
   ): Promise<ValidationIssue[]> {
@@ -114,7 +122,7 @@ export class ProfileValidator {
     // resolveProfile is wired up — typical for CLI / npm-package
     // callers — this check silently degrades to "not validated" and
     // produces no issues.
-    const { getProfileSource } = await import('../persistence');
+    const { getProfileSource } = await import('../persistence/index.js');
     const source = getProfileSource();
     if (!source.resolveProfile) {
       return issues;
@@ -146,9 +154,9 @@ export class ProfileValidator {
 
           // ProfileSource.resolveProfile returns the StructureDefinition
           // directly (not the legacy ProfileResolutionResult wrapper).
-          const profileDef = resolved as { type?: string; status?: string };
+          const profileDef: Record<string, unknown> = isObjectRecord(resolved) ? resolved : {};
 
-          if (profileDef.type && profileDef.type !== resourceType) {
+          if (typeof profileDef.type === 'string' && profileDef.type !== resourceType) {
             issues.push(createValidationIssue({
               code: 'metadata-profile-wrong-resource-type',
               path,
@@ -169,19 +177,24 @@ export class ProfileValidator {
           }
 
         } catch (error: unknown) {
-          const err = error instanceof Error ? error : new Error(String(error));
           issues.push(createValidationIssue({
             code: 'profile-load-error',
             path,
             resourceType,
-            customMessage: `Failed to resolve profile "${profile}": ${err.message}`,
-            details: { profileUrl: profile, error: err.message },
+            customMessage: createSafeValidationFailureMessage('Profile resolution'),
+            details: {
+              profileUrl: profile,
+              ...validationFailureMetadata(error),
+            },
           }));
         }
       }
 
     } catch (error: unknown) {
-      logger.error('[ProfileValidator] accessibility check failed:', error);
+      logger.error(
+        '[ProfileValidator] Accessibility validation failed',
+        validationFailureMetadata(error),
+      );
     }
 
     return issues;
@@ -210,9 +223,6 @@ export class ProfileValidator {
           }
         }
 
-        if (/^[A-Z][a-z]+$/.test(profileName)) {
-          return profileName;
-        }
       }
 
       return null;

@@ -43,6 +43,8 @@ export interface TerminologyServerDescriptor {
     enabled: boolean;
     fhirVersions: ('R4' | 'R5' | 'R6')[];
     preferredSystems?: string[];
+    /** SNOMED edition module IDs or edition/version URIs served authoritatively. */
+    snomedEditions?: string[];
     circuitOpen?: boolean;
     authConfig?: TerminologyApiAuthConfig;
 }
@@ -51,6 +53,8 @@ export interface TerminologyServerDescriptor {
 export interface TerminologyServerOverride {
     url: string;
     auth?: TerminologyApiAuthConfig;
+    /** The selected server explicitly declares the requested SNOMED edition. */
+    authoritativeSnomedEdition?: boolean;
 }
 
 /** Configuration for terminology resolution */
@@ -72,7 +76,93 @@ export interface TerminologyResolutionConfig {
         validateCodes: boolean;
         cacheResults: boolean;
         cacheTTLSeconds: number;
+        /**
+         * Per-request timeout for remote terminology operations. Local
+         * terminology/package checks are unaffected.
+         */
+        requestTimeoutMs?: number;
+        /**
+         * Treat successful remote responses slower than this threshold as
+         * availability failures for circuit-breaker purposes. Set to 0 to
+         * disable slow-response circuiting.
+         */
+        slowResponseThresholdMs?: number;
+        /**
+         * Maximum direct remote CodeSystem validations per configured
+         * validator instance. Exhaustion fails open and leaves local
+         * CodeSystem/package validation unaffected.
+         */
+        maxRemoteCodeSystemValidations?: number;
+        /**
+         * Process-wide concurrency limit per terminology-server scope. The
+         * shared broker applies this across validator instances and runs.
+         */
+        maxConcurrentRequests?: number;
     };
+    twoPhaseExpansion?: {
+        enabled: boolean;
+        mode: 'shadow' | 'enforce';
+        logMismatches?: boolean;
+    };
+    /**
+     * When true, a binding that cannot be verified locally and is not
+     * confirmed by a terminology server emits a `terminology-binding-unverified`
+     * informational issue instead of silently failing open. The Records
+     * runtime enables this by default; low-level callers may opt out.
+     */
+    reportUnverifiedBindings?: boolean;
+    /**
+     * Strict terminology policy (gap P-3 step c): when true, an unverifiable
+     * *required* binding is raised to `warning` severity instead of the default
+     * `information`. Implies `reportUnverifiedBindings`. Extensible/preferred
+     * bindings stay informational. The Records runtime enables this by default.
+     */
+    strictUnverifiedRequiredBindings?: boolean;
+}
+
+/**
+ * Tri-state outcome of a code-vs-binding check.
+ *
+ * `valid`/`invalid` are authoritative. `unverified` means the code is not
+ * known to be wrong but could not be confirmed (no local expansion, no
+ * terminology server). Callers fail open on `unverified` but may surface it.
+ */
+export type CodeBindingOutcome = 'valid' | 'invalid' | 'unverified';
+
+export const TERMINOLOGY_UNVERIFIED_REASONS = [
+    'empty-expansion',
+    'unsupported-filter',
+    'unenumerable-system-include',
+    'unresolvable-snomed-extension-filter',
+    'versioned-binding-unverified',
+    'validation-error',
+] as const;
+
+export type TerminologyUnverifiedReason = typeof TERMINOLOGY_UNVERIFIED_REASONS[number];
+
+export interface TerminologyReasonCounters {
+    total: number;
+    byReason: Record<TerminologyUnverifiedReason, number>;
+}
+
+export const TERMINOLOGY_DELEGATION_REASONS = [
+    'server-validate-code',
+] as const;
+
+export type TerminologyDelegationReason = typeof TERMINOLOGY_DELEGATION_REASONS[number];
+
+export interface TerminologyDelegationCounters {
+    total: number;
+    byReason: Record<TerminologyDelegationReason, number>;
+}
+
+export interface TerminologyDiagnostics {
+    /** Bindings that failed open because the validator could not prove validity locally or remotely. */
+    unverifiedBindings: TerminologyReasonCounters;
+    /** Bindings or membership checks delegated to a terminology server. */
+    delegatedBindings: TerminologyDelegationCounters;
+    /** Direct ValueSet membership checks that failed open to avoid false negatives. */
+    failOpenMembershipChecks: TerminologyReasonCounters;
 }
 
 // ============================================================================
@@ -111,21 +201,46 @@ export interface ValueSet {
         exclude?: ValueSetComposeExclude[];
     };
     expansion?: {
-        contains?: Array<{
-            system?: string;
-            code: string;
-            display?: string;
-            /** Nested concepts (hierarchical expansion) */
-            contains?: any[];
-        }>;
+        contains?: ValueSetExpansionContains[];
     };
+}
+
+export interface ValueSetExpansionContains {
+    system?: string;
+    version?: string;
+    code: string;
+    display?: string;
+    contains?: ValueSetExpansionContains[];
 }
 
 export interface CodeSystemConcept {
     code: string;
     display?: string;
     definition?: string;
+    designation?: Array<{
+        language?: string;
+        use?: {
+            system?: string;
+            code?: string;
+            display?: string;
+        };
+        value?: string;
+    }>;
     concept?: CodeSystemConcept[];
+}
+
+export interface CodeSystemPropertyDefinition {
+    code: string;
+    uri?: string;
+    description?: string;
+    type?: string;
+}
+
+export interface CodeSystemFilterDefinition {
+    code: string;
+    description?: string;
+    operator?: string[];
+    value?: string;
 }
 
 export interface CodeSystem {
@@ -143,6 +258,8 @@ export interface CodeSystem {
      * the codes they reference must already exist in the base system.
      */
     supplements?: string;
+    property?: CodeSystemPropertyDefinition[];
+    filter?: CodeSystemFilterDefinition[];
     concept?: CodeSystemConcept[];
 }
 
@@ -164,17 +281,16 @@ export const DEFAULT_RESOLUTION_CONFIG: TerminologyResolutionConfig = {
  * External CodeSystems that should be validated via tx.fhir.org
  * These systems are too large to bundle locally and require server validation
  *
- * ICD systems are intentionally not listed here. Public terminology servers
- * often expose incomplete/licensed ICD content and can report common valid
- * ICD-10-CM codes as unknown. Treat ICD system URLs as known, but only assert
- * code membership when an authoritative ValueSet/CodeSystem is loaded or a
- * scoped terminology server is configured for a binding.
+ * ICD and CPT systems are intentionally not listed here. Public terminology
+ * servers often expose incomplete/licensed content and can report common valid
+ * codes as unknown. Treat those system URLs as known, but only assert code
+ * membership when an authoritative ValueSet/CodeSystem is loaded or a scoped
+ * terminology server is configured for a binding.
  */
 export const EXTERNAL_CODE_SYSTEMS = new Set([
     'http://loinc.org',
     'http://snomed.info/sct',
     'http://www.nlm.nih.gov/research/umls/rxnorm',
-    'http://www.ama-assn.org/go/cpt',
 ]);
 
 /**

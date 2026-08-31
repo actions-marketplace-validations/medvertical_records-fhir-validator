@@ -1,0 +1,62 @@
+import { describe, expect, it } from 'vitest';
+import { getDirectValue, getNestedValue, isPrimitiveType } from '../structural-executor-helpers';
+
+describe('isPrimitiveType', () => {
+  it('classifies every FHIR primitive, including uuid, xhtml, and integer64', () => {
+    // uuid missing here let value[x] complex-type resolution treat uuid as a
+    // complex candidate and deep-walk Quantity values with the uuid SD.
+    for (const code of ['uuid', 'xhtml', 'integer64', 'decimal', 'string', 'boolean']) {
+      expect(isPrimitiveType(code)).toBe(true);
+    }
+    for (const code of ['Quantity', 'CodeableConcept', 'Reference']) {
+      expect(isPrimitiveType(code)).toBe(false);
+    }
+  });
+});
+
+describe('structural executor value helpers', () => {
+  it('treats primitive sidecar extensions as present values', () => {
+    const identifier = {
+      system: 'http://fhir.de/sid/gkv/kvid-10',
+      _value: {
+        extension: [{
+          url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+          valueCode: 'masked',
+        }],
+      },
+    };
+
+    expect(getNestedValue(identifier, 'value')).toEqual(identifier._value);
+  });
+
+  it('resolves primitive sidecars through resource paths', () => {
+    const patient = {
+      resourceType: 'Patient',
+      identifier: [{
+        _value: {
+          extension: [{
+            url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+            valueCode: 'masked',
+          }],
+        },
+      }],
+    };
+
+    expect(getDirectValue(patient, 'Patient.identifier.0.value')).toEqual(patient.identifier[0]._value);
+  });
+
+  it('resolves array child segments without reading Array prototype members', () => {
+    const valueSet = {
+      resourceType: 'ValueSet',
+      compose: {
+        include: [{
+          system: 'http://loinc.org',
+          concept: [{ code: 'LA2-8' }],
+        }],
+      },
+    };
+
+    expect(getDirectValue(valueSet, 'ValueSet.compose.include.system')).toEqual(['http://loinc.org']);
+    expect(getDirectValue(valueSet, 'ValueSet.compose.include.filter')).toBeUndefined();
+  });
+});

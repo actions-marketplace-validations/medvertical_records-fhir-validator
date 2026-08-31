@@ -1,120 +1,58 @@
 /**
- * Recursive Reference Validator
- * 
  * Validates referenced resources recursively with configurable depth limits.
  * Prevents infinite loops using circular reference detection.
- * 
- * Task 6.6: Implement optional recursive validation (validate referenced resources)
- * Task 6.7: Add validation depth limit configuration (default: 1 level, max: 3 levels)
  */
 
-import { getCircularReferenceDetector } from './circular-reference-detector';
-import { parseReference } from './reference-type-extractor';
+import { CircularReferenceDetector } from './circular-reference-detector';
+import {
+  extractReferencesToValidate,
+  filterReferences,
+  getResourceIdentifier,
+  ResourceIdentityRegistry,
+  isTimeoutReached,
+  resolveBundleReference,
+  resolveContainedReference,
+  type ReferenceToValidate,
+} from './recursive-reference-helpers';
 import { logger } from '../logger';
+import { classifyReferenceRequestFailure } from './reference-request-failure';
+import {
+  createSafeRecursiveValidationConfig,
+  estimateRecursiveValidationCost,
+  getDefaultRecursiveValidationConfig,
+  type RecursiveValidationConfig,
+} from './recursive-reference-config';
+import { fetchReferenceWithinDeadline, ReferenceFetchTimeoutError } from './reference-fetch-deadline';
 
-// ============================================================================
-// Types
-// ============================================================================
-
-export interface RecursiveValidationConfig {
-  /** Whether to enable recursive validation (default: false) */
-  enabled: boolean;
-  /** Maximum depth to validate (default: 1, max: 3) */
-  maxDepth: number;
-  /** Whether to validate external references (default: false) */
-  validateExternal: boolean;
-  /** Whether to validate contained references recursively (default: true) */
-  validateContained: boolean;
-  /** Whether to validate Bundle entries recursively (default: true) */
-  validateBundleEntries: boolean;
-  /** Resource types to exclude from recursive validation */
-  excludeResourceTypes?: string[];
-  /** Maximum references to follow per resource (default: 10) */
-  maxReferencesPerResource?: number;
-  /** Timeout in milliseconds for recursive validation (default: 30000) */
-  timeoutMs?: number;
-}
+export type { RecursiveValidationConfig } from './recursive-reference-config';
 
 export interface RecursiveValidationContext {
-  /** Current depth in the validation chain */
   currentDepth: number;
-  /** Reference chain leading to this validation */
   referenceChain: string[];
-  /** Resource IDs already validated (to prevent duplicates) */
   validatedResources: Set<string>;
-  /** Start time for timeout tracking */
   startTime: number;
-  /** Configuration */
   config: RecursiveValidationConfig;
+  resourceIdentities: ResourceIdentityRegistry;
 }
 
 export interface RecursiveValidationResult {
-  /** Total resources validated */
   totalResourcesValidated: number;
-  /** Maximum depth reached */
   maxDepthReached: number;
-  /** Number of references followed */
   referencesFollowed: number;
-  /** Resources that couldn't be resolved */
   unresolvedReferences: string[];
-  /** Circular references detected */
   circularReferences: string[][];
-  /** Validation time in milliseconds */
   validationTimeMs: number;
-  /** Whether timeout was reached */
   timedOut: boolean;
 }
 
-export interface ReferenceToValidate {
-  /** The reference string */
-  reference: string;
-  /** Resource type if known */
-  resourceType?: string;
-  /** Resource ID if known */
-  resourceId?: string;
-  /** Field path where reference was found */
-  fieldPath: string;
-  /** Parent resource ID */
-  parentResourceId: string;
-  /** Depth in validation chain */
-  depth: number;
-}
-
-// ============================================================================
-// Recursive Reference Validator Class
-// ============================================================================
-
 export class RecursiveReferenceValidator {
-  private circularDetector = getCircularReferenceDetector();
-  private defaultConfig: RecursiveValidationConfig = {
-    enabled: false,
-    maxDepth: 1,
-    validateExternal: false,
-    validateContained: true,
-    validateBundleEntries: true,
-    excludeResourceTypes: [],
-    maxReferencesPerResource: 10,
-    timeoutMs: 30000,
-  };
-
-  /**
-   * Validate references recursively
-   */
+  private readonly circularDetector = new CircularReferenceDetector();
   async validateRecursively(
-    resource: any,
+    resource: unknown,
     config: Partial<RecursiveValidationConfig> = {},
-    resourceFetcher?: (reference: string) => Promise<any>
+    resourceFetcher?: (reference: string) => Promise<unknown>
   ): Promise<RecursiveValidationResult> {
-    const fullConfig: RecursiveValidationConfig = {
-      ...this.defaultConfig,
-      ...config,
-    };
-
-    // Enforce max depth limits
-    if (fullConfig.maxDepth > 3) {
-      logger.warn('[RecursiveReferenceValidator] Max depth capped at 3 for safety');
-      fullConfig.maxDepth = 3;
-    }
+    const fullConfig = this.createSafeConfig(config);
 
     const context: RecursiveValidationContext = {
       currentDepth: 0,
@@ -122,6 +60,7 @@ export class RecursiveReferenceValidator {
       validatedResources: new Set<string>(),
       startTime: Date.now(),
       config: fullConfig,
+      resourceIdentities: new ResourceIdentityRegistry(),
     };
 
     const result: RecursiveValidationResult = {
@@ -134,13 +73,11 @@ export class RecursiveReferenceValidator {
       timedOut: false,
     };
 
-    // Check if recursive validation is enabled
     if (!fullConfig.enabled) {
-      logger.info('[RecursiveReferenceValidator] Recursive validation disabled');
+      logger.debug('[RecursiveReferenceValidator] Recursive validation disabled');
       return result;
     }
 
-    // Perform recursive validation
     await this.validateResourceRecursively(
       resource,
       context,
@@ -150,7 +87,8 @@ export class RecursiveReferenceValidator {
 
     result.validationTimeMs = Date.now() - context.startTime;
 
-    logger.info(
+    const logCompletion = result.validationTimeMs > 100 ? logger.info.bind(logger) : logger.debug.bind(logger);
+    logCompletion(
       `[RecursiveReferenceValidator] Completed: ` +
       `${result.totalResourcesValidated} resources, ` +
       `${result.referencesFollowed} references, ` +
@@ -161,251 +99,168 @@ export class RecursiveReferenceValidator {
     return result;
   }
 
-  /**
-   * Validate a single resource and its references recursively
-   */
   private async validateResourceRecursively(
-    resource: any,
+    resource: unknown,
     context: RecursiveValidationContext,
     result: RecursiveValidationResult,
-    resourceFetcher?: (reference: string) => Promise<any>
+    resourceFetcher?: (reference: string) => Promise<unknown>
   ): Promise<void> {
-    // Handle null/undefined resource
-    if (!resource || typeof resource !== 'object') {
-      return;
-    }
+    const resourceRecord = toRecord(resource);
+    if (!resourceRecord) return;
 
-    // Check timeout
-    if (this.isTimeoutReached(context)) {
+    if (isTimeoutReached(context)) {
       logger.warn('[RecursiveReferenceValidator] Timeout reached');
       result.timedOut = true;
       return;
     }
 
-    // Check depth limit
     if (context.currentDepth >= context.config.maxDepth) {
-      logger.info(`[RecursiveReferenceValidator] Max depth ${context.config.maxDepth} reached`);
+      logger.debug(`[RecursiveReferenceValidator] Max depth ${context.config.maxDepth} reached`);
       return;
     }
 
-    // Track resource
-    const resourceId = this.getResourceIdentifier(resource);
+    const resourceId = getResourceIdentifier(resourceRecord, context.resourceIdentities);
     if (context.validatedResources.has(resourceId)) {
-      return; // Already validated
+      return;
     }
 
     context.validatedResources.add(resourceId);
     result.totalResourcesValidated++;
     result.maxDepthReached = Math.max(result.maxDepthReached, context.currentDepth);
 
-    logger.info(
-      `[RecursiveReferenceValidator] [Depth ${context.currentDepth}] Validating ${resource.resourceType}/${resource.id || 'unknown'}`
+    logger.debug(
+      `[RecursiveReferenceValidator] [Depth ${context.currentDepth}] Validating ` +
+      `${getString(resourceRecord, 'resourceType') ?? 'Unknown'}/${getString(resourceRecord, 'id') ?? 'unknown'}`
     );
 
-    // Add current resource to chain for circular detection
     const currentChain = [...context.referenceChain, resourceId];
 
-    // Extract references from this resource
-    const references = this.extractReferencesToValidate(resource, resourceId, context.currentDepth);
+    const references = extractReferencesToValidate(resourceRecord, resourceId, context.currentDepth);
+    const filteredReferences = filterReferences(references, context);
 
-    // Filter and limit references
-    const filteredReferences = this.filterReferences(references, context);
-
-    // Validate each reference
     for (const ref of filteredReferences) {
-      // Check timeout again before processing each reference
-      if (this.isTimeoutReached(context)) {
-        result.timedOut = true;
-        return;
-      }
-
-      // Check if this would create a circular reference
-      // Use the actual resource identifier for the check
-      const refIdentifier = ref.resourceType && ref.resourceId
-        ? `${ref.resourceType}/${ref.resourceId}`
-        : ref.reference;
-
-      const wouldBeCircular = this.circularDetector.wouldCreateCircularReference(
+      const shouldContinue = await this.processReference(
+        ref,
+        resourceRecord,
+        context,
         currentChain,
-        refIdentifier
+        result,
+        resourceFetcher,
       );
-
-      if (wouldBeCircular) {
-        logger.warn(`[RecursiveReferenceValidator] Circular reference detected: ${refIdentifier}`);
-        result.circularReferences.push([...currentChain, refIdentifier]);
-        continue;
-      }
-
-      // Try to resolve and validate the referenced resource
-      if (resourceFetcher) {
-        try {
-          const referencedResource = await resourceFetcher(ref.reference);
-
-          if (referencedResource) {
-            result.referencesFollowed++;
-
-            // Create new context for recursive call
-            const childContext: RecursiveValidationContext = {
-              ...context,
-              currentDepth: context.currentDepth + 1,
-              referenceChain: currentChain, // Use current chain which includes this resource
-            };
-
-            // Recursively validate
-            await this.validateResourceRecursively(
-              referencedResource,
-              childContext,
-              result,
-              resourceFetcher
-            );
-          } else {
-            result.unresolvedReferences.push(ref.reference);
-          }
-        } catch (error) {
-          logger.error(`[RecursiveReferenceValidator] Failed to fetch ${ref.reference}:`, error);
-          result.unresolvedReferences.push(ref.reference);
-        }
-      } else {
-        // No fetcher provided, just track as unresolved
-        result.unresolvedReferences.push(ref.reference);
-      }
+      if (!shouldContinue) return;
     }
   }
 
-  /**
-   * Extract references that should be validated from a resource
-   */
-  private extractReferencesToValidate(
-    resource: any,
-    parentResourceId: string,
-    depth: number
-  ): ReferenceToValidate[] {
-    const references: ReferenceToValidate[] = [];
-
-    if (!resource || typeof resource !== 'object') {
-      return references;
+  private async processReference(
+    ref: ReferenceToValidate,
+    resource: Record<string, unknown>,
+    context: RecursiveValidationContext,
+    currentChain: string[],
+    result: RecursiveValidationResult,
+    resourceFetcher?: (reference: string) => Promise<unknown>,
+  ): Promise<boolean> {
+    if (isTimeoutReached(context)) {
+      result.timedOut = true;
+      return false;
     }
 
-    this.extractReferencesFromObject(resource, '', parentResourceId, depth, references);
+    const refIdentifier = ref.resourceType && ref.resourceId
+      ? `${ref.resourceType}/${ref.resourceId}`
+      : ref.reference;
 
-    return references;
+    if (this.circularDetector.wouldCreateCircularReference(currentChain, refIdentifier)) {
+      if (isEnclosingBundleProvenanceTarget(resource, ref, refIdentifier, currentChain)) {
+        return true;
+      }
+
+      logger.warn('[RecursiveReferenceValidator] Circular reference detected', {
+        chainLength: currentChain.length + 1,
+      });
+      result.circularReferences.push([...currentChain, refIdentifier]);
+      return true;
+    }
+
+    if (ref.reference.startsWith('#')) {
+      if (ref.reference === '#') return true;
+      const referencedResource = resolveContainedReference(resource, ref.reference);
+      await this.validateResolvedReference(ref, referencedResource, context, currentChain, result, resourceFetcher);
+      return true;
+    }
+
+    const bundleReferencedResource = resolveBundleReference(resource, ref.reference);
+    if (bundleReferencedResource) {
+      await this.validateResolvedReference(ref, bundleReferencedResource, context, currentChain, result, resourceFetcher);
+      return true;
+    }
+
+    await this.fetchAndValidateReference(ref, context, currentChain, result, resourceFetcher);
+    return true;
   }
 
-  /**
-   * Recursively extract references from an object
-   */
-  private extractReferencesFromObject(
-    obj: any,
-    path: string,
-    parentResourceId: string,
-    depth: number,
-    references: ReferenceToValidate[]
-  ): void {
-    if (!obj || typeof obj !== 'object') {
+  private async validateResolvedReference(
+    ref: ReferenceToValidate,
+    referencedResource: unknown,
+    context: RecursiveValidationContext,
+    currentChain: string[],
+    result: RecursiveValidationResult,
+    resourceFetcher?: (reference: string) => Promise<unknown>,
+  ): Promise<void> {
+    const resourceRecord = toRecord(referencedResource);
+    if (!resourceRecord) {
+      result.unresolvedReferences.push(ref.reference);
       return;
     }
 
-    // Check if this is a reference object
-    if (obj.reference && typeof obj.reference === 'string') {
-      const parseResult = parseReference(obj.reference);
-
-      references.push({
-        reference: obj.reference,
-        resourceType: parseResult.resourceType || undefined,
-        resourceId: parseResult.resourceId || undefined,
-        fieldPath: path || 'reference',
-        parentResourceId,
-        depth,
-      });
-    }
-
-    // Recursively check properties
-    for (const [key, value] of Object.entries(obj)) {
-      const newPath = path ? `${path}.${key}` : key;
-
-      if (Array.isArray(value)) {
-        value.forEach((item, index) => {
-          this.extractReferencesFromObject(
-            item,
-            `${newPath}[${index}]`,
-            parentResourceId,
-            depth,
-            references
-          );
-        });
-      } else if (value && typeof value === 'object') {
-        this.extractReferencesFromObject(value, newPath, parentResourceId, depth, references);
-      }
-    }
+    result.referencesFollowed++;
+    await this.validateResourceRecursively(
+      resourceRecord,
+      this.createChildContext(context, currentChain),
+      result,
+      resourceFetcher,
+    );
   }
 
-  /**
-   * Filter references based on configuration
-   */
-  private filterReferences(
-    references: ReferenceToValidate[],
-    context: RecursiveValidationContext
-  ): ReferenceToValidate[] {
-    let filtered = references;
+  private async fetchAndValidateReference(
+    ref: ReferenceToValidate,
+    context: RecursiveValidationContext,
+    currentChain: string[],
+    result: RecursiveValidationResult,
+    resourceFetcher?: (reference: string) => Promise<unknown>,
+  ): Promise<void> {
+    if (!resourceFetcher) {
+      result.unresolvedReferences.push(ref.reference);
+      return;
+    }
 
-    // Filter by excluded resource types
-    if (context.config.excludeResourceTypes && context.config.excludeResourceTypes.length > 0) {
-      filtered = filtered.filter(
-        ref => !ref.resourceType || !context.config.excludeResourceTypes!.includes(ref.resourceType)
+    try {
+      const referencedResource = await fetchReferenceWithinDeadline(
+        resourceFetcher,
+        ref.reference,
+        context.startTime,
+        context.config.timeoutMs ?? 30_000,
       );
+      await this.validateResolvedReference(ref, referencedResource, context, currentChain, result, resourceFetcher);
+    } catch (error) {
+      if (error instanceof ReferenceFetchTimeoutError) result.timedOut = true;
+      const failure = classifyReferenceRequestFailure(error);
+      logger.error('[RecursiveReferenceValidator] Reference fetch failed', failure.metadata);
+      result.unresolvedReferences.push(ref.reference);
     }
-
-    // Filter external references if not enabled
-    if (!context.config.validateExternal) {
-      filtered = filtered.filter(ref => {
-        const parseResult = parseReference(ref.reference);
-        return parseResult.referenceType !== 'absolute' && parseResult.referenceType !== 'canonical';
-      });
-    }
-
-    // Limit number of references per resource
-    const maxRefs = context.config.maxReferencesPerResource || 10;
-    if (filtered.length > maxRefs) {
-      logger.warn(
-        `[RecursiveReferenceValidator] Limiting references from ${filtered.length} to ${maxRefs}`
-      );
-      filtered = filtered.slice(0, maxRefs);
-    }
-
-    return filtered;
   }
 
-  /**
-   * Get resource identifier for tracking
-   */
-  private getResourceIdentifier(resource: any): string {
-    if (!resource || typeof resource !== 'object') {
-      return `unknown-${Date.now()}-${Math.random()}`;
-    }
-    if (resource.resourceType && resource.id) {
-      return `${resource.resourceType}/${resource.id}`;
-    }
-    if (resource.id) {
-      return resource.id;
-    }
-    // Fallback: use resource hash or random ID
-    return `unknown-${Date.now()}-${Math.random()}`;
+  private createChildContext(
+    context: RecursiveValidationContext,
+    currentChain: string[],
+  ): RecursiveValidationContext {
+    return {
+      ...context,
+      currentDepth: context.currentDepth + 1,
+      referenceChain: currentChain,
+    };
   }
 
-  /**
-   * Check if timeout has been reached
-   */
-  private isTimeoutReached(context: RecursiveValidationContext): boolean {
-    const elapsed = Date.now() - context.startTime;
-    const timeout = context.config.timeoutMs || 30000;
-    return elapsed >= timeout;
-  }
-
-  /**
-   * Estimate validation cost (for planning)
-   */
   estimateValidationCost(
-    resource: any,
+    resource: unknown,
     config: Partial<RecursiveValidationConfig> = {}
   ): {
     estimatedResources: number;
@@ -413,65 +268,53 @@ export class RecursiveReferenceValidator {
     estimatedTimeMs: number;
     wouldExceedLimits: boolean;
   } {
-    const fullConfig: RecursiveValidationConfig = {
-      ...this.defaultConfig,
-      ...config,
-    };
-
-    // Simple estimation based on reference count
-    const references = this.extractReferencesToValidate(resource, 'root', 0);
-    const estimatedResources = Math.min(
-      references.length * fullConfig.maxDepth,
-      100 // Cap estimate
-    );
-
-    return {
-      estimatedResources,
-      estimatedReferences: references.length,
-      estimatedTimeMs: estimatedResources * 100, // Rough estimate: 100ms per resource
-      wouldExceedLimits: estimatedResources > 50 || references.length > 20,
-    };
+    return estimateRecursiveValidationCost(resource, config);
   }
 
-  /**
-   * Get default configuration
-   */
   getDefaultConfig(): RecursiveValidationConfig {
-    return { ...this.defaultConfig };
+    return getDefaultRecursiveValidationConfig();
   }
 
-  /**
-   * Create a safe configuration with validation
-   */
   createSafeConfig(config: Partial<RecursiveValidationConfig>): RecursiveValidationConfig {
-    const safeConfig: RecursiveValidationConfig = {
-      ...this.defaultConfig,
-      ...config,
-    };
-
-    // Enforce safety limits
-    safeConfig.maxDepth = Math.min(Math.max(safeConfig.maxDepth, 0), 3);
-    safeConfig.maxReferencesPerResource = Math.min(safeConfig.maxReferencesPerResource || 10, 20);
-    safeConfig.timeoutMs = Math.min(safeConfig.timeoutMs || 30000, 60000);
-
-    return safeConfig;
+    return createSafeRecursiveValidationConfig(config);
   }
 }
 
-// ============================================================================
-// Singleton Instance
-// ============================================================================
+function isEnclosingBundleProvenanceTarget(
+  resource: unknown,
+  ref: ReferenceToValidate,
+  refIdentifier: string,
+  currentChain: string[],
+): boolean {
+  const bundle = toRecord(resource);
+  if (bundle?.resourceType !== 'Bundle') return false;
+  if (refIdentifier !== currentChain[currentChain.length - 1]) return false;
 
-let validatorInstance: RecursiveReferenceValidator | null = null;
+  const match = /^entry\[(\d+)\]\.resource\.target\[\d+\]$/.exec(ref.fieldPath);
+  if (!match) return false;
+
+  const entryIndex = Number(match[1]);
+  const entries = bundle.entry;
+  if (!Array.isArray(entries)) return false;
+  const entryResource = toRecord(toRecord(entries[entryIndex])?.resource);
+  return entryResource?.resourceType === 'Provenance';
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function getString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
+}
 
 export function getRecursiveReferenceValidator(): RecursiveReferenceValidator {
-  if (!validatorInstance) {
-    validatorInstance = new RecursiveReferenceValidator();
-  }
-  return validatorInstance;
+  return new RecursiveReferenceValidator();
 }
 
 export function resetRecursiveReferenceValidator(): void {
-  validatorInstance = null;
+  // Compatibility no-op: validator instances are caller-owned.
 }
-

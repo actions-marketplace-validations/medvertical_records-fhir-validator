@@ -8,6 +8,7 @@
 
 import fhirpath from 'fhirpath';
 import { getFhirPathModel } from '../../validators/fhirpath-model-resolver';
+import { rewriteCollectionTypeOperators } from '../../validators/fhirpath-as-operator-rewrite';
 import { checkFhirpathSandbox } from '../../validators/fhirpath-sandbox';
 import { getCustomRulesSource } from '../../persistence';
 import type { EngineCustomRule } from '../../persistence';
@@ -15,54 +16,46 @@ import { createValidationIssue } from '../../issues';
 import type { ValidationIssue } from '../../types';
 import type { StructureDefinition } from '../structure-definition-types';
 import { logger } from '../../logger';
+import { validationFailureMetadata } from '../../utils/validation-execution-failure';
+import { resourceTypeOf } from '../fhir-resource';
 
 export interface CustomRuleValidationContext {
-    resource: any;
-    structureDef: StructureDefinition; // Optional/Unused for now, but kept for consistency
+    resource: unknown;
+    structureDef?: StructureDefinition;
     fhirVersion?: 'R4' | 'R5' | 'R6';
+    organizationId?: number;
 }
 
 export class CustomRuleExecutor {
-    private ruleCache = new Map<string, { expiresAt: number; promise: Promise<EngineCustomRule[]> }>();
-    private static readonly RULE_CACHE_TTL_MS = 30_000;
-    private static readonly RULE_LOAD_TIMEOUT_MS = 250;
+    // Cold tenant loads traverse an organization-scoped transaction with
+    // several database round trips; on hosted infrastructure that regularly
+    // exceeds a sub-second budget and used to surface false
+    // "custom rules could not be loaded" warnings. The bound only guards
+    // against a genuinely unavailable source, so it can be generous.
+    private static readonly RULE_LOAD_TIMEOUT_MS = 2000;
 
-    private async loadRules(resourceType: string): Promise<EngineCustomRule[]> {
-        const now = Date.now();
-        const cached = this.ruleCache.get(resourceType);
-        if (cached && cached.expiresAt > now) {
-            return cached.promise;
+    private async loadRules(resourceType: string, organizationId?: number): Promise<EngineCustomRule[]> {
+        if (organizationId === undefined) {
+            throw new Error('organizationId is required to load tenant custom rules');
         }
 
-        const sourcePromise = getCustomRulesSource().getRulesByResourceType(resourceType);
-        const timeoutPromise = new Promise<EngineCustomRule[]>((resolve) => {
-            setTimeout(() => {
-                logger.warn(
-                    `[CustomRuleExecutor] Rule fetch timed out after ` +
-                    `${CustomRuleExecutor.RULE_LOAD_TIMEOUT_MS}ms for ${resourceType}, skipping custom rules`
-                );
-                resolve([]);
+        const sourcePromise = getCustomRulesSource().getRulesByResourceType(resourceType, { organizationId });
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+                reject(new Error(
+                    `Custom rule source timed out after ${CustomRuleExecutor.RULE_LOAD_TIMEOUT_MS}ms`,
+                ));
             }, CustomRuleExecutor.RULE_LOAD_TIMEOUT_MS);
+            timeout.unref?.();
         });
-
-        const promise = Promise.race([sourcePromise, timeoutPromise])
-            .catch(error => {
-                // A custom-rule source failure is environmental, not a
-                // resource validation failure. Cache the empty result briefly
-                // so batch validation does not stampede the backing store.
-                logger.warn(
-                    `[CustomRuleExecutor] Fetch/setup failed for ${resourceType}, skipping custom rules: ` +
-                    (error instanceof Error ? error.message : String(error))
-                );
-                return [];
-            });
-
-        this.ruleCache.set(resourceType, {
-            expiresAt: now + CustomRuleExecutor.RULE_CACHE_TTL_MS,
-            promise,
-        });
-
-        return promise;
+        try {
+            // Cache ownership belongs to the embedder. A second engine-local
+            // cache used to survive host invalidation for five minutes.
+            return await Promise.race([sourcePromise, timeoutPromise]);
+        } finally {
+            if (timeout) clearTimeout(timeout);
+        }
     }
 
     /**
@@ -73,18 +66,19 @@ export class CustomRuleExecutor {
     ): Promise<ValidationIssue[]> {
         const issues: ValidationIssue[] = [];
         const { resource } = context;
+        const resourceType = resourceTypeOf(resource);
 
         try {
             // Fetch enabled rules for this resource type. The source is
             // embedder-provided and defaults to a noop (returns []) when
             // no host has wired up a backing store.
-            const rules = await this.loadRules(resource.resourceType);
+            const rules = await this.loadRules(resourceType, context.organizationId);
 
             if (rules.length === 0) {
                 return issues;
             }
 
-            logger.debug(`[CustomRuleExecutor] Validating ${resource.resourceType} against ${rules.length} custom rules`);
+            logger.debug(`[CustomRuleExecutor] Validating ${resourceType} against ${rules.length} custom rules`);
 
             for (const rule of rules) {
                 try {
@@ -97,8 +91,8 @@ export class CustomRuleExecutor {
                     if (!sandbox.ok) {
                         issues.push(createValidationIssue({
                             code: 'custom-rule-rejected-by-sandbox',
-                            path: resource.resourceType,
-                            resourceType: resource.resourceType,
+                            path: resourceType,
+                            resourceType,
                             customMessage: `Custom rule '${rule.name}' was not evaluated: ${sandbox.reason}`,
                             severityOverride: 'warning',
                             details: {
@@ -114,7 +108,7 @@ export class CustomRuleExecutor {
                     // Rule passes if result is true or non-empty
                     const result = fhirpath.evaluate(
                         resource,
-                        rule.expression,
+                        rewriteCollectionTypeOperators(rule.expression),
                         {
                             resource,
                             rootResource: resource,
@@ -130,8 +124,8 @@ export class CustomRuleExecutor {
                     if (!passed) {
                         issues.push(createValidationIssue({
                             code: 'custom-rule-violation',
-                            path: resource.resourceType, // Uses resourceType; per-field paths can be added when rules define them
-                            resourceType: resource.resourceType,
+                            path: resourceType, // Uses resourceType; per-field paths can be added when rules define them
+                            resourceType,
                             customMessage: rule.validationMessage || `Custom rule '${rule.name}' failed`,
                             severityOverride: rule.severity,
                             details: {
@@ -144,16 +138,19 @@ export class CustomRuleExecutor {
                     }
 
                 } catch (ruleError) {
-                    logger.warn(`[CustomRuleExecutor] Error evaluating rule '${rule.name}':`, ruleError);
+                    logger.warn('[CustomRuleExecutor] Error evaluating rule', {
+                        ruleId: rule.ruleId,
+                        ...validationFailureMetadata(ruleError),
+                    });
                     issues.push(createValidationIssue({
                         code: 'custom-rule-evaluation-error',
-                        path: resource.resourceType,
-                        resourceType: resource.resourceType,
+                        path: resourceType,
+                        resourceType,
                         customMessage: `Failed to evaluate custom rule '${rule.name}'`,
                         severityOverride: 'warning', // Don't fail validation for bad rule syntax
                         details: {
                             ruleId: rule.ruleId,
-                            error: ruleError instanceof Error ? ruleError.message : String(ruleError)
+                            ...validationFailureMetadata(ruleError),
                         }
                     }));
                 }
@@ -162,23 +159,30 @@ export class CustomRuleExecutor {
             return issues;
 
         } catch (error) {
-            // A custom-rule executor source failure is *not* a validation
-            // failure — emitting it as `error` would pollute the result with
-            // environmental noise in offline test runs. Log it and return no
-            // issues; the regular customRules pipeline will resurface it via
-            // monitoring if persistent.
+            // Failing open would report a resource as clean without executing
+            // tenant policy. Surface a warning so the result is explicitly
+            // incomplete while keeping an infrastructure outage from becoming
+            // a resource-level error.
             logger.warn(
-                `[CustomRuleExecutor] Validation failed, skipping custom rules: ` +
-                (error instanceof Error ? error.message : String(error))
+                '[CustomRuleExecutor] Custom rule source unavailable',
+                validationFailureMetadata(error),
             );
-            return [];
+            return [createValidationIssue({
+                code: 'custom-rule-source-unavailable',
+                path: resourceType,
+                resourceType,
+                customMessage: 'Custom rules could not be loaded; this validation result is incomplete',
+                severityOverride: 'warning',
+                aspectOverride: 'custom_rule',
+                details: { sourceStatus: 'unavailable' },
+            })];
         }
     }
 
     /**
      * Check if result implies success (truthy or non-empty)
      */
-    private checkResult(result: any): boolean {
+    private checkResult(result: unknown): boolean {
         if (result === true) return true;
         if (result === false) return false;
         if (Array.isArray(result)) {

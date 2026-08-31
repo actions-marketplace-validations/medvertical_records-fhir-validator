@@ -13,7 +13,7 @@ import {
     createConstraintViolation,
     createValidationError,
     resetIssueCounter,
-} from '../validation-issue-factory';
+} from '../issue-factory';
 
 describe('validation-issue-factory', () => {
     beforeEach(() => {
@@ -107,7 +107,67 @@ describe('validation-issue-factory', () => {
             expect(issue.details?.system).toBe('http://example.org');
         });
 
-        it('generates unique IDs', () => {
+        it('rejects prototype-polluting detail and message parameter keys', () => {
+            const maliciousDetails = JSON.parse(
+                '{"__proto__":{"polluted":"details"},"constructor":"unsafe","safe":"kept"}',
+            ) as Record<string, unknown>;
+            const maliciousParams = JSON.parse(
+                '{"__proto__":{"polluted":"params"},"prototype":"unsafe"}',
+            ) as Record<string, unknown>;
+
+            const issue = createValidationIssue({
+                code: 'validation-error',
+                path: 'Patient.name',
+                resourceType: 'Patient',
+                details: maliciousDetails,
+                messageParams: maliciousParams,
+            });
+
+            expect(issue.details?.safe).toBe('kept');
+            expect(Object.prototype.hasOwnProperty.call(issue.details, '__proto__')).toBe(false);
+            expect(Object.prototype.hasOwnProperty.call(issue.details, 'constructor')).toBe(false);
+            expect(Object.prototype.hasOwnProperty.call(issue.details, 'prototype')).toBe(false);
+            expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+        });
+
+        it('creates a stable semantic target from structured details', () => {
+            const issue = createValidationIssue({
+                code: 'profile-extension-min-cardinality',
+                path: 'Patient.gender.extension',
+                resourceType: 'Patient',
+                messageParams: {
+                    url: 'https://example.test/StructureDefinition/gender-note',
+                },
+                details: { sliceName: 'genderNote' },
+            });
+
+            expect(issue.target).toEqual({
+                path: 'Patient.gender.extension',
+                elementId: 'Patient.gender.extension',
+                extensionUrl: 'https://example.test/StructureDefinition/gender-note',
+                sliceName: 'genderNote',
+            });
+        });
+
+        it('accepts an explicit sliced element target', () => {
+            const issue = createValidationIssue({
+                code: 'profile-slice-min-cardinality',
+                path: 'Patient.identifier',
+                resourceType: 'Patient',
+                target: {
+                    elementId: 'Patient.identifier:insuranceNumber',
+                    sliceName: 'insuranceNumber',
+                },
+            });
+
+            expect(issue.target).toMatchObject({
+                path: 'Patient.identifier',
+                elementId: 'Patient.identifier:insuranceNumber',
+                sliceName: 'insuranceNumber',
+            });
+        });
+
+        it('generates deterministic IDs for the same issue identity', () => {
             const issue1 = createValidationIssue({
                 code: 'validation-error',
                 path: 'Patient.name',
@@ -117,6 +177,22 @@ describe('validation-issue-factory', () => {
             const issue2 = createValidationIssue({
                 code: 'validation-error',
                 path: 'Patient.name',
+                resourceType: 'Patient',
+            });
+
+            expect(issue1.id).toBe(issue2.id);
+        });
+
+        it('generates different IDs for different issue identities', () => {
+            const issue1 = createValidationIssue({
+                code: 'validation-error',
+                path: 'Patient.name',
+                resourceType: 'Patient',
+            });
+
+            const issue2 = createValidationIssue({
+                code: 'validation-error',
+                path: 'Patient.birthDate',
                 resourceType: 'Patient',
             });
 
@@ -133,6 +209,46 @@ describe('validation-issue-factory', () => {
             expect(issue.code).toBe('unknown-code-xyz');
             expect(issue.aspect).toBe('structural'); // default
             expect(issue.severity).toBe('warning'); // default
+        });
+
+        it('infers resource type from a canonical path when the caller has no context', () => {
+            const issue = createValidationIssue({
+                code: 'structural-cardinality-min',
+                path: 'MedicationRequest.requester',
+                resourceType: 'Unknown',
+            });
+
+            expect(issue.resourceType).toBe('MedicationRequest');
+            expect(issue.details?.resourceType).toBe('MedicationRequest');
+        });
+
+        it('infers resource type from lowercase canonical paths', () => {
+            const issue = createValidationIssue({
+                code: 'profile-extension-min-cardinality',
+                path: 'procedure.extension',
+                resourceType: 'Unknown',
+            });
+
+            expect(issue.resourceType).toBe('Procedure');
+            expect(issue.details?.resourceType).toBe('Procedure');
+        });
+
+        it('infers R5 resource types from canonical paths', () => {
+            const ingredientIssue = createValidationIssue({
+                code: 'structural-invalid-uri',
+                path: 'Ingredient.identifier.system',
+                resourceType: 'Unknown',
+            });
+            const requestOrchestrationIssue = createValidationIssue({
+                code: 'structural-invalid-uri',
+                path: 'RequestOrchestration.action[0].definitionCanonical',
+                resourceType: 'Unknown',
+            });
+
+            expect(ingredientIssue.resourceType).toBe('Ingredient');
+            expect(ingredientIssue.details?.resourceType).toBe('Ingredient');
+            expect(requestOrchestrationIssue.resourceType).toBe('RequestOrchestration');
+            expect(requestOrchestrationIssue.details?.resourceType).toBe('RequestOrchestration');
         });
     });
 
@@ -188,6 +304,57 @@ describe('validation-issue-factory', () => {
             });
 
             expect(issue.code).toBe('terminology-binding-example');
+        });
+
+        it('adds a fix hint for known CodeSystem canonical typos', () => {
+            const issue = createBindingViolation({
+                strength: 'required',
+                code: 'confirmed',
+                system: 'http://terminology.hl7.org/CodeSystem/condition-verstatus',
+                valueSet: 'http://hl7.org/fhir/ValueSet/condition-ver-status|4.0.1',
+                path: 'Condition.verificationStatus',
+                resourceType: 'Condition',
+            });
+
+            expect(issue.code).toBe('terminology-binding-required');
+            expect(issue.details).toMatchObject({
+                suggestedSystem: 'http://terminology.hl7.org/CodeSystem/condition-ver-status',
+                fixHint: expect.stringContaining('condition-ver-status'),
+            });
+        });
+
+        it('adds a context-aware fix hint for Condition clinical status used in AllergyIntolerance', () => {
+            const issue = createBindingViolation({
+                strength: 'required',
+                code: 'active',
+                system: 'http://terminology.hl7.org/CodeSystem/condition-clinical',
+                valueSet: 'http://hl7.org/fhir/ValueSet/allergyintolerance-clinical|4.0.1',
+                path: 'AllergyIntolerance.clinicalStatus',
+                resourceType: 'AllergyIntolerance',
+            });
+
+            expect(issue.code).toBe('terminology-binding-required');
+            expect(issue.details).toMatchObject({
+                suggestedSystem: 'http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical',
+                fixHint: expect.stringContaining('allergyintolerance-clinical'),
+            });
+        });
+
+        it('adds a context-aware fix hint for Condition verification status used in AllergyIntolerance', () => {
+            const issue = createBindingViolation({
+                strength: 'required',
+                code: 'confirmed',
+                system: 'http://terminology.hl7.org/CodeSystem/condition-ver-status',
+                valueSet: 'http://hl7.org/fhir/ValueSet/allergyintolerance-verification|4.0.1',
+                path: 'AllergyIntolerance.verificationStatus',
+                resourceType: 'AllergyIntolerance',
+            });
+
+            expect(issue.code).toBe('terminology-binding-required');
+            expect(issue.details).toMatchObject({
+                suggestedSystem: 'http://terminology.hl7.org/CodeSystem/allergyintolerance-verification',
+                fixHint: expect.stringContaining('allergyintolerance-verification'),
+            });
         });
 
         it('creates binding violation for primitive code type (no system)', () => {

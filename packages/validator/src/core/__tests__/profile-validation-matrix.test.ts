@@ -15,6 +15,9 @@
 import { recordsValidator } from '../../index';
 import { logger as _logger } from '../../logger';
 
+const validateR4 = (resource: unknown, profileUrl?: string) =>
+  recordsValidator.validateRequest({ resource, profileUrl, fhirVersion: 'R4' });
+
 // Profile URLs
 const MII_PATIENT_PROFILE = 'https://www.medizininformatik-initiative.de/fhir/core/modul-person/StructureDefinition/Patient';
 const US_CORE_PATIENT_PROFILE = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-patient';
@@ -103,37 +106,44 @@ function _groupIssuesByCategory(issues: ValidationIssueNormalized[]): Map<string
 
 describe('Profile Validation Matrix', () => {
   beforeAll(async () => {
-    await recordsValidator.validate({ resourceType: 'Patient' }, undefined, 'R4').catch(() => {});
+    await validateR4({ resourceType: 'Patient' }).catch(() => {});
   }, 120000);
 
   describe('MII Patient Profile', () => {
     // Requires sub-element cardinality checking within complex types (not yet implemented)
     it('should report missing required sub-elements (name.family) and mustSupport (name.given)', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_MII_MISSING_REQUIRED,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
       // family is required (min > 0) in MII
       const familyMissing = normalized.find(
-        i => (i.code === 'required-element-missing' || i.code === 'structural-required-element-missing') && i.path.includes('name') && i.path.includes('family')
+        i => (
+          i.code === 'required-element-missing' ||
+          i.code === 'structural-required-element-missing' ||
+          i.code === 'structural-cardinality-min'
+        ) && i.path.includes('name') && i.path.includes('family')
       );
-      // given is mustSupport but not required (min=0) in MII
-      const givenMustSupport = normalized.find(
-        i => (i.code === 'mustsupport-missing' || i.code === 'profile-mustsupport-missing') && i.path.includes('name') && i.path.includes('given')
+      // Older packages model given as MustSupport; current MII snapshots set
+      // min=1. Either result proves recursive complex-type validation.
+      const givenIssue = normalized.find(
+        i => (
+          i.code === 'mustsupport-missing' ||
+          i.code === 'profile-mustsupport-missing' ||
+          i.code === 'structural-cardinality-min'
+        ) && i.path.includes('name') && i.path.includes('given')
       );
 
       expect(familyMissing).toBeDefined();
-      expect(givenMustSupport).toBeDefined();
+      expect(givenIssue).toBeDefined();
     }, 120000);
 
     it('should report missing mustSupport elements', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_MII_MISSING_REQUIRED,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
@@ -152,10 +162,9 @@ describe('Profile Validation Matrix', () => {
 
   describe('US Core Patient Profile', () => {
     it('should report missing required elements or mustSupport constraints', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_US_CORE_MISSING_REQUIRED,
         US_CORE_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
@@ -176,10 +185,9 @@ describe('Profile Validation Matrix', () => {
 
   describe('UK Core Patient Profile', () => {
     it('should report missing required elements', async () => {
-      const issues = await recordsValidator.validate(
+      const issues = await validateR4(
         TEST_PATIENT_UK_CORE_MISSING_REQUIRED,
         UK_CORE_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
@@ -196,19 +204,20 @@ describe('Profile Validation Matrix', () => {
   });
 
   describe('Issue Category Coverage', () => {
-    // Requires sub-element cardinality checking within complex types (not yet implemented)
-    it.skip('should report all expected issue categories', async () => {
-      const issues = await recordsValidator.validate(
+    it('should report all expected issue categories', async () => {
+      const issues = await validateR4(
         TEST_PATIENT_MII_MISSING_REQUIRED,
         MII_PATIENT_PROFILE,
-        'R4'
       );
 
       const normalized = normalizeRecordsIssues(issues);
       const codes = new Set(normalized.map(i => i.code));
 
       // Should have at least these categories (accept both old and new codes)
-      const hasRequiredElementMissing = codes.has('required-element-missing') || codes.has('structural-required-element-missing');
+      const hasRequiredElementMissing =
+        codes.has('required-element-missing') ||
+        codes.has('structural-required-element-missing') ||
+        codes.has('structural-cardinality-min');
       const hasMustSupportMissing = codes.has('mustsupport-missing') || codes.has('profile-mustsupport-missing');
 
       expect(hasRequiredElementMissing).toBe(true);
@@ -216,4 +225,3 @@ describe('Profile Validation Matrix', () => {
     }, 120000);
   });
 });
-

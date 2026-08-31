@@ -34,6 +34,7 @@
 import type { ValidationIssue } from '../types';
 import type { StructureDefinition, ElementDefinition } from '../core/structure-definition-types';
 import { createValidationIssue } from '../issues';
+import { resourceTypeOf } from '../core/fhir-resource';
 
 const UNIVERSAL_PRIMITIVE_KEYS = new Set([
   'id', 'extension', 'modifierExtension',
@@ -89,32 +90,37 @@ export function extractChoiceSlots(sd: StructureDefinition | undefined): ChoiceS
  * Validate choice-type slots against a resource instance.
  */
 export function validateChoiceTypeProperties(
-  resource: any,
+  resource: unknown,
   sd: StructureDefinition | undefined,
 ): ValidationIssue[] {
-  if (!resource || typeof resource !== 'object') return [];
+  if (!isRecord(resource)) return [];
   const issues: ValidationIssue[] = [];
+  const resourceType = resourceTypeOf(resource);
   const slots = extractChoiceSlots(sd);
   if (slots.length === 0) return issues;
 
   for (const slot of slots) {
     const parents = navigateToInstances(resource, slot.parentPath);
     for (const { instance, path: instancePath } of parents) {
-      if (!instance || typeof instance !== 'object') continue;
-
       const keys = Object.keys(instance);
       const baseMatch = keys.includes(slot.baseName);
-      const suffixedMatches = keys.filter(
-        k =>
-          k.startsWith(slot.baseName) &&
-          k.length > slot.baseName.length &&
-          k[slot.baseName.length] >= 'A' &&
-          k[slot.baseName.length] <= 'Z',
-      );
-      const validSuffixed = suffixedMatches.filter(k =>
-        slot.allowedSuffixes.includes(k.slice(slot.baseName.length)),
-      );
-      const anyValid = validSuffixed.length > 0;
+      const populatedChoiceVariants = collectPopulatedChoiceVariants(instance, slot.baseName);
+      if (populatedChoiceVariants.length > 1) {
+        const choicePath = `${instancePath}.${slot.baseName}[x]`;
+        issues.push(createValidationIssue({
+          code: 'structural-choice-type-multiple',
+          path: choicePath,
+          resourceType,
+          customMessage:
+            `Choice element '${choicePath}' has multiple values: ${populatedChoiceVariants.join(', ')}. ` +
+            'FHIR permits at most one concrete choice variant.',
+          severityOverride: 'error',
+          details: {
+            baseName: slot.baseName,
+            variants: populatedChoiceVariants,
+          },
+        }));
+      }
 
       // Unsuffixed `base: value` usage where the SD has `base[x]`. This is
       // strictly malformed FHIR — no profile can make `value` (unsuffixed)
@@ -130,7 +136,7 @@ export function validateChoiceTypeProperties(
         issues.push(createValidationIssue({
           code: 'structural-unknown-element',
           path: `${instancePath}.${slot.baseName}`,
-          resourceType: resource.resourceType,
+          resourceType,
           customMessage:
             `Undefined element '${slot.baseName}' at ${instancePath}. The StructureDefinition declares '${slot.baseName}[x]'; ` +
             `use one of: ${slot.allowedSuffixes.map(s => slot.baseName + s).join(', ')}.`,
@@ -138,26 +144,34 @@ export function validateChoiceTypeProperties(
           details: { baseName: slot.baseName, allowed: slot.allowedSuffixes },
         }));
 
-        // Companion "minimum required = 1, but only found 0" error — Java
-        // emits this alongside the unrecognised-property error for the
-        // unsuffixed case when the slot is required. Only emit when there's
-        // no valid variant elsewhere on the same instance.
-        if (slot.min > 0 && !anyValid) {
-          issues.push(createValidationIssue({
-            code: 'structural-cardinality-min',
-            path: `${instancePath}.${slot.baseName}[x]`,
-            resourceType: resource.resourceType,
-            customMessage:
-              `${slot.fullPath}: minimum required = ${slot.min}, but only found 0 valid variant.`,
-            severityOverride: 'error',
-            details: { baseName: slot.baseName, min: slot.min },
-          }));
-        }
+        // The structural snapshot cardinality pass already emits the required
+        // value[x] minimum error. This pass owns only the malformed
+        // unsuffixed-property diagnostic.
       }
     }
   }
 
   return issues;
+}
+
+function collectPopulatedChoiceVariants(
+  instance: Record<string, unknown>,
+  baseName: string,
+): string[] {
+  const variants = new Set<string>();
+  for (const key of Object.keys(instance)) {
+    const valueKey = key.startsWith('_') ? key.slice(1) : key;
+    if (
+      !valueKey.startsWith(baseName) ||
+      valueKey.length <= baseName.length ||
+      valueKey[baseName.length] !== valueKey[baseName.length].toUpperCase()
+    ) continue;
+
+    const value = instance[key];
+    if (value === undefined || value === null) continue;
+    variants.add(valueKey);
+  }
+  return [...variants].sort();
 }
 
 /**
@@ -168,17 +182,18 @@ export function validateChoiceTypeProperties(
  * `RiskAssessment.prediction` → same shape for each prediction entry.
  */
 function navigateToInstances(
-  resource: any,
+  resource: unknown,
   fullPath: string,
-): Array<{ instance: any; path: string }> {
+): Array<{ instance: Record<string, unknown>; path: string }> {
   const parts = fullPath.split('.').slice(1); // drop the resource-type prefix
-  let current: Array<{ value: any; path: string }> = [
-    { value: resource, path: resource?.resourceType ?? '' },
+  let current: Array<{ value: unknown; path: string }> = [
+    { value: resource, path: resourceTypeOf(resource, '') },
   ];
   for (const part of parts) {
-    const next: Array<{ value: any; path: string }> = [];
+    const next: Array<{ value: unknown; path: string }> = [];
     for (const node of current) {
-      const v = node.value?.[part];
+      if (!isRecord(node.value)) continue;
+      const v = node.value[part];
       if (v === undefined || v === null) continue;
       if (Array.isArray(v)) {
         v.forEach((item, i) => next.push({ value: item, path: `${node.path}.${part}[${i}]` }));
@@ -189,7 +204,9 @@ function navigateToInstances(
     current = next;
     if (current.length === 0) return [];
   }
-  return current.map(c => ({ instance: c.value, path: c.path }));
+  return current.flatMap(candidate => isRecord(candidate.value)
+    ? [{ instance: candidate.value, path: candidate.path }]
+    : []);
 }
 
 function capitalize(s: string): string {
@@ -199,4 +216,8 @@ function capitalize(s: string): string {
 
 function isUniversalPrimitive(name: string): boolean {
   return UNIVERSAL_PRIMITIVE_KEYS.has(name);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

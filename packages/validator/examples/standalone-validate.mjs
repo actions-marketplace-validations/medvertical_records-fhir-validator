@@ -33,7 +33,11 @@ const profileUrl =
   profileUrlArg ||
   `http://hl7.org/fhir/StructureDefinition/${resource?.resourceType ?? 'Resource'}`;
 
-const issues = await recordsValidator.validate(resource, profileUrl, 'R4');
+const issues = await recordsValidator.validateRequest({
+  resource,
+  profileUrl,
+  fhirVersion: 'R4',
+});
 
 let errors = 0;
 let warnings = 0;

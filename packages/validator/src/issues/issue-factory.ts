@@ -1,127 +1,71 @@
 /**
- * Validation Issue Factory
- *
- * Factory function to standardize the creation of ValidationIssue objects.
- * Replaces inline object literals across validators with a single,
- * consistent creation pattern.
- *
- * Benefits:
- * - Consistent field population (id, timestamp, schemaVersion)
- * - Automatic code resolution via aliases
- * - Template-based message formatting
- * - Type safety for code values
+ * Factory helpers for standardized ValidationIssue creation.
  */
 
-import type { ValidationIssue, ValidationAspect, ValidationSeverity } from '@records-fhir/validation-types';
+import {
+    computeValidationIssueId,
+    type ValidationIssue,
+    type ValidationAspect,
+    type ValidationSeverity,
+    type ValidationIssueTarget,
+} from '@records-fhir/validation-types';
 import { ValidationCodes as _ValidationCodes, getCodeMetadata, resolveCode, type ValidationCode } from './message-catalog';
 import { formatMessage, getHumanReadableMessage } from './message-templates';
-
-// ============================================================================
-// Factory Parameters
-// ============================================================================
+import { normalizeResourceType } from './resource-type-normalizer';
+import { buildBindingViolationDetails } from './binding-violation-details';
 
 export interface CreateIssueParams {
-    /**
-     * The validation code. Can be a canonical code or a legacy alias.
-     */
     code: ValidationCode | string;
-
-    /**
-     * FHIRPath to the element with the issue.
-     */
     path: string;
-
-    /**
-     * Resource type being validated.
-     */
     resourceType: string;
-
-    /**
-     * Parameters for message template interpolation.
-     * These will be substituted into the message template.
-     */
     messageParams?: Record<string, unknown>;
-
-    /**
-     * Optional custom message to override the template.
-     */
     customMessage?: string;
-
-    /**
-     * Profile URL if this issue is related to profile validation.
-     */
     profile?: string;
-
-    /**
-     * Additional details to include in the issue.
-     */
     details?: Record<string, unknown>;
-
-    /**
-     * Override the default severity for this code.
-     */
     severityOverride?: ValidationSeverity;
-
-    /**
-     * Override the default aspect for this code.
-     */
     aspectOverride?: ValidationAspect;
-
-    /**
-     * Rule identifier for signature grouping (e.g., constraint key like 'ext-1', 'enc-1').
-     * This is used to distinguish between different rules that share the same code.
-     */
     ruleId?: string;
+    target?: Partial<ValidationIssueTarget>;
 }
 
-// ============================================================================
-// ID Generation
-// ============================================================================
+const UNSAFE_DETAIL_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-let issueCounter = 0;
+function copySafeDetails(
+    target: Record<string, unknown>,
+    source: Record<string, unknown> | undefined,
+): void {
+    if (!source) return;
+    for (const [key, value] of Object.entries(source)) {
+        if (!UNSAFE_DETAIL_KEYS.has(key)) target[key] = value;
+    }
+}
 
-/**
- * Generate a unique issue ID.
- * Format: {aspect}-{code}-{timestamp}-{counter}
- */
-function generateIssueId(aspect: string, code: string): string {
-    issueCounter++;
-    return `${aspect}-${code}-${Date.now()}-${issueCounter}`;
+function generateIssueId(params: {
+    aspect: string;
+    severity: ValidationSeverity;
+    code: string;
+    path: string;
+    resourceType: string;
+    message: string;
+    profile?: string;
+    ruleId?: string;
+    details: Record<string, unknown>;
+}): string {
+    return computeValidationIssueId(params);
 }
 
 /**
- * Reset the issue counter (useful for testing).
+ * Kept for backward-compatible tests/callers. Issue IDs are now deterministic
+ * and no longer rely on mutable counters.
  */
 export function resetIssueCounter(): void {
-    issueCounter = 0;
 }
 
-// ============================================================================
-// Factory Function
-// ============================================================================
-
-/**
- * Create a standardized ValidationIssue object.
- *
- * @example
- * ```typescript
- * const issue = createValidationIssue({
- *   code: 'terminology-binding-required',
- *   path: 'Patient.gender',
- *   resourceType: 'Patient',
- *   messageParams: {
- *     code: 'invalid-code',
- *     system: 'http://example.org',
- *     valueSet: 'http://hl7.org/fhir/ValueSet/administrative-gender',
- *   },
- * });
- * ```
- */
 export function createValidationIssue(params: CreateIssueParams): ValidationIssue {
     const {
         code,
         path,
-        resourceType,
+        resourceType: rawResourceType,
         messageParams = {},
         customMessage,
         profile,
@@ -129,37 +73,71 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
         severityOverride,
         aspectOverride,
         ruleId,
+        target,
     } = params;
+    const resourceType = normalizeResourceType(rawResourceType, path);
 
-    // Resolve any aliases to canonical codes
     const resolvedCode = resolveCode(code);
     const metadata = getCodeMetadata(code);
 
-    // Determine aspect and severity (with overrides)
     const aspect: ValidationAspect = aspectOverride || metadata?.aspect || 'structural';
     const severity: ValidationSeverity = severityOverride || metadata?.severity || 'warning';
 
-    // Generate message
     const message = customMessage || formatMessage(resolvedCode, messageParams);
     const humanReadable = getHumanReadableMessage(resolvedCode, messageParams);
 
-    // Build details object
-    const issueDetails: Record<string, unknown> = {
-        ...details,
-        fieldPath: path,
-        resourceType,
-        validationType: `${aspect}-validation`,
-    };
+    const issueDetails: Record<string, unknown> = {};
+    copySafeDetails(issueDetails, details);
+    issueDetails.fieldPath = path;
+    issueDetails.resourceType = resourceType;
+    issueDetails.validationType = `${aspect}-validation`;
 
-    // Add message params to details for potential hydration
     for (const [key, value] of Object.entries(messageParams)) {
-        if (!(key in issueDetails)) {
+        if (
+            !UNSAFE_DETAIL_KEYS.has(key)
+            && !Object.prototype.hasOwnProperty.call(issueDetails, key)
+        ) {
             issueDetails[key] = value;
         }
     }
+    if (target?.elementId && !('elementId' in issueDetails)) {
+        issueDetails.elementId = target.elementId;
+    }
+    if (target?.extensionUrl && !('extensionUrl' in issueDetails)) {
+        issueDetails.extensionUrl = target.extensionUrl;
+    }
+    if (target?.sliceName && !('sliceName' in issueDetails)) {
+        issueDetails.sliceName = target.sliceName;
+    }
+    const detailString = (key: string): string | undefined =>
+        typeof issueDetails[key] === 'string'
+            ? issueDetails[key] as string
+            : undefined;
+    const issueTarget: ValidationIssueTarget = {
+        path: target?.path ?? path,
+        elementId: target?.elementId ?? detailString('elementId') ?? path,
+        extensionUrl:
+            target?.extensionUrl
+            ?? detailString('extensionUrl')
+            ?? detailString('url'),
+        sliceName:
+            target?.sliceName
+            ?? detailString('sliceName')
+            ?? detailString('slice'),
+    };
 
     return {
-        id: generateIssueId(aspect, resolvedCode),
+        id: generateIssueId({
+            aspect,
+            severity,
+            code: resolvedCode,
+            path,
+            resourceType,
+            message,
+            profile,
+            ruleId,
+            details: issueDetails,
+        }),
         aspect,
         severity,
         code: resolvedCode,
@@ -173,12 +151,9 @@ export function createValidationIssue(params: CreateIssueParams): ValidationIssu
         schemaVersion: 'R4',
         profile,
         ruleId,
+        target: issueTarget,
     };
 }
-
-// ============================================================================
-// Convenience Factories
-// ============================================================================
 
 /**
  * Create a terminology binding violation issue.
@@ -193,10 +168,8 @@ export function createBindingViolation(params: {
     resourceType: string;
     profile?: string;
 }): ValidationIssue {
-    // Detect if this is a primitive code type (no system) or a Coding type (with system)
     const hasSystem = params.system !== undefined && params.system !== '';
 
-    // Use -code variants for primitive code types (without system)
     const codeMap = hasSystem ? {
         required: 'terminology-binding-required',
         extensible: 'terminology-binding-extensible',
@@ -214,6 +187,7 @@ export function createBindingViolation(params: {
         path: params.path,
         resourceType: params.resourceType,
         profile: params.profile,
+        details: buildBindingViolationDetails(params.system, params.valueSet),
         messageParams: hasSystem ? {
             code: params.code,
             system: params.system,
@@ -226,8 +200,75 @@ export function createBindingViolation(params: {
 }
 
 /**
- * Create a required element missing issue.
+ * Create a "binding could not be verified" informational issue.
+ *
+ * Emitted when a coded element's ValueSet cannot be expanded locally and no
+ * terminology server confirmed the code. Distinct from a binding violation:
+ * the code is not known to be wrong, only unverifiable. Severity is
+ * informational so it never gates, but the skip becomes visible instead of
+ * silent (gap P-3).
  */
+export function createBindingUnverified(params: {
+    strength: 'required' | 'extensible' | 'preferred';
+    code: string;
+    system?: string;
+    valueSet: string;
+    path: string;
+    resourceType: string;
+    profile?: string;
+    /** Override the default `information` severity (e.g. `warning` under a strict policy). */
+    severityOverride?: ValidationSeverity;
+}): ValidationIssue {
+    return createValidationIssue({
+        code: 'terminology-binding-unverified',
+        path: params.path,
+        resourceType: params.resourceType,
+        profile: params.profile,
+        severityOverride: params.severityOverride,
+        details: {
+            validationStatus: 'incomplete',
+            reason: 'binding-unverified',
+        },
+        messageParams: {
+            code: params.code,
+            system: params.system,
+            valueSet: params.valueSet,
+            strength: params.strength,
+        },
+    });
+}
+
+/**
+ * Create a visible completeness diagnostic when the bound ValueSet itself
+ * cannot be resolved. This also covers text-only CodeableConcept values: even
+ * without a Coding to test, an unavailable additional binding must not vanish
+ * from the validation result.
+ */
+export function createValueSetUnavailable(params: {
+    strength: 'required' | 'extensible' | 'preferred';
+    valueSet: string;
+    path: string;
+    resourceType: string;
+    profile?: string;
+    severityOverride?: ValidationSeverity;
+}): ValidationIssue {
+    return createValidationIssue({
+        code: 'terminology-valueset-unavailable',
+        path: params.path,
+        resourceType: params.resourceType,
+        profile: params.profile,
+        severityOverride: params.severityOverride,
+        details: {
+            validationStatus: 'incomplete',
+            reason: 'valueset-unavailable',
+        },
+        messageParams: {
+            valueSet: params.valueSet,
+            strength: params.strength,
+        },
+    });
+}
+
 export function createRequiredElementMissing(params: {
     element: string;
     path: string;
@@ -245,9 +286,6 @@ export function createRequiredElementMissing(params: {
     });
 }
 
-/**
- * Create a reference type mismatch issue.
- */
 export function createReferenceTypeMismatch(params: {
     actual: string;
     allowed: string[];
@@ -265,9 +303,6 @@ export function createReferenceTypeMismatch(params: {
     });
 }
 
-/**
- * Create a constraint violation issue.
- */
 export function createConstraintViolation(params: {
     key: string;
     message: string;
@@ -289,9 +324,6 @@ export function createConstraintViolation(params: {
     });
 }
 
-/**
- * Create a generic validation error issue.
- */
 export function createValidationError(params: {
     message: string;
     path: string;

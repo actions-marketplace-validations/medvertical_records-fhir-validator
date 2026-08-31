@@ -1,8 +1,13 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, rm, symlink, truncate, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, expect, it } from 'vitest';
-import { scanCacheDirectory, scanPackageDirectory } from './sd-loader-package-scanner';
+import {
+  compareVersions,
+  parsePackageName,
+  scanCacheDirectory,
+  scanPackageDirectory,
+} from './sd-loader-package-scanner';
 
 describe('scanCacheDirectory package version pins', () => {
   const tempDirs: string[] = [];
@@ -73,5 +78,57 @@ describe('scanCacheDirectory package version pins', () => {
     await scanPackageDirectory(root, availableProfiles);
 
     expect(availableProfiles.has('http://example.org/bom-profile')).toBe(true);
+  });
+
+  it('selects numeric prerelease identifiers deterministically', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'records-sd-scan-'));
+    tempDirs.push(root);
+    await addPackage(root, 'example.fhir#1.0.0-beta.2', 'http://example.org/beta-2');
+    await addPackage(root, 'example.fhir#1.0.0-beta.10', 'http://example.org/beta-10');
+
+    const availableProfiles = new Set<string>();
+    await scanCacheDirectory(root, availableProfiles);
+
+    expect(compareVersions('1.0.0-beta.10', '1.0.0-beta.2')).toBeGreaterThan(0);
+    expect(availableProfiles.has('http://example.org/beta-10')).toBe(true);
+    expect(availableProfiles.has('http://example.org/beta-2')).toBe(false);
+  });
+
+  it('does not treat inherited object properties as package pins', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'records-sd-scan-'));
+    tempDirs.push(root);
+    await addPackage(root, 'example.fhir#1.0.0', 'http://example.org/old');
+    await addPackage(root, 'example.fhir#2.0.0', 'http://example.org/latest');
+    const inheritedPins = Object.create({ 'example.fhir': '1.0.0' }) as Record<string, string>;
+
+    const availableProfiles = new Set<string>();
+    await scanCacheDirectory(root, availableProfiles, { packageVersionPins: inheritedPins });
+
+    expect(availableProfiles.has('http://example.org/latest')).toBe(true);
+    expect(availableProfiles.has('http://example.org/old')).toBe(false);
+  });
+
+  it('rejects malformed package names and ignores oversized files and symlinks', async () => {
+    expect(parsePackageName('example.fhir#')).toBeNull();
+    expect(parsePackageName('#1.0.0')).toBeNull();
+    expect(parsePackageName('example.fhir#1.0.0#extra')).toBeNull();
+
+    const root = await mkdtemp(join(tmpdir(), 'records-sd-scan-'));
+    const outside = await mkdtemp(join(tmpdir(), 'records-sd-outside-'));
+    tempDirs.push(root, outside);
+    const oversized = join(root, 'StructureDefinition-oversized.json');
+    await writeFile(oversized, '');
+    await truncate(oversized, 33 * 1024 * 1024);
+    const outsideFile = join(outside, 'StructureDefinition-outside.json');
+    await writeFile(outsideFile, JSON.stringify({
+      resourceType: 'StructureDefinition',
+      url: 'http://example.org/outside',
+    }));
+    await symlink(outsideFile, join(root, 'StructureDefinition-link.json'));
+
+    const availableProfiles = new Set<string>();
+    await scanPackageDirectory(root, availableProfiles);
+
+    expect(availableProfiles.size).toBe(0);
   });
 });

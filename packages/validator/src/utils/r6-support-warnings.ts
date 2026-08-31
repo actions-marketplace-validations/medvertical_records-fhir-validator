@@ -12,6 +12,9 @@
  */
 
 import type { ValidationIssue } from '../types';
+import { computeValidationIssueId } from '@records-fhir/validation-types';
+
+type R6ValidationAspect = 'structural' | 'profile' | 'terminology' | 'reference' | 'metadata' | 'invariant' | 'custom_rule';
 
 // Inlined from server/config/fhir-package-versions.ts during S-3
 // engine-extraction. The engine only needs the support-status +
@@ -36,6 +39,11 @@ const VERSION_CONFIGURATIONS: Record<'R4' | 'R5' | 'R6', VersionConfig> = {
         ],
     },
 };
+const ASPECTS_WITH_WARNINGS = new Set<R6ValidationAspect>([
+  'terminology',
+  'profile',
+  'reference',
+]);
 
 function getVersionConfig(version: 'R4' | 'R5' | 'R6'): VersionConfig {
     return VERSION_CONFIGURATIONS[version];
@@ -67,7 +75,7 @@ export function isR6(fhirVersion: string | undefined): boolean {
  * @returns ValidationIssue with R6 warning
  */
 export function createR6Warning(
-  aspect: 'structural' | 'profile' | 'terminology' | 'reference' | 'metadata' | 'businessRule',
+  aspect: R6ValidationAspect,
   warningType: R6WarningType = 'general',
   additionalContext?: string
 ): ValidationIssue {
@@ -119,7 +127,13 @@ export function createR6Warning(
   }
 
   return {
-    id: `r6-warning-${warningType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    id: computeValidationIssueId({
+      aspect,
+      severity: 'info',
+      code,
+      message,
+      path: '',
+    }),
     aspect,
     severity: 'info',
     code,
@@ -139,20 +153,14 @@ export function createR6Warning(
  */
 export function shouldAddR6Warning(
   fhirVersion: string | undefined,
-  aspect: 'structural' | 'profile' | 'terminology' | 'reference' | 'metadata' | 'businessRule'
+  aspect: R6ValidationAspect
 ): boolean {
   if (!isR6(fhirVersion)) {
     return false;
   }
 
   // Add warnings for aspects with known limitations
-  const aspectsWithWarnings: Set<string> = new Set([
-    'terminology',  // Limited terminology support
-    'profile',      // Limited profile package availability
-    'reference',    // May have issues with new features
-  ]);
-
-  return aspectsWithWarnings.has(aspect);
+  return ASPECTS_WITH_WARNINGS.has(aspect);
 }
 
 /**
@@ -168,7 +176,7 @@ export function shouldAddR6Warning(
 export function addR6WarningIfNeeded(
   issues: ValidationIssue[],
   fhirVersion: string | undefined,
-  aspect: 'structural' | 'profile' | 'terminology' | 'reference' | 'metadata' | 'businessRule',
+  aspect: R6ValidationAspect,
   warningType?: R6WarningType
 ): ValidationIssue[] {
   if (!shouldAddR6Warning(fhirVersion, aspect)) {
@@ -177,10 +185,12 @@ export function addR6WarningIfNeeded(
 
   // Determine warning type based on aspect if not provided
   const effectiveWarningType = warningType || (aspect as R6WarningType);
+  const expectedWarningCode = getR6WarningCode(effectiveWarningType);
 
-  // Check if R6 warning already exists
+  // Suppress only the warning this call would add. A combined issue list may
+  // legitimately need one warning for each limited aspect.
   const hasR6Warning = issues.some(issue => 
-    issue.code?.startsWith('r6-') && issue.severity === 'info'
+    issue.code === expectedWarningCode && issue.severity === 'info'
   );
 
   if (!hasR6Warning) {
@@ -218,7 +228,20 @@ export function getR6SupportSummary(): {
       'Profile packages (may be missing)',
       'Reference validation (new features)',
     ],
-    limitations: config.limitations || [],
+    limitations: [...(config.limitations || [])],
   };
 }
 
+function getR6WarningCode(warningType: R6WarningType): string {
+  switch (warningType) {
+    case 'terminology':
+      return 'r6-terminology-limited';
+    case 'profile':
+      return 'r6-profile-limited';
+    case 'reference':
+      return 'r6-reference-limited';
+    case 'general':
+    default:
+      return 'r6-support-limited';
+  }
+}

@@ -9,6 +9,7 @@ import type { ValidationIssue } from '../../types';
 import { createValidationIssue } from '../../issues';
 import { validateUriFormat } from '../uri-validators';
 import { logger } from '../../logger';
+import { validationFailureMetadata } from '../../utils/validation-execution-failure';
 
 const PATH = 'meta.source';
 
@@ -19,7 +20,7 @@ export class SourceValidator {
   /**
    * Validate source URI format
    */
-  validate(source: string, resourceType: string): ValidationIssue[] {
+  validate(source: unknown, resourceType: string): ValidationIssue[] {
     const issues: ValidationIssue[] = [];
 
     try {
@@ -69,7 +70,7 @@ export class SourceValidator {
 
       // Validate URI format
       const uriValidation = validateUriFormat(source);
-      if (!uriValidation.isValid) {
+      if (!uriValidation.isValid && uriValidation.reason !== 'Invalid URI format: missing scheme') {
         issues.push(createValidationIssue({
           code: 'metadata-source-invalid-format',
           path: PATH,
@@ -103,7 +104,7 @@ export class SourceValidator {
       }
 
       // Check if source looks like a FHIR reference
-      const referencePattern = /^[A-Z][a-z]+\/[A-Za-z0-9\-\.]+$/;
+      const referencePattern = /^[A-Z][a-z]+\/[A-Za-z0-9.-]+$/;
       if (referencePattern.test(source)) {
         issues.push(createValidationIssue({
           code: 'metadata-source-looks-like-reference',
@@ -113,24 +114,14 @@ export class SourceValidator {
         }));
       }
 
-      // Recommend absolute URIs
-      if (uriValidation.type === 'relative' || uriValidation.type === 'unknown') {
-        issues.push(createValidationIssue({
-          code: 'metadata-source-relative-uri',
-          path: PATH,
-          resourceType,
-          messageParams: { value: source },
-          details: { uriType: uriValidation.type },
-        }));
-      }
-
     } catch (error) {
-      logger.error('[SourceValidator] validation failed:', error);
+      logger.error('[SourceValidator] validation failed', validationFailureMetadata(error));
       issues.push(createValidationIssue({
         code: 'metadata-source-validation-error',
         path: PATH,
         resourceType,
-        messageParams: { error: error instanceof Error ? error.message : 'Unknown error' },
+        messageParams: { error: 'Operational validation failure' },
+        details: validationFailureMetadata(error),
       }));
     }
 

@@ -13,6 +13,7 @@
  */
 
 import type { StructureDefinition, ElementDefinition } from '../core/structure-definition-types';
+import { isConcreteChoiceProperty } from '../core/fhir-choice-property';
 import { logger } from '../logger';
 
 // ============================================================================
@@ -23,7 +24,7 @@ export interface MatchedElement {
     /** The SD element definition */
     element: ElementDefinition;
     /** The actual data from the resource */
-    data: any;
+    data: unknown;
     /** Full path in the resource (with indices) */
     resourcePath: string;
     /** Path in the SD */
@@ -48,26 +49,38 @@ export interface MatchResult {
 // ============================================================================
 
 export class SDElementMatcher {
+    private elementMapCache = new WeakMap<ElementDefinition[], Map<string, ElementDefinition>>();
 
     /**
      * Match all resource data to SD elements
      */
-    match(resource: any, structureDef: StructureDefinition): MatchResult {
+    match(resource: unknown, structureDef: StructureDefinition): MatchResult {
         const matches: MatchedElement[] = [];
         const unmatchedPaths: string[] = [];
 
-        if (!resource || !structureDef?.snapshot?.element) {
+        if (!isObjectRecord(resource) ||
+            (resource.resourceType !== undefined && typeof resource.resourceType !== 'string') ||
+            !structureDef?.snapshot?.element) {
             return { matches, constraintElements: [], unmatchedPaths };
         }
 
-        const resourceType = resource.resourceType;
+        const resourceType = typeof resource.resourceType === 'string'
+            ? resource.resourceType
+            : structureDef.type;
         const elements = structureDef.snapshot.element;
 
         // Build element map for fast lookup
-        const elementMap = this.buildElementMap(elements);
+        const elementMap = this.getElementMap(elements);
 
         // Traverse resource and match to SD elements
-        this.traverseAndMatch(resource, resourceType, elementMap, matches, unmatchedPaths);
+        this.traverseAndMatch(
+            resource,
+            resourceType,
+            elementMap,
+            matches,
+            unmatchedPaths,
+            new WeakSet<object>(),
+        );
 
         // Filter to elements with constraints
         const constraintElements = matches.filter(m =>
@@ -82,6 +95,15 @@ export class SDElementMatcher {
     /**
      * Build a map of SD elements by path
      */
+    private getElementMap(elements: ElementDefinition[]): Map<string, ElementDefinition> {
+        const cached = this.elementMapCache.get(elements);
+        if (cached) return cached;
+
+        const map = this.buildElementMap(elements);
+        this.elementMapCache.set(elements, map);
+        return map;
+    }
+
     private buildElementMap(elements: ElementDefinition[]): Map<string, ElementDefinition> {
         const map = new Map<string, ElementDefinition>();
 
@@ -108,13 +130,15 @@ export class SDElementMatcher {
      * Recursively traverse resource and match to SD elements
      */
     private traverseAndMatch(
-        obj: any,
+        obj: unknown,
         currentPath: string,
         elementMap: Map<string, ElementDefinition>,
         matches: MatchedElement[],
-        unmatchedPaths: string[]
+        unmatchedPaths: string[],
+        ancestors: WeakSet<object>,
     ): void {
         if (obj === undefined || obj === null) return;
+        if (isObjectLike(obj) && ancestors.has(obj)) return;
 
         // Try to find matching SD element
         const element = this.findMatchingElement(currentPath, elementMap);
@@ -127,38 +151,63 @@ export class SDElementMatcher {
                 sdPath: element.path,
                 isArrayItem: false
             });
+        } else {
+            unmatchedPaths.push(currentPath);
         }
 
-        if (typeof obj !== 'object') return;
+        if (!isObjectLike(obj)) return;
+        ancestors.add(obj);
 
-        if (Array.isArray(obj)) {
-            for (let i = 0; i < obj.length; i++) {
-                const itemPath = `${currentPath}[${i}]`;
+        try {
+            if (Array.isArray(obj)) {
+                for (let i = 0; i < obj.length; i++) {
+                    const item = obj[i];
+                    const itemPath = `${currentPath}[${i}]`;
 
-                if (element) {
-                    matches.push({
-                        element,
-                        data: obj[i],
-                        resourcePath: itemPath,
-                        sdPath: element.path,
-                        isArrayItem: true,
-                        index: i
-                    });
-                }
+                    if (element) {
+                        matches.push({
+                            element,
+                            data: item,
+                            resourcePath: itemPath,
+                            sdPath: element.path,
+                            isArrayItem: true,
+                            index: i
+                        });
+                    }
 
-                // Recurse into array items
-                if (typeof obj[i] === 'object' && obj[i] !== null) {
-                    for (const key of Object.keys(obj[i])) {
-                        this.traverseAndMatch(obj[i][key], `${itemPath}.${key}`, elementMap, matches, unmatchedPaths);
+                    // Recurse into array items while treating the item itself as
+                    // an ancestor, so a self-reference cannot re-enter it.
+                    if (isObjectLike(item) && !ancestors.has(item)) {
+                        ancestors.add(item);
+                        for (const key of Object.keys(item)) {
+                            this.traverseAndMatch(
+                                getObjectValue(item, key),
+                                `${itemPath}.${key}`,
+                                elementMap,
+                                matches,
+                                unmatchedPaths,
+                                ancestors,
+                            );
+                        }
+                        ancestors.delete(item);
                     }
                 }
+            } else {
+                // Recurse into object properties
+                for (const key of Object.keys(obj)) {
+                    if (key === 'resourceType') continue;
+                    this.traverseAndMatch(
+                        obj[key],
+                        `${currentPath}.${key}`,
+                        elementMap,
+                        matches,
+                        unmatchedPaths,
+                        ancestors,
+                    );
+                }
             }
-        } else {
-            // Recurse into object properties
-            for (const key of Object.keys(obj)) {
-                if (key === 'resourceType') continue;
-                this.traverseAndMatch(obj[key], `${currentPath}.${key}`, elementMap, matches, unmatchedPaths);
-            }
+        } finally {
+            ancestors.delete(obj);
         }
     }
 
@@ -180,19 +229,14 @@ export class SDElementMatcher {
             const parent = normalizedPath.substring(0, lastDot);
             const prop = normalizedPath.substring(lastDot + 1);
 
-            // Check polymorphic prefixes — must match CHOICE_BASES in constraint-validator.ts
-            const prefixes = [
-                'value', 'effective', 'onset', 'abatement', 'deceased', 'multipleBirth',
-                'defaultValue', 'medication', 'reported', 'occurrence', 'timing',
-                'product', 'serviced', 'location', 'allowed', 'used',
-                'rate', 'born', 'age',
-            ];
-            for (const prefix of prefixes) {
-                if (prop.startsWith(prefix) && prop !== prefix) {
-                    const polyPath = `${parent}.${prefix}[x]`;
-                    if (elementMap.has(polyPath)) {
-                        return elementMap.get(polyPath);
-                    }
+            const parentPrefix = `${parent}.`;
+            for (const [candidatePath, candidateElement] of elementMap) {
+                if (!candidatePath.startsWith(parentPrefix) || !candidatePath.endsWith('[x]')) {
+                    continue;
+                }
+                const prefix = candidatePath.slice(parentPrefix.length, -3);
+                if (isConcreteChoiceProperty(prop, prefix)) {
+                    return candidateElement;
                 }
             }
         }
@@ -203,11 +247,23 @@ export class SDElementMatcher {
     /**
      * Get all elements that need constraint evaluation
      */
-    getConstraintTargets(resource: any, structureDef: StructureDefinition): MatchedElement[] {
+    getConstraintTargets(resource: unknown, structureDef: StructureDefinition): MatchedElement[] {
         const result = this.match(resource, structureDef);
         return result.constraintElements;
     }
 }
 
-// Singleton
-export const sdElementMatcher = new SDElementMatcher();
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isObjectLike(value: unknown): value is Record<string, unknown> | unknown[] {
+    return typeof value === 'object' && value !== null;
+}
+
+function getObjectValue(
+    value: Record<string, unknown> | unknown[],
+    key: string,
+): unknown {
+    return Array.isArray(value) ? value[Number(key)] : value[key];
+}

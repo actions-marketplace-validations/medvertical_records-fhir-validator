@@ -18,6 +18,16 @@ import type {
   ValidationProgress,
   ValidationSettingsUpdate
 } from '../index';
+import {
+  createDefaultValidationSettings,
+  normalizeValidationAspect,
+  normalizeValidationSettings,
+} from '../index';
+import {
+  normalizeProfileSourcesConfig,
+  safeParseSettings,
+  safeParseSettingsUpdate,
+} from '../settings-schema';
 
 describe('Type Integrity - DTO Serialization', () => {
   describe('ValidationIssue', () => {
@@ -139,7 +149,7 @@ describe('Type Integrity - DTO Serialization', () => {
           terminology: { enabled: true, severity: 'warning' },
           reference: { enabled: true, severity: 'error' },
           invariant: { enabled: true, severity: 'error' },
-          customRule: { enabled: true, severity: 'error' },
+          custom_rule: { enabled: true, severity: 'error' },
           metadata: { enabled: true, severity: 'error' },
           anomaly: { enabled: true, severity: 'info' }
         },
@@ -172,7 +182,7 @@ describe('Type Integrity - DTO Serialization', () => {
           terminology: { enabled: true, severity: 'inherit' },
           reference: { enabled: true, severity: 'inherit' },
           invariant: { enabled: true, severity: 'inherit' },
-          customRule: { enabled: true, severity: 'inherit' },
+          custom_rule: { enabled: true, severity: 'inherit' },
           metadata: { enabled: true, severity: 'inherit' },
           anomaly: { enabled: true, severity: 'inherit' }
         },
@@ -194,6 +204,20 @@ describe('Type Integrity - DTO Serialization', () => {
       expect(deserialized.resourceTypes.includedTypes).toEqual(['Patient', 'Observation', 'Condition']);
       expect(deserialized.resourceTypes.excludedTypes).toEqual(['Binary']);
     });
+
+    it('normalizes profile sources without preserving removed FHIR server source flags', () => {
+      const sources = normalizeProfileSourcesConfig({
+        simplifier: false,
+        packageRegistry: true,
+        fhirServer: true
+      });
+
+      expect(sources).toEqual({
+        simplifier: false,
+        packageRegistry: true
+      });
+      expect(sources).not.toHaveProperty('fhirServer');
+    });
   });
 
   describe('ValidationSettingsUpdate', () => {
@@ -212,6 +236,85 @@ describe('Type Integrity - DTO Serialization', () => {
 
       expect(deserialized.aspects?.structural?.enabled).toBe(false);
       expect(deserialized.performance?.maxConcurrent).toBe(20);
+    });
+
+    it('leaves unknown aspect aliases untouched instead of accepting legacy customRule updates', () => {
+      const legacyUpdate = {
+        aspects: {
+          customRule: { enabled: false, severity: 'warning' }
+        }
+      };
+
+      const normalized = normalizeValidationSettings(legacyUpdate) as { aspects: Record<string, unknown> };
+      expect(normalized.aspects.custom_rule).toBeUndefined();
+      expect(normalized.aspects.customRule).toEqual({ enabled: false, severity: 'warning' });
+    });
+
+    it('rejects legacy customRule settings update payloads in the Zod parser', () => {
+      const result = safeParseSettingsUpdate({
+        aspects: {
+          customRule: { enabled: false }
+        }
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts imposed profile policy settings updates', () => {
+      const result = safeParseSettingsUpdate({
+        imposedProfiles: {
+          enabled: true,
+          policies: [{
+            id: 'mii-patient',
+            resourceType: 'Patient',
+            profileUrl: 'https://www.medizininformatik-initiative.de/fhir/core/StructureDefinition/Patient|2025.0.1',
+            packageId: 'de.medizininformatikinitiative.kerndatensatz.person',
+            packageVersion: '2025.0.1',
+          }],
+        },
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('accepts every supported settings field from the canonical schema', () => {
+      const result = safeParseSettingsUpdate({
+        resourceTypes: { fhirVersion: 'R5' },
+        excludedPaths: ['Patient.identifier[*].use'],
+        forPublication: true,
+        advisorRules: [{
+          id: 'identifier-message',
+          action: 'suppress',
+          match: { messageRegex: ['Identifier.*missing'] },
+        }],
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects unknown top-level update fields instead of silently dropping them', () => {
+      const result = safeParseSettingsUpdate({ unexpectedSetting: true });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('enforces cross-field settings rules in the canonical schema', () => {
+      const settings = createDefaultValidationSettings('R4');
+      settings.resourceTypes.includedTypes = ['Patient'];
+      settings.resourceTypes.excludedTypes = ['Patient'];
+
+      const result = safeParseSettings(settings);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues.some(issue => issue.message.includes('both included and excluded'))).toBe(true);
+      }
+    });
+
+    it('does not normalize business rule aliases to custom_rule', () => {
+      expect(normalizeValidationAspect('businessRule')).toBe('businessRule');
+      expect(normalizeValidationAspect('business-rules')).toBe('business-rules');
+      expect(normalizeValidationAspect('custom_rule')).toBe('custom_rule');
     });
   });
 
@@ -250,7 +353,7 @@ describe('Type Integrity - DTO Serialization', () => {
         'terminology',
         'reference',
         'invariant',
-        'customRule',
+        'custom_rule',
         'metadata',
         'anomaly'
       ];
@@ -313,7 +416,7 @@ describe('Type Integrity - DTO Serialization', () => {
           terminology: { enabled: true, severity: 'warning' },
           reference: { enabled: true, severity: 'error' },
           invariant: { enabled: true, severity: 'error' },
-          customRule: { enabled: true, severity: 'error' },
+          custom_rule: { enabled: true, severity: 'error' },
           metadata: { enabled: true, severity: 'error' },
           anomaly: { enabled: true, severity: 'info' }
         },
@@ -398,4 +501,3 @@ describe('Type Integrity - DTO Serialization', () => {
     });
   });
 });
-

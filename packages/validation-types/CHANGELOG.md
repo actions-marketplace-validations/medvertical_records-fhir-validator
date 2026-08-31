@@ -11,6 +11,87 @@ captures changes that affect type-package consumers directly.
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-08-25
+
+Released alongside `@records-fhir/validator` 0.6.2.
+
+### Surface
+
+- Added optional `TerminologyServer.snomedEditions` module identifiers to the
+  public settings type and Zod schema. The default SNOMED server advertises the
+  International Edition module (`900000000000207008`), allowing consumers to
+  configure deterministic national-edition routing without a breaking settings
+  migration.
+
+## [0.1.8] — 2026-08-24
+
+Released alongside `@records-fhir/validator` 0.6.1.
+
+### Surface
+
+- `string-whitespace-padding` no longer carries a patch template. The
+  trimmed value is deliberately absent from validator 0.6.1's issue
+  details — a padded `Patient.name.family` is clinical content — so the
+  template could no longer resolve, and `resolvePatch` returned `null`
+  for it. Removing it makes the catalog say what the validator does.
+  Consumers that read `suggestion.patch` directly should treat its
+  absence as "trim locally"; the `fix` and `example` text is unchanged.
+
+## [0.1.7] — 2026-08-19
+
+Released alongside `@records-fhir/validator` 0.6.0. Documented
+retroactively — the version shipped without an entry here.
+
+### Surface
+
+- Added fix-suggestion catalog entries for the checks introduced in
+  validator 0.6.0: `attachment-att1-violation`, `attachment-no-content`,
+  `narrative-txt2-violation`, `date-year-implausible`,
+  `string-whitespace-padding`, `decimal-value-out-of-range`, and
+  `language-code-invalid`.
+
+## [0.1.6] — 2026-07-23
+
+Released alongside `@records-fhir/validator` 0.5.0.
+
+### Surface
+
+- Added `code-inferred` to `ProfileApplicationSource` so consumers can
+  distinguish FHIR-implied Observation profile selection from explicit,
+  resource-declared, imposed-policy, and base-fallback application.
+
+## [0.1.5] — 2026-06-23
+
+Released alongside `@records-fhir/validator` 0.1.14.
+
+### Surface
+
+- Published the issue-identity helper exports, including
+  `computeValidationIssueId`, required by the validator runtime and CLI.
+
+## [0.1.4] — 2026-05-28
+
+Released alongside `@records-fhir/validator` 0.1.10.
+
+### Surface
+
+- Normalized profile source settings and defaults used by the validator runtime
+  and UI settings snapshots.
+- Kept the current EPS preview package visible in the default package source
+  set while preserving the canonical xTeHR reference.
+- Updated schema coverage so downstream consumers can validate the same
+  settings shape used by the restored HL7 and MII parity gates.
+
+## [0.1.3] — 2026-05-26
+
+Released alongside `@records-fhir/validator` 0.1.9.
+
+### Fixes
+
+- Added explicit package exports for `/fix-suggestions` and selected
+  `/validation/*` subpaths so downstream package builds can resolve the
+  documented public type entry points.
+
 ## [0.1.2] — 2026-05-18
 
 Released alongside `@records-fhir/validator` 0.1.7.

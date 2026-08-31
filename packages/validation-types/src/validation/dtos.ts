@@ -8,6 +8,8 @@
  */
 
 import type { ValidationAspectType, ValidationSeverityType } from './aspect-enums';
+import type { FindingAspectType, FindingSourceType } from './finding-source';
+import { removeAsciiControlCharacters } from './text-normalization';
 
 // ============================================================================
 // Message Signature Types
@@ -129,11 +131,17 @@ export interface AggregatedValidationResult {
  */
 export interface ValidationMessageGroupDTO {
     signature: string;
-    aspect: ValidationAspectType;
+    aspect: FindingAspectType;
+    findingSource?: FindingSourceType;
     severity: ValidationSeverityType;
     code?: string;
     canonicalPath: string;
     sampleMessage: string; // First message text
+    /** Number of persisted issue occurrences in this logical group. */
+    occurrences: number;
+    /** Number of distinct server/resource identities affected by this group. */
+    affectedResources: number;
+    /** @deprecated Use affectedResources. Retained for wire compatibility. */
     totalResources: number;
     firstSeenAt: Date;
     lastSeenAt: Date;
@@ -144,6 +152,9 @@ export interface ValidationMessageGroupDTO {
     serverId?: number; // Server ID (for single-server queries, or first seen for multi-server)
     resourceType?: string; // Primary resource type for this issue group
     resourceTypeCounts?: Record<string, number>; // Per-type resource counts (e.g. { Patient: 5, Encounter: 3 })
+    profiles?: string[]; // Distinct profiles that produced occurrences in this group
+    validatorPackageVersion?: string; // Validator package version observed for the affected resource/aspect results
+    validationRulesetVersion?: string; // Ruleset version observed for the affected resource/aspect results
 }
 
 /**
@@ -154,7 +165,7 @@ export interface ValidationGroupMemberDTO {
     fhirId: string;
     validatedAt: Date;
     perAspect: {
-        aspect: ValidationAspectType;
+        aspect: FindingAspectType;
         isValid: boolean;
         errorCount: number;
         warningCount: number;
@@ -180,6 +191,8 @@ export interface ResourceMessagesDTO {
             text: string;
             signature: string;
             createdAt: Date;
+            validatorPackageVersion?: string;
+            validationRulesetVersion?: string;
         }[];
     }[];
 }
@@ -192,15 +205,16 @@ export interface ResourceMessagesDTO {
  * Settings snapshot for validation (canonical format)
  */
 export interface ValidationSettingsSnapshot {
+    [key: string]: unknown; // Forward-compatible settings remain opaque to consumers.
     aspects: {
-        structural: { enabled: boolean; severity: 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
-        profile: { enabled: boolean; severity: 'warning' | 'information'; timeoutMs: number; engine?: string };
-        terminology: { enabled: boolean; severity: 'warning' | 'information'; timeoutMs: number; engine?: string };
-        reference: { enabled: boolean; severity: 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
-        invariant: { enabled: boolean; severity: 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
-        customRule: { enabled: boolean; severity: 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
-        metadata: { enabled: boolean; severity: 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
-        anomaly: { enabled: boolean; severity: 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        structural: { enabled: boolean; severity: 'inherit' | 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        profile: { enabled: boolean; severity: 'inherit' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        terminology: { enabled: boolean; severity: 'inherit' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        reference: { enabled: boolean; severity: 'inherit' | 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        invariant: { enabled: boolean; severity: 'inherit' | 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        custom_rule: { enabled: boolean; severity: 'inherit' | 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        metadata: { enabled: boolean; severity: 'inherit' | 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
+        anomaly: { enabled: boolean; severity: 'inherit' | 'error' | 'warning' | 'information'; timeoutMs: number; engine?: string };
     };
     // Additional settings
     validationStrictness?: 'compatibility' | 'standard' | 'strict';
@@ -209,7 +223,6 @@ export interface ValidationSettingsSnapshot {
         enabled: boolean;
         timeout?: number;
     };
-    [key: string]: any; // Allow additional settings
 }
 
 // ============================================================================
@@ -271,13 +284,26 @@ export function aggregateAspectScores(
 // ============================================================================
 
 /**
- * Normalize FHIR path for signature computation
- * Removes array indices: entry[3].item[0].code -> entry.item.code
+ * Normalize FHIR path for signature computation.
+ *
+ * This is intentionally stricter than display-path cleanup:
+ * - removes concrete array indexes so the same rule on `name[0]` and `name[4]`
+ *   remains one issue type;
+ * - removes Records embedded-resource markers used in Bundle child paths so
+ *   issue signatures do not fragment by embedded resource id;
+ * - removes whitespace/control characters and lowercases for stable grouping.
  */
 export function normalizeCanonicalPath(path: string, maxLength: number = 256): { normalized: string; truncated: boolean } {
-    let normalized = path
+    let normalized = removeAsciiControlCharacters(path)
+        .trim()
+        // Remove Records embedded resource markers from Bundle paths.
+        .replace(/\/\*[^*]*\*\//g, '')
         // Remove array indices
         .replace(/\[\d+\]/g, '')
+        // Treat FHIR choice placeholders as the base element for grouping.
+        .replace(/\[x\]/gi, '')
+        // Remove quoted slice/type annotations that sometimes appear in diagnostics.
+        .replace(/\x60([^\x60]+)\x60/g, '$1')
         // Remove multiple dots
         .replace(/\.{2,}/g, '.')
         // Remove leading/trailing dots
@@ -300,16 +326,13 @@ export function normalizeCanonicalPath(path: string, maxLength: number = 256): {
  * Trim, collapse whitespace, lowercase, remove control chars
  */
 export function normalizeMessageText(text: string, maxLength: number = 512): { normalized: string; truncated: boolean } {
-    let normalized = text
+    let normalized = removeAsciiControlCharacters(text
         // Trim
         .trim()
         // Collapse whitespace
         .replace(/\s+/g, ' ')
         // Lowercase
-        .toLowerCase()
-        // Remove control characters (excluding common whitespace)
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\u0000-\u001F\u007F]/g, '');
+        .toLowerCase());
 
     const truncated = normalized.length > maxLength;
     if (truncated) {

@@ -20,175 +20,27 @@
  * ```
  */
 
-// ============================================================================
-// Type System Constants
-// ============================================================================
+import {
+  fhirPathToAllFhirPrimitives,
+  fhirPathToFhirPrimitive,
+  fhirToFhirPathType,
+  getTypeCategory,
+  isFhirPathTypeUrl,
+  isFhirPrimitive,
+} from './fhir-type-mapping-core';
 
-/**
- * FHIRPath type system base URL
- */
-const FHIRPATH_TYPE_SYSTEM = 'http://hl7.org/fhirpath/System.';
-
-/**
- * Mapping from FHIRPath type URLs to FHIR primitive types
- * 
- * Based on FHIR specification:
- * - All string-like FHIR primitives map to System.String
- * - Integer types map to System.Integer
- * - Decimal maps to System.Decimal
- * - Boolean maps to System.Boolean
- * - DateTime types map to System.DateTime
- * - Date maps to System.Date
- * - Time maps to System.Time
- */
-const FHIRPATH_TO_FHIR_MAP: Record<string, string[]> = {
-  'http://hl7.org/fhirpath/System.String': [
-    'string', 'id', 'code', 'uri', 'url', 'canonical', 
-    'oid', 'uuid', 'markdown', 'xhtml'
-  ],
-  'http://hl7.org/fhirpath/System.Integer': [
-    'integer', 'unsignedInt', 'positiveInt'
-  ],
-  'http://hl7.org/fhirpath/System.Decimal': [
-    'decimal'
-  ],
-  'http://hl7.org/fhirpath/System.Boolean': [
-    'boolean'
-  ],
-  'http://hl7.org/fhirpath/System.DateTime': [
-    'dateTime', 'instant'
-  ],
-  'http://hl7.org/fhirpath/System.Date': [
-    'date'
-  ],
-  'http://hl7.org/fhirpath/System.Time': [
-    'time'
-  ]
-};
-
-/**
- * All FHIR primitive type codes
- */
-const FHIR_PRIMITIVES = new Set([
-  // String-like primitives
-  'string', 'id', 'code', 'uri', 'url', 'canonical', 'oid', 'uuid', 'markdown', 'xhtml',
-  // Numeric primitives
-  'integer', 'unsignedInt', 'positiveInt', 'decimal',
-  // Boolean
-  'boolean',
-  // Date/Time primitives
-  'date', 'dateTime', 'instant', 'time',
-  // Binary
-  'base64Binary'
-]);
-
-/**
- * Type categories for broader equivalence checking
- * Groups related FHIR primitive types together
- */
-const TYPE_CATEGORIES: Record<string, string> = {
-  // String-like types all belong to 'string' category
-  'string': 'string',
-  'id': 'string',
-  'code': 'string',
-  'uri': 'string',
-  'url': 'string',
-  'canonical': 'string',
-  'oid': 'string',
-  'uuid': 'string',
-  'markdown': 'string',
-  'xhtml': 'string',
-  
-  // Integer types
-  'integer': 'integer',
-  'unsignedInt': 'integer',
-  'positiveInt': 'integer',
-  
-  // Decimal
-  'decimal': 'decimal',
-  
-  // Boolean
-  'boolean': 'boolean',
-  
-  // DateTime types
-  'dateTime': 'dateTime',
-  'instant': 'dateTime',
-  
-  // Date
-  'date': 'date',
-  
-  // Time
-  'time': 'time',
-  
-  // Binary
-  'base64Binary': 'binary'
-};
+export {
+  fhirPathToAllFhirPrimitives,
+  fhirPathToFhirPrimitive,
+  fhirToFhirPathType,
+  getTypeCategory,
+  isFhirPathTypeUrl,
+  isFhirPrimitive,
+} from './fhir-type-mapping-core';
 
 // ============================================================================
 // Type Normalization Functions
 // ============================================================================
-
-/**
- * Check if a type code is a FHIR primitive
- * 
- * @param typeCode - Type code to check
- * @returns True if typeCode is a recognized FHIR primitive
- * 
- * @example
- * isFhirPrimitive('string') // true
- * isFhirPrimitive('id') // true
- * isFhirPrimitive('CodeableConcept') // false
- */
-export function isFhirPrimitive(typeCode: string): boolean {
-  return FHIR_PRIMITIVES.has(typeCode);
-}
-
-/**
- * Check if a type code is a FHIRPath type system URL
- * 
- * @param typeCode - Type code to check
- * @returns True if typeCode is a FHIRPath type URL
- * 
- * @example
- * isFhirPathTypeUrl('http://hl7.org/fhirpath/System.String') // true
- * isFhirPathTypeUrl('string') // false
- */
-export function isFhirPathTypeUrl(typeCode: string): boolean {
-  return typeCode.startsWith(FHIRPATH_TYPE_SYSTEM);
-}
-
-/**
- * Map FHIRPath type URL to FHIR primitive type
- * 
- * Returns the first (canonical) FHIR primitive for the FHIRPath type.
- * For System.String, returns 'string' (though 'id', 'code', etc. are also valid).
- * 
- * @param fhirPathUrl - FHIRPath type URL
- * @returns FHIR primitive type, or null if not recognized
- * 
- * @example
- * fhirPathToFhirPrimitive('http://hl7.org/fhirpath/System.String') // 'string'
- * fhirPathToFhirPrimitive('http://hl7.org/fhirpath/System.Integer') // 'integer'
- * fhirPathToFhirPrimitive('http://hl7.org/fhirpath/System.Unknown') // null
- */
-export function fhirPathToFhirPrimitive(fhirPathUrl: string): string | null {
-  const primitives = FHIRPATH_TO_FHIR_MAP[fhirPathUrl];
-  return primitives ? primitives[0] : null;
-}
-
-/**
- * Get all FHIR primitives that map to a FHIRPath type
- * 
- * @param fhirPathUrl - FHIRPath type URL
- * @returns Array of equivalent FHIR primitive types
- * 
- * @example
- * fhirPathToAllFhirPrimitives('http://hl7.org/fhirpath/System.String')
- * // Returns: ['string', 'id', 'code', 'uri', 'url', 'canonical', 'oid', 'uuid', 'markdown', 'xhtml']
- */
-export function fhirPathToAllFhirPrimitives(fhirPathUrl: string): string[] {
-  return FHIRPATH_TO_FHIR_MAP[fhirPathUrl] || [];
-}
 
 /**
  * Normalize a type code to a canonical FHIR primitive
@@ -241,28 +93,6 @@ export function normalizeFhirType(typeCode: string): string | null {
   // Return as-is for complex type validation
   return typeCode;
 }
-
-/**
- * Get type category for broader equivalence checking
- * 
- * Groups related types together (e.g., all string-like types → 'string')
- * 
- * @param typeCode - FHIR type code
- * @returns Type category
- * 
- * @example
- * getTypeCategory('string') // 'string'
- * getTypeCategory('id') // 'string'
- * getTypeCategory('code') // 'string'
- * getTypeCategory('integer') // 'integer'
- */
-export function getTypeCategory(typeCode: string): string {
-  return TYPE_CATEGORIES[typeCode] || typeCode;
-}
-
-// ============================================================================
-// Type Equivalence Functions
-// ============================================================================
 
 /**
  * Check if two type codes are equivalent
@@ -419,36 +249,6 @@ export function getNormalizedTypeList(typeCodes: string[]): string[] {
   return Array.from(normalized);
 }
 
-// ============================================================================
-// Reverse Mapping (FHIR to FHIRPath)
-// ============================================================================
-
-/**
- * Map FHIR primitive type to FHIRPath type URL
- * 
- * @param fhirType - FHIR primitive type code
- * @returns FHIRPath type URL, or null if not a primitive
- * 
- * @example
- * fhirToFhirPathType('string') // 'http://hl7.org/fhirpath/System.String'
- * fhirToFhirPathType('integer') // 'http://hl7.org/fhirpath/System.Integer'
- * fhirToFhirPathType('CodeableConcept') // null (not a primitive)
- */
-export function fhirToFhirPathType(fhirType: string): string | null {
-  // Find which FHIRPath type maps to this FHIR type
-  for (const [fhirPathUrl, fhirPrimitives] of Object.entries(FHIRPATH_TO_FHIR_MAP)) {
-    if (fhirPrimitives.includes(fhirType)) {
-      return fhirPathUrl;
-    }
-  }
-  
-  return null;
-}
-
-// ============================================================================
-// Debugging Utilities
-// ============================================================================
-
 /**
  * Get detailed type information for debugging
  * 
@@ -481,4 +281,3 @@ export function getTypeInfo(typeCode: string): {
       : undefined
   };
 }
-

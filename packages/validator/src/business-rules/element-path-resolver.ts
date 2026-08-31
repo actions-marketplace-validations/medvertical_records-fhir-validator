@@ -27,7 +27,9 @@
 // Types
 // ============================================================================
 
+import { getValueAtPath } from '../core/validation-utils';
 import { logger } from '../logger';
+import { getValidationTargets } from './element-validation-targets';
 
 export interface PathComponents {
   /** Full path (e.g., "Patient.communication.language") */
@@ -75,7 +77,7 @@ export interface PathComponents {
 export function parseElementPath(path: string, resourceType?: string): PathComponents {
   const parts = path.split('.');
 
-  if (parts.length === 0) {
+  if (!path || parts.some(part => part.length === 0)) {
     throw new Error(`Invalid element path: ${path}`);
   }
 
@@ -177,10 +179,6 @@ export function getAncestorPaths(path: string): string[] {
 // Element Existence Checking
 // ============================================================================
 
-// Import from canonical source and re-export for backwards compatibility
-import { getValueAtPath } from '../core/validation-utils';
-export { getValueAtPath };
-
 /**
  * Check if parent element exists in resource
  * 
@@ -204,8 +202,8 @@ export { getValueAtPath };
  * // Root element always returns true
  * hasParentElement(patient, 'Patient.name') // true
  */
-export function hasParentElement(resource: any, elementPath: string): boolean {
-  if (!resource || typeof resource !== 'object') {
+export function hasParentElement(resource: unknown, elementPath: string): boolean {
+  if (!isRecord(resource)) {
     return false;
   }
 
@@ -220,17 +218,7 @@ export function hasParentElement(resource: any, elementPath: string): boolean {
     return true;
   }
 
-  const parentValue = getValueAtPath(resource, parentPath);
-
-  if (parentValue === undefined || parentValue === null) {
-    return false;
-  }
-
-  if (Array.isArray(parentValue)) {
-    return parentValue.length > 0;
-  }
-
-  return true;
+  return pathHasPresentTarget(resource, parentPath);
 }
 
 /**
@@ -248,7 +236,8 @@ export function hasParentElement(resource: any, elementPath: string): boolean {
  * // Checks: Patient.contact exists, Patient.contact.name exists
  * hasAllAncestors(patient, 'Patient.contact.name.given')
  */
-export function hasAllAncestors(resource: any, elementPath: string): boolean {
+export function hasAllAncestors(resource: unknown, elementPath: string): boolean {
+  if (!isRecord(resource)) return false;
   const ancestors = getAncestorPaths(elementPath);
 
   // Check each ancestor
@@ -258,17 +247,7 @@ export function hasAllAncestors(resource: any, elementPath: string): boolean {
       continue;
     }
 
-    const ancestorValue = getValueAtPath(resource, ancestorPath);
-
-    // If any ancestor is missing, return false
-    if (ancestorValue === undefined || ancestorValue === null) {
-      return false;
-    }
-
-    // For arrays, must have at least one element
-    if (Array.isArray(ancestorValue) && ancestorValue.length === 0) {
-      return false;
-    }
+    if (!pathHasPresentTarget(resource, ancestorPath)) return false;
   }
 
   return true;
@@ -289,9 +268,13 @@ export function hasAllAncestors(resource: any, elementPath: string): boolean {
  * shouldValidateRequired(patient, 'Patient.communication.language') 
  *   // true only if patient.communication exists
  */
-export function shouldValidateRequired(resource: any, elementPath: string): boolean {
+export function shouldValidateRequired(resource: unknown, elementPath: string): boolean {
+  if (!isRecord(resource)) return false;
+  const resourceType = typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : '';
   // Root-level elements are always validated
-  if (isRootElement(elementPath, resource.resourceType)) {
+  if (isRootElement(elementPath, resourceType)) {
     return true;
   }
 
@@ -310,16 +293,19 @@ export function shouldValidateRequired(resource: any, elementPath: string): bool
  * @param elementPath - Element path
  * @returns Debug information about the path
  */
-export function getPathDebugInfo(resource: any, elementPath: string): {
+export function getPathDebugInfo(resource: unknown, elementPath: string): {
   path: string;
   components: PathComponents;
   valueExists: boolean;
   parentExists: boolean;
   shouldValidate: boolean;
-  value: any;
-  parentValue: any;
+  value: unknown;
+  parentValue: unknown;
 } {
-  const components = parseElementPath(elementPath, resource.resourceType);
+  const resourceType = isRecord(resource) && typeof resource.resourceType === 'string'
+    ? resource.resourceType
+    : undefined;
+  const components = parseElementPath(elementPath, resourceType);
   const value = getValueAtPath(resource, elementPath);
   const parentPath = getParentPath(elementPath);
   const parentValue = parentPath ? getValueAtPath(resource, parentPath) : resource;
@@ -335,238 +321,13 @@ export function getPathDebugInfo(resource: any, elementPath: string): {
   };
 }
 
-// ============================================================================
-// Array-Aware Path Utilities
-// ============================================================================
-
-/**
- * Check if the value at a given path is an array
- * 
- * @param resource - FHIR resource
- * @param path - Element path
- * @returns True if the value at the path is an array
- * 
- * @example
- * isArrayAtPath(patient, 'Patient.identifier') // true if identifier is array
- * isArrayAtPath(patient, 'Patient.name') // true if name is array
- * isArrayAtPath(patient, 'Patient.gender') // false (single value)
- */
-export function isArrayAtPath(resource: any, path: string): boolean {
-  // getValueAtPath unwraps single-element arrays, so we check the raw property
-  // to correctly detect whether the field is defined as an array.
-  const parts = path.split('.');
-  if (parts[0] === resource?.resourceType) {
-    parts.shift();
-  }
-  let current: any = resource;
-  for (const part of parts) {
-    if (current == null) return false;
-    if (Array.isArray(current)) {
-      current = current[0];
-      if (current == null) return false;
-    }
-    let value = current[part];
-    // Handle FHIR choice types (e.g. value[x] → valueCoding)
-    if (value === undefined && part.endsWith('[x]') && typeof current === 'object') {
-      const prefix = part.slice(0, -3);
-      const actualKey = Object.keys(current).find(k => k.startsWith(prefix) && k !== prefix);
-      if (actualKey) value = current[actualKey];
-    }
-    current = value;
-  }
-  return Array.isArray(current);
+function pathHasPresentTarget(resource: Record<string, unknown>, path: string): boolean {
+  return getValidationTargets(resource, path).some(target => {
+    if (target.value === undefined || target.value === null) return false;
+    return !Array.isArray(target.value) || target.value.length > 0;
+  });
 }
 
-/**
- * Expand a path by inserting an array index
- * 
- * @param path - Original path (e.g., "Patient.identifier.system")
- * @param arraySegment - Segment that is an array (e.g., "identifier")
- * @param index - Array index
- * @returns Expanded path with index (e.g., "Patient.identifier[0].system")
- * 
- * @example
- * expandPathWithArrayIndex('Patient.identifier.system', 'identifier', 0)
- * // Returns: 'Patient.identifier[0].system'
- */
-export function expandPathWithArrayIndex(
-  path: string,
-  arraySegment: string,
-  index: number
-): string {
-  const parts = path.split('.');
-  const expandedParts: string[] = [];
-
-  for (const part of parts) {
-    if (part === arraySegment) {
-      expandedParts.push(`${part}[${index}]`);
-    } else {
-      expandedParts.push(part);
-    }
-  }
-
-  return expandedParts.join('.');
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-
-/**
- * Validation target for a specific path in a resource
- * Includes the value, full path with array indices, and context path for parent checking
- */
-export interface ValidationTarget {
-  /** Value at the target path */
-  value: any;
-
-  /** Full path including array indices (e.g., "Patient.identifier[0].system") */
-  fullPath: string;
-
-  /** Context path for parent existence checking (e.g., "Patient.identifier[0]") */
-  contextPath: string;
-
-  /** Whether this target is within an array element */
-  isArrayElement: boolean;
-
-  /** Array index if this is an array element */
-  arrayIndex?: number;
-}
-
-/**
- * Get all validation targets for a path, expanding arrays
- * 
- * This is the core function for array-aware validation. It takes a path like
- * "Patient.identifier.system" and expands it to validate each array element:
- * - Patient.identifier[0].system
- * - Patient.identifier[1].system
- * - etc.
- * 
- * @param resource - FHIR resource
- * @param path - Element path (may contain arrays)
- * @returns Array of validation targets, one per array element (or single target if no arrays)
- * 
- * @example
- * // Patient with 2 identifiers
- * getValidationTargets(patient, 'Patient.identifier.system')
- * // Returns:
- * // [
- * //   { value: "http://...", fullPath: "Patient.identifier[0].system", contextPath: "Patient.identifier[0]", isArrayElement: true, arrayIndex: 0 },
- * //   { value: undefined, fullPath: "Patient.identifier[1].system", contextPath: "Patient.identifier[1]", isArrayElement: true, arrayIndex: 1 }
- * // ]
- */
-export function getValidationTargets(
-  resource: any,
-  path: string
-): ValidationTarget[] {
-  if (!resource || typeof resource !== 'object') {
-    return [];
-  }
-
-  const parts = path.split('.');
-
-  // Skip resource type if present
-  let startIndex = 0;
-  if (parts[0] === resource.resourceType) {
-    startIndex = 1;
-  }
-
-  // Start with a single target (the root resource)
-  let targets: Array<{
-    current: any;
-    pathSoFar: string[];
-    resourceTypePart: string;
-  }> = [{
-    current: resource,
-    pathSoFar: [],
-    resourceTypePart: parts[0] === resource.resourceType ? parts[0] : ''
-  }];
-
-  // Walk through each path segment
-  for (let i = startIndex; i < parts.length; i++) {
-    const segment = parts[i];
-    const newTargets: typeof targets = [];
-
-    for (const target of targets) {
-      const currentValue = target.current;
-
-      if (currentValue === undefined || currentValue === null) {
-        // Dead end - this target can't continue
-        continue;
-      }
-
-      let nextValue = currentValue[segment];
-
-      // Handle FHIR choice types (e.g. value[x] -> valueQuantity, valueString)
-      if (nextValue === undefined && segment.endsWith('[x]')) {
-        const prefix = segment.slice(0, -3);
-        const actualKey = Object.keys(currentValue).find(k => k.startsWith(prefix));
-        if (actualKey) {
-          nextValue = currentValue[actualKey];
-          // We don't change the segment name in the pathSoFar to preserve the profile path
-          // but we use the actual value found
-        }
-      }
-
-      // Check if next value is an array - if so, fork into multiple targets
-      if (Array.isArray(nextValue)) {
-        // Fork: create one target for each array element
-        for (let arrayIndex = 0; arrayIndex < nextValue.length; arrayIndex++) {
-          newTargets.push({
-            current: nextValue[arrayIndex],
-            pathSoFar: [...target.pathSoFar, `${segment}[${arrayIndex}]`],
-            resourceTypePart: target.resourceTypePart
-          });
-        }
-      } else {
-        // No array - continue with single target
-        newTargets.push({
-          current: nextValue,
-          pathSoFar: [...target.pathSoFar, segment],
-          resourceTypePart: target.resourceTypePart
-        });
-      }
-    }
-
-    targets = newTargets;
-  }
-
-  // Convert targets to ValidationTarget format
-  return targets.map(convertToValidationTarget);
-}
-
-/** Converts a raw traversal target into a ValidationTarget with full path metadata. */
-function convertToValidationTarget(target: {
-  current: any;
-  pathSoFar: string[];
-  resourceTypePart: string;
-}): ValidationTarget {
-  const fullPath = target.resourceTypePart
-    ? `${target.resourceTypePart}.${target.pathSoFar.join('.')}`
-    : target.pathSoFar.join('.');
-
-  // Context path is parent of the final element
-  const contextPathParts = target.pathSoFar.slice(0, -1);
-  const contextPath = target.resourceTypePart
-    ? `${target.resourceTypePart}.${contextPathParts.join('.')}`
-    : contextPathParts.join('.');
-
-  // Check if this is an array element by looking for brackets in any segment
-  const hasArraySegment = target.pathSoFar.some(seg => seg.includes('['));
-  const isArrayElement = hasArraySegment;
-
-  // Extract array index from the last array segment in the path
-  let arrayIndex: number | undefined;
-  for (let i = target.pathSoFar.length - 1; i >= 0; i--) {
-    const match = target.pathSoFar[i].match(/\[(\d+)\]/);
-    if (match) {
-      arrayIndex = parseInt(match[1], 10);
-      break;
-    }
-  }
-
-  return {
-    value: target.current,
-    fullPath,
-    contextPath: contextPath || target.resourceTypePart,
-    isArrayElement,
-    arrayIndex
-  };
-}
-

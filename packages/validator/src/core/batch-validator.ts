@@ -5,21 +5,24 @@
  * Extracted from validator-engine.ts to comply with global.mdc guidelines.
  */
 
-import type { ValidationIssue } from '../types';
-import type { ValidationAspectType } from '../types';
-import type { ValidationSettings } from '../types';
+import type { ValidationAspectType, ValidationIssue, ValidationSettings } from '../types';
 import type { FhirClientLike } from './profile-loader-utils.js';
 import type { StructureDefinitionLoader } from './structure-definition-loader';
 import type { ProfileCache } from '../cache/profile-cache';
 import type { SnapshotGenerator } from './snapshot-generator';
+import type { ReferenceResolver } from '../validators/slicing-validator';
 import { logger } from '../logger';
 import {
   deduplicateResources,
   groupResourcesByProfile,
-  preloadProfiles,
-  chunkArray
-} from './batch-utils';
+} from './batch-resource-planning';
+import { preloadProfiles } from './profile-batch-preloader';
 import { createValidationErrorIssue as _createValidationErrorIssue } from './validation-utils';
+import type { ProfileSourceContext } from '../persistence';
+import { operationalResourceReference } from '../utils/sensitive-logging-metadata';
+import { validationFailureMetadata } from '../utils/validation-execution-failure';
+import type { ProfileWarmupCoordinator } from './profile-warmup-coordinator';
+import { isRecord, resourceIdOf, resourceTypeOf } from './fhir-resource';
 
 export interface BatchValidationOptions {
   fhirVersion?: 'R4' | 'R5' | 'R6';
@@ -28,30 +31,73 @@ export interface BatchValidationOptions {
   aspects?: ValidationAspectType[];
   settings?: ValidationSettings;
   fhirClient?: FhirClientLike;
+  referenceResolver?: ReferenceResolver;
+  organizationId?: number;
+  serverId?: number;
+  runtimeScopeKey?: string;
+  onResourceValidated?: (resource: Record<string, unknown>, result: unknown) => void | Promise<void>;
+  onEmbeddedResourceValidated?: (resource: Record<string, unknown>, result: unknown) => void | Promise<void>;
+  shouldStop?: () => boolean;
+  scheduleValidation?: <T>(task: () => Promise<T>) => Promise<T>;
 }
 
 export interface BatchValidatorContext<T = ValidationIssue[]> {
   sdLoader: StructureDefinitionLoader;
   profileCache: ProfileCache;
   snapshotGenerator: SnapshotGenerator;
-  validateResource: (resource: any, profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6') => Promise<T>;
+  profileWarmupCoordinator?: ProfileWarmupCoordinator;
+  validateResource: (resource: unknown, profileUrl: string, fhirVersion: 'R4' | 'R5' | 'R6') => Promise<T>;
+}
+
+type AspectTimingResult = {
+  aspects?: Array<{
+    aspect?: string;
+    validationTime?: number;
+    issues?: unknown[];
+  }>;
+};
+
+export class BatchValidationAbortedError extends Error {
+  constructor() {
+    super('Batch validation stopped');
+    this.name = 'BatchValidationAbortedError';
+  }
+}
+
+export function isBatchValidationAbortedError(error: unknown): error is BatchValidationAbortedError {
+  return error instanceof BatchValidationAbortedError ||
+    (error instanceof Error && error.name === 'BatchValidationAbortedError');
+}
+
+function throwIfBatchStopped(options: BatchValidationOptions): void {
+  if (options.shouldStop?.()) {
+    throw new BatchValidationAbortedError();
+  }
 }
 
 /**
  * Execute batch validation
  */
-// eslint-disable-next-line max-lines-per-function
 export async function executeBatchValidation<T = ValidationIssue[]>(
-  resources: any[],
+  resources: unknown[],
   options: BatchValidationOptions,
   context: BatchValidatorContext<T>
-): Promise<Map<any, T>> {
+): Promise<Map<unknown, T>> {
   const fhirVersion = options.fhirVersion || 'R4';
   const maxConcurrency = options.maxConcurrency || 10;
+  const profileSourceContext: ProfileSourceContext = {
+    organizationId: options.organizationId,
+    serverId: options.serverId,
+    fhirVersion,
+  };
+
+  context.sdLoader.setProfileResolutionContext(profileSourceContext, options.settings);
 
   logger.info(`[RecordsValidator] ⚡ Starting batch validation of ${resources.length} resources (concurrency: ${maxConcurrency})`);
 
   try {
+    throwIfBatchStopped(options);
+
     // Step 1: Deduplicate resources by content hash
     const dedupStart = Date.now();
     const { unique, duplicateMap } = deduplicateResources(resources);
@@ -66,6 +112,7 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
 
     // Step 3: Pre-load all required profiles in parallel
     const preloadStart = Date.now();
+    throwIfBatchStopped(options);
     const profileUrls = Array.from(groupedByProfile.keys());
     await preloadProfiles(
       context.sdLoader,
@@ -74,49 +121,23 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
       profileUrls,
       fhirVersion,
       options.fhirClient,
-      options.settings
+      options.settings,
+      profileSourceContext,
+      context.profileWarmupCoordinator,
     );
     const preloadTime = Date.now() - preloadStart;
     logger.info(`[RecordsValidator] ✓ Pre-loaded ${profileUrls.length} profile(s) in ${preloadTime}ms`);
 
-    // Step 4: Validate resources in parallel (by profile group)
-    const validationStart = Date.now();
-    const resultsMap = new Map<any, T>();
-
-    for (const [profileUrl, resourceGroup] of groupedByProfile.entries()) {
-      const groupValidationStart = Date.now();
-      logger.info(`[RecordsValidator] 🔄 Validating ${resourceGroup.length} resources against ${profileUrl}...`);
-
-      // Process resources in chunks for this profile
-      const chunks = chunkArray(resourceGroup, maxConcurrency);
-
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-        const chunk = chunks[chunkIndex];
-        const chunkStart = Date.now();
-
-        const chunkPromises = chunk.map(async (resource) => {
-          const resourceStart = Date.now();
-          const result = await context.validateResource(resource, profileUrl, fhirVersion);
-          const resourceTime = Date.now() - resourceStart;
-
-          if (resourceTime > 500) {
-            logger.warn(`[RecordsValidator] ⚠️  Slow validation: ${resource.resourceType}/${resource.id} took ${resourceTime}ms`);
-          }
-
-          resultsMap.set(resource, result);
-        });
-
-        await Promise.all(chunkPromises);
-
-        const chunkTime = Date.now() - chunkStart;
-        logger.debug(`[RecordsValidator]   - Chunk ${chunkIndex + 1}/${chunks.length}: ${chunkTime}ms (${chunk.length} resources)`);
-      }
-
-      const groupValidationTime = Date.now() - groupValidationStart;
-      logger.info(`[RecordsValidator] ✓ Profile group complete in ${groupValidationTime}ms (avg ${(groupValidationTime / resourceGroup.length).toFixed(2)}ms/resource)`);
-    }
-
-    const validationTime = Date.now() - validationStart;
+    // Step 4: Validate all resources with one bounded worker pool. Profiles
+    // are already preloaded, so serial profile groups and lock-step chunks only
+    // create head-of-line blocking when one resource is slower than its peers.
+    const { resultsMap, validationTime } = await validateBatchWorkItems(
+      groupedByProfile,
+      fhirVersion,
+      maxConcurrency,
+      options,
+      context,
+    );
     logger.info(`[RecordsValidator] ✓ All validations complete in ${validationTime}ms`);
 
     // Step 5: Fan out results to duplicate resources
@@ -154,10 +175,15 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
     return resultsMap;
 
   } catch (error) {
-    logger.error('[RecordsValidator] Batch validation error:', error);
+    if (isBatchValidationAbortedError(error)) {
+      logger.info('[RecordsValidator] Batch validation stopped before completion');
+      throw error;
+    }
+
+    logger.error('[RecordsValidator] Batch validation error', validationFailureMetadata(error));
 
     // Return error results for all resources
-    const resultsMap = new Map<any, T>();
+    const resultsMap = new Map<unknown, T>();
     // Note: We can't generate a generic error T here easily.
     // So we'll iterate and try to assume ValidationIssue[] if T is not specified, 
     // or just rethrow if we can't be sure?
@@ -175,4 +201,78 @@ export async function executeBatchValidation<T = ValidationIssue[]>(
 
     return resultsMap;
   }
+}
+
+async function validateBatchWorkItems<T>(
+  groupedByProfile: Map<string, unknown[]>,
+  fhirVersion: 'R4' | 'R5' | 'R6',
+  maxConcurrency: number,
+  options: BatchValidationOptions,
+  context: BatchValidatorContext<T>,
+): Promise<{ resultsMap: Map<unknown, T>; validationTime: number }> {
+  const validationStart = Date.now();
+  const resultsMap = new Map<unknown, T>();
+  const workItems = Array.from(groupedByProfile.entries()).flatMap(
+    ([profileUrl, resourceGroup]) => resourceGroup.map(resource => ({ profileUrl, resource })),
+  );
+  let nextWorkIndex = 0;
+  let workerFailed = false;
+  const workerCount = Math.min(Math.max(1, maxConcurrency), workItems.length);
+
+  const runWorker = async () => {
+    while (!workerFailed) {
+      throwIfBatchStopped(options);
+      const workIndex = nextWorkIndex++;
+      if (workIndex >= workItems.length) return;
+      const { resource, profileUrl } = workItems[workIndex];
+      const resourceStart = Date.now();
+
+      try {
+        const validate = () => context.validateResource(resource, profileUrl, fhirVersion);
+        const result = options.scheduleValidation
+          ? await options.scheduleValidation(validate)
+          : await validate();
+        throwIfBatchStopped(options);
+        const resourceTime = Date.now() - resourceStart;
+
+        if (resourceTime > 500) {
+          const aspectBreakdown = formatAspectTimingBreakdown(result);
+          logger.warn('[RecordsValidator] Slow validation', {
+            ...operationalResourceReference(resourceTypeOf(resource), resourceIdOf(resource)),
+            durationMs: resourceTime,
+            ...(aspectBreakdown ? { aspectBreakdown } : {}),
+          });
+        }
+
+        resultsMap.set(resource, result);
+        if (options.onResourceValidated && isRecord(resource)) {
+          await options.onResourceValidated(resource, result);
+        }
+      } catch (error) {
+        workerFailed = true;
+        throw error;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, runWorker));
+  throwIfBatchStopped(options);
+  return { resultsMap, validationTime: Date.now() - validationStart };
+}
+
+function formatAspectTimingBreakdown(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const aspects = (result as AspectTimingResult).aspects;
+  if (!Array.isArray(aspects) || aspects.length === 0) return null;
+
+  return aspects
+    .map((aspect) => ({
+      name: aspect.aspect || 'unknown',
+      time: Number(aspect.validationTime ?? 0),
+      issues: Array.isArray(aspect.issues) ? aspect.issues.length : 0,
+    }))
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 4)
+    .map((aspect) => `${aspect.name}=${aspect.time}ms/${aspect.issues} issues`)
+    .join(', ');
 }

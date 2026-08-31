@@ -11,13 +11,18 @@
  * results are persisted.
  *
  * Rules are loaded from:
- *   1. ValidationSettings.advisorRules (DB, managed via UI)
+ *   1. ValidationSettings.advisorRules (loaded from advisor_rules, managed via UI)
  *   2. .records-advisor.yaml (project-local file)
  *   3. CLI --advisor-rules flag
  */
 
-import type { ValidationIssue } from '@records-fhir/validation-types';
-import type { AdvisorRule, AdvisorRuleMatch, AdvisorRuleTransform } from '@records-fhir/validation-types/validation-settings';
+import type {
+  AdvisorRule,
+  AdvisorRuleApplication,
+  AdvisorRuleMatch,
+  AdvisorRuleTransform,
+  ValidationIssue,
+} from '@records-fhir/validation-types';
 import { logger } from '../logger';
 
 // Re-export shared types so existing server imports continue to work
@@ -33,6 +38,7 @@ export interface AdvisorRuleApplicationResult {
   suppressedCount: number;
   overriddenCount: number;
   resultIssues: ValidationIssue[];
+  evidenceIssues: ValidationIssue[];
   appliedRules: Array<{ ruleId: string; issueCode: string; action: string }>;
 }
 
@@ -60,37 +66,58 @@ export interface GematikTransformation {
 function matchesRule(issue: ValidationIssue, match: AdvisorRuleMatch): boolean {
   if (match.code) {
     const codes = Array.isArray(match.code) ? match.code : [match.code];
-    if (!codes.some(c => issue.code === c || issue.code?.startsWith(c))) return false;
+    if (!codes.some((code: string) => issue.code === code || issue.code?.startsWith(code))) return false;
   }
 
   if (match.path) {
     const paths = Array.isArray(match.path) ? match.path : [match.path];
-    if (!paths.some(p => issue.path === p || issue.path?.includes(p))) return false;
+    if (!paths.some((path: string) => issue.path === path || issue.path?.includes(path))) return false;
   }
 
   if (match.message) {
     if (!issue.message?.includes(match.message)) return false;
   }
 
+  if (match.messageRegex) {
+    const patterns = Array.isArray(match.messageRegex) ? match.messageRegex : [match.messageRegex];
+    if (!patterns.some((pattern: string) => matchesRegex(issue.message, pattern))) return false;
+  }
+
   if (match.aspect) {
     const aspects = Array.isArray(match.aspect) ? match.aspect : [match.aspect];
-    if (!aspects.some(a => (issue as any).aspect === a)) return false;
+    if (!aspects.some((aspect: string) => issue.aspect === aspect)) return false;
   }
 
   if (match.severity) {
-    if (issue.severity !== match.severity) return false;
+    const severities = Array.isArray(match.severity) ? match.severity : [match.severity];
+    if (!severities.includes(issue.severity)) return false;
   }
 
   if (match.profile) {
-    if (issue.profile !== match.profile && !issue.profile?.includes(match.profile)) return false;
+    const profiles = Array.isArray(match.profile) ? match.profile : [match.profile];
+    if (!profiles.some(profile => issue.profile === profile || issue.profile?.includes(profile))) return false;
+  }
+
+  if (match.ruleId) {
+    const ruleIds = Array.isArray(match.ruleId) ? match.ruleId : [match.ruleId];
+    if (!ruleIds.some(ruleId => issue.ruleId === ruleId || issue.ruleId?.startsWith(ruleId))) return false;
   }
 
   if (match.resourceType) {
     const types = Array.isArray(match.resourceType) ? match.resourceType : [match.resourceType];
-    if (!types.some(t => issue.path?.startsWith(t))) return false;
+    if (!types.some((resourceType: string) => issue.path?.startsWith(resourceType))) return false;
   }
 
   return true;
+}
+
+function matchesRegex(value: string | undefined, pattern: string): boolean {
+  if (!value) return false;
+  try {
+    return new RegExp(pattern).test(value);
+  } catch {
+    return false;
+  }
 }
 
 // ============================================================================
@@ -101,18 +128,28 @@ export function applyAdvisorRules(
   issues: ValidationIssue[],
   rules: AdvisorRule[],
 ): AdvisorRuleApplicationResult {
-  const enabledRules = rules.filter(r => r.enabled !== false);
+  const now = Date.now();
+  const enabledRules = rules
+    .map((rule, index) => ({ rule, index }))
+    .filter(({ rule }) => rule.enabled !== false
+      && (!rule.expiresAt || Date.parse(rule.expiresAt) > now))
+    .sort((left, right) => (right.rule.priority ?? 0) - (left.rule.priority ?? 0)
+      || left.rule.id.localeCompare(right.rule.id)
+      || left.index - right.index)
+    .map(({ rule }) => rule);
   if (enabledRules.length === 0) {
     return {
       originalIssues: issues.length,
       suppressedCount: 0,
       overriddenCount: 0,
       resultIssues: issues,
+      evidenceIssues: issues.map(withRawEvidence),
       appliedRules: [],
     };
   }
 
   const resultIssues: ValidationIssue[] = [];
+  const evidenceIssues: ValidationIssue[] = [];
   const appliedRules: Array<{ ruleId: string; issueCode: string; action: string }> = [];
   let suppressedCount = 0;
   let overriddenCount = 0;
@@ -120,6 +157,8 @@ export function applyAdvisorRules(
   for (const issue of issues) {
     let suppressed = false;
     let transformed = issue;
+    let severityOverridden = false;
+    let messageOverridden = false;
 
     for (const rule of enabledRules) {
       if (!matchesRule(issue, rule.match)) continue;
@@ -128,20 +167,34 @@ export function applyAdvisorRules(
         case 'suppress':
           suppressed = true;
           suppressedCount++;
+          transformed = appendAdvisorApplication(transformed, rule, {
+            before: transformed.severity,
+            after: 'suppressed',
+          });
           appliedRules.push({ ruleId: rule.id, issueCode: issue.code || '', action: 'suppress' });
           break;
 
         case 'override-severity':
-          if (rule.transform?.severity) {
-            transformed = { ...transformed, severity: rule.transform.severity };
+          if (!severityOverridden && rule.transform?.severity) {
+            const before = transformed.severity;
+            transformed = appendAdvisorApplication({
+              ...withRawEvidence(transformed),
+              severity: rule.transform.severity,
+            }, rule, { before, after: rule.transform.severity });
+            severityOverridden = true;
             overriddenCount++;
             appliedRules.push({ ruleId: rule.id, issueCode: issue.code || '', action: `severity:${issue.severity}->${rule.transform.severity}` });
           }
           break;
 
         case 'override-message':
-          if (rule.transform?.message) {
-            transformed = { ...transformed, message: rule.transform.message };
+          if (!messageOverridden && rule.transform?.message) {
+            const before = transformed.message;
+            transformed = appendAdvisorApplication({
+              ...withRawEvidence(transformed),
+              message: rule.transform.message,
+            }, rule, { before, after: rule.transform.message });
+            messageOverridden = true;
             overriddenCount++;
             appliedRules.push({ ruleId: rule.id, issueCode: issue.code || '', action: 'message-override' });
           }
@@ -151,13 +204,16 @@ export function applyAdvisorRules(
       if (suppressed) break;
     }
 
-    if (!suppressed) {
-      resultIssues.push(transformed);
-    }
+    const evidence = {
+      ...withRawEvidence(transformed),
+      disposition: suppressed ? 'suppressed' as const : 'active' as const,
+    };
+    evidenceIssues.push(evidence);
+    if (!suppressed) resultIssues.push(transformed);
   }
 
   if (appliedRules.length > 0) {
-    logger.info(
+    logger.debug(
       `[AdvisorRules] Applied ${appliedRules.length} rule(s): ` +
       `${suppressedCount} suppressed, ${overriddenCount} overridden`,
     );
@@ -168,7 +224,39 @@ export function applyAdvisorRules(
     suppressedCount,
     overriddenCount,
     resultIssues,
+    evidenceIssues,
     appliedRules,
+  };
+}
+
+function withRawEvidence(issue: ValidationIssue): ValidationIssue {
+  return {
+    ...issue,
+    rawSeverity: issue.rawSeverity ?? issue.severity,
+    rawMessage: issue.rawMessage ?? issue.message,
+    disposition: issue.disposition ?? 'active',
+    advisoryApplications: [...(issue.advisoryApplications ?? [])],
+  };
+}
+
+function appendAdvisorApplication(
+  issue: ValidationIssue,
+  rule: AdvisorRule,
+  change: Pick<AdvisorRuleApplication, 'before' | 'after'>,
+): ValidationIssue {
+  const evidence = withRawEvidence(issue);
+  return {
+    ...evidence,
+    advisoryApplications: [
+      ...(evidence.advisoryApplications ?? []),
+      {
+        ruleId: rule.id,
+        action: rule.action,
+        priority: rule.priority ?? 0,
+        ...(rule.reason ? { reason: rule.reason } : {}),
+        ...change,
+      },
+    ],
   };
 }
 

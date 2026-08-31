@@ -9,14 +9,17 @@ import {
   getParentPath,
   isRootElement,
   getAncestorPaths,
-  getValueAtPath,
   hasParentElement,
   hasAllAncestors as _hasAllAncestors,
   shouldValidateRequired,
+} from '../element-path-resolver';
+import {
+  getValueAtPath,
   isArrayAtPath,
   expandPathWithArrayIndex,
   getValidationTargets
-} from '../element-path-resolver';
+} from '..';
+import { isResolvedPrimitiveSidecarValue } from '../../core/fhir-primitive-sidecar';
 
 describe('Element Path Resolver', () => {
 
@@ -46,6 +49,11 @@ describe('Element Path Resolver', () => {
       expect(result.segments).toEqual(['contact', 'name', 'given']);
       expect(result.parentPath).toBe('Patient.contact.name');
       expect(result.depth).toBe(3);
+    });
+
+    it('rejects empty path segments', () => {
+      expect(() => parseElementPath('')).toThrow('Invalid element path');
+      expect(() => parseElementPath('Patient..name')).toThrow('Invalid element path');
     });
   });
 
@@ -127,6 +135,27 @@ describe('Element Path Resolver', () => {
       expect(getValueAtPath(patient, 'Patient.link')).toBeUndefined();
       expect(getValueAtPath(patient, 'Patient.communication.preferred')).toBeUndefined();
     });
+
+    it('should resolve primitive sidecar-only values', () => {
+      const maskedPatient = {
+        resourceType: 'Patient',
+        identifier: [{
+          _value: {
+            extension: [{
+              url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+              valueCode: 'masked',
+            }],
+          },
+        }],
+      };
+
+      expect(getValueAtPath(maskedPatient, 'Patient.identifier.value')).toEqual({
+        extension: [{
+          url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+          valueCode: 'masked',
+        }],
+      });
+    });
   });
 
   describe('hasParentElement - Core Functionality', () => {
@@ -179,6 +208,21 @@ describe('Element Path Resolver', () => {
       };
       expect(hasParentElement(patient, 'Patient.communication.language')).toBe(true);
     });
+
+    it('resolves indexed parent paths emitted by validation targets', () => {
+      const patient = {
+        resourceType: 'Patient',
+        identifier: [{ value: 'first' }, { value: 'second' }],
+      };
+
+      expect(hasParentElement(patient, 'Patient.identifier[1].system')).toBe(true);
+      expect(hasParentElement(patient, 'Patient.identifier[2].system')).toBe(false);
+    });
+
+    it('returns false for malformed resources without throwing', () => {
+      expect(hasParentElement(null, 'Patient.name.given')).toBe(false);
+      expect(_hasAllAncestors(42, 'Patient.name.given')).toBe(false);
+    });
   });
 
   describe('shouldValidateRequired - Integration', () => {
@@ -216,6 +260,16 @@ describe('Element Path Resolver', () => {
         }]
       };
       expect(shouldValidateRequired(patient, 'Patient.contact.name.given')).toBe(true);
+    });
+
+    it('validates indexed children only when the selected parent exists', () => {
+      const patient = {
+        resourceType: 'Patient',
+        identifier: [{ value: 'first' }],
+      };
+
+      expect(shouldValidateRequired(patient, 'Patient.identifier[0].system')).toBe(true);
+      expect(shouldValidateRequired(patient, 'Patient.identifier[1].system')).toBe(false);
     });
 
     it('should return false for deeply nested when intermediate parent missing', () => {
@@ -302,6 +356,18 @@ describe('Element Path Resolver', () => {
         expect(isArrayAtPath(patient, 'Patient.name')).toBe(true);
         expect(isArrayAtPath(patient, 'Patient.gender')).toBe(false);
       });
+
+      it('checks every repeated parent instead of only the first entry', () => {
+        const patient = {
+          resourceType: 'Patient',
+          contact: [
+            { name: { family: 'No telecom here' } },
+            { telecom: [{ system: 'email' }] },
+          ],
+        };
+
+        expect(isArrayAtPath(patient, 'Patient.contact.telecom')).toBe(true);
+      });
     });
 
     describe('expandPathWithArrayIndex', () => {
@@ -317,6 +383,17 @@ describe('Element Path Resolver', () => {
     });
 
     describe('getValidationTargets', () => {
+      it('should preserve root resource paths without trailing separators', () => {
+        const patient = { resourceType: 'Patient', id: 'p1' };
+
+        const targets = getValidationTargets(patient, 'Patient');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].value).toBe(patient);
+        expect(targets[0].fullPath).toBe('Patient');
+        expect(targets[0].contextPath).toBe('Patient');
+      });
+
       it('should return single target for non-array path', () => {
         const patient = {
           resourceType: 'Patient',
@@ -329,6 +406,56 @@ describe('Element Path Resolver', () => {
         expect(targets[0].value).toBe('male');
         expect(targets[0].fullPath).toBe('Patient.gender');
         expect(targets[0].isArrayElement).toBe(false);
+      });
+
+      it('should expose concrete choice-type paths for resolved values', () => {
+        const condition = {
+          resourceType: 'Condition',
+          abatementString: 'around April 9, 2013',
+        };
+
+        const targets = getValidationTargets(condition, 'Condition.abatement[x]');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].value).toBe('around April 9, 2013');
+        expect(targets[0].fullPath).toBe('Condition.abatementString');
+        expect(targets[0].contextPath).toBe('Condition');
+        expect(targets[0].isArrayElement).toBe(false);
+      });
+
+      it('does not treat ordinary properties with choice-like prefixes as value[x]', () => {
+        const observation = {
+          resourceType: 'Observation',
+          valueSet: 'http://example.org/ValueSet/not-a-choice',
+          valueString: 'resolved choice',
+        };
+
+        const targets = getValidationTargets(observation, 'Observation.value[x]');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].value).toBe('resolved choice');
+        expect(targets[0].fullPath).toBe('Observation.valueString');
+      });
+
+      it('traverses the concrete primitive choice sidecar despite prefix collisions', () => {
+        const extension = {
+          url: 'http://example.org/StructureDefinition/value-extension',
+        };
+        const observation = {
+          resourceType: 'Observation',
+          valueSet: 'http://example.org/ValueSet/not-a-choice',
+          valueString: 'resolved choice',
+          _valueString: { extension: [extension] },
+        };
+
+        const targets = getValidationTargets(
+          observation,
+          'Observation.value[x].extension',
+        );
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].value).toBe(extension);
+        expect(targets[0].fullPath).toBe('Observation.valueString.extension[0]');
       });
 
       it('should expand array into multiple targets', () => {
@@ -447,6 +574,82 @@ describe('Element Path Resolver', () => {
         expect(targets[1].value).toBeUndefined();
         expect(targets[1].fullPath).toBe('Patient.contact[1].name.family');
       });
+
+      it('should preserve primitive sidecar-only values as present targets', () => {
+        const patient = {
+          resourceType: 'Patient',
+          identifier: [{
+            _value: {
+              extension: [{
+                url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+                valueCode: 'masked',
+              }],
+            },
+          }],
+        };
+
+        const targets = getValidationTargets(patient, 'Patient.identifier.value');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].fullPath).toBe('Patient.identifier[0].value');
+        expect(targets[0].contextPath).toBe('Patient.identifier[0]');
+        expect(targets[0].value).toEqual({
+          extension: [{
+            url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+            valueCode: 'masked',
+          }],
+        });
+      });
+
+      it('aligns sidecar-only entries in repeating primitive arrays', () => {
+        const patient = {
+          resourceType: 'Patient',
+          name: [{
+            given: [null],
+            _given: [{
+              extension: [{
+                url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason',
+                valueCode: 'unknown',
+              }],
+            }],
+          }],
+        };
+
+        const targets = getValidationTargets(patient, 'Patient.name.given');
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].fullPath).toBe('Patient.name[0].given[0]');
+        expect(isResolvedPrimitiveSidecarValue(targets[0].value)).toBe(true);
+        expect(targets[0].value).toMatchObject({
+          extension: [{ valueCode: 'unknown' }],
+        });
+      });
+
+      it('should traverse a sidecar when a populated primitive path continues', () => {
+        const subscription = {
+          resourceType: 'Subscription',
+          channel: {
+            payload: 'application/fhir+json',
+            _payload: {
+              extension: [{
+                url: 'http://hl7.org/fhir/uv/subscriptions-backport/StructureDefinition/backport-payload-content',
+                valueCode: 'full-resource',
+              }],
+            },
+          },
+        };
+
+        const targets = getValidationTargets(
+          subscription,
+          'Subscription.channel.payload.extension',
+        );
+
+        expect(targets).toHaveLength(1);
+        expect(targets[0].fullPath).toBe('Subscription.channel.payload.extension[0]');
+        expect(targets[0].value).toEqual(expect.objectContaining({
+          valueCode: 'full-resource',
+        }));
+      });
     });
 
     describe('Real-World Array Scenarios', () => {
@@ -503,4 +706,3 @@ describe('Element Path Resolver', () => {
     });
   });
 });
-
